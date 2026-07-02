@@ -755,6 +755,21 @@ def _extract_pattern_topic(text):
     kws = [w for w in words if len(w) > 3 and w not in _PAT_STOP]
     return " ".join(kws[:2]) if kws else None
 
+# ---------- correction of the last action ----------
+# "actually make it 20 minutes", "no, change it to 5pm", "i meant friday".
+# Only acted on when a timer/reminder was created moments ago (the caller
+# checks recency), so ordinary sentences can't accidentally edit anything.
+_CORRECTION_RE = re.compile(
+    r"^(?:no,?\s+|wait,?\s+|sorry,?\s+)?(?:actually,?\s+)?"
+    r"(?:make (?:it|that)|change (?:it|that)(?:\s+to)?|i meant|set it (?:to|for))\s+(.+)$",
+    re.I,
+)
+
+def _parse_correction(text):
+    """Return the corrected value phrase ('20 minutes', '5pm') or None."""
+    m = _CORRECTION_RE.match(text.strip())
+    return m.group(1).strip().rstrip(".!?") if m else None
+
 # ---------- confused / unclear response rotation ----------
 import random as _random
 _CONFUSED_TED = [

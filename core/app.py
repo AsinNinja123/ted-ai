@@ -28,7 +28,7 @@ from core.intents import (
     _parse_open_apps, _parse_close_apps, _resolve_context_app,
     _parse_message_cmd, _parse_ask_claude, _parse_reminder, _parse_list_cmd,
     _parse_calc, _parse_cancel_scheduled, _is_timer_request, _is_countdown_request,
-    _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC,
+    _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
     _fix_command_words, _strip_wake_phrase, _needs_web,
 )
@@ -149,6 +149,7 @@ class TedApi:
         #    and only "Hey Ted" (or typing) re-engages — so room conversation
         #    doesn't get answered. Starts engaged.
         self.attention_until   = time.time() + max(ATTENTION_WINDOW, 5)
+        self._last_action      = None   # {"kind","rid","task","label","ts"} — for "actually make it …"
 
     @property
     def busy(self):
@@ -442,6 +443,14 @@ class TedApi:
 
         t = text.lower().strip()
 
+        # ── correction: "actually make it 20 minutes" edits the last timer/reminder ──
+        corr = _parse_correction(text)
+        if corr and self._last_action and time.time() - self._last_action["ts"] < 120:
+            fixed = self._apply_correction(corr)
+            if fixed:
+                return fixed
+            # unparseable correction value — fall through so the LLM can respond
+
         # ── context: "open that" / "open it" → open the last-mentioned app ──
         if re.search(r'\b(open|launch|pull up|start)\s+(that|it|the\s+app)\b', t):
             ctx_key = _resolve_context_app(self.last_reply)
@@ -618,6 +627,8 @@ class TedApi:
             end_ms = int(end_ts * 1000)
             safe_label = (_lbl or human).replace("'", "\\'")
             js(self.window, f"tedHud.addTimer({rid}, {end_ms}, '{safe_label}')")
+            self._last_action = {"kind": "timer", "rid": rid, "task": None,
+                                 "label": _lbl, "ts": time.time()}
             return f"{_lbl.capitalize() + ' timer' if _lbl else human + ' timer'} started."
 
         # ── reminder ──
@@ -632,10 +643,14 @@ class TedApi:
                     # Ask which half of the day rather than guessing
                     return f"Did you mean {hr} AM or {hr} PM?"
             if due:
-                assistant.add_reminder(f"Reminder — {task}.", due, kind="reminder")
+                rid = assistant.add_reminder(f"Reminder — {task}.", due, kind="reminder")
+                self._last_action = {"kind": "reminder", "rid": rid, "task": task,
+                                     "label": None, "ts": time.time()}
                 _spoken_time = time.strftime("%-I:%M %p", time.localtime(due)).lstrip("0")
                 return f"Reminder set for {_spoken_time} — {task}."
-            assistant.add_reminder(f"Reminder — {task}.", None, kind="reminder")
+            rid = assistant.add_reminder(f"Reminder — {task}.", None, kind="reminder")
+            self._last_action = {"kind": "reminder", "rid": rid, "task": task,
+                                 "label": None, "ts": time.time()}
             return f"Reminder added: {task}."
 
         # ── named lists (reorder list, to-do, etc.) ──
@@ -1118,7 +1133,10 @@ class TedApi:
         ]
 
         import groq as _groq_mod
-        for round_num in range(MAX_ROUNDS):
+        _malformed_retry_used = False
+        round_num = 0
+        while round_num < MAX_ROUNDS:
+            round_num += 1
             try:
                 resp = llm.groq_client.chat.completions.create(
                     model=llm.CHAT_MODEL,
@@ -1133,7 +1151,15 @@ class TedApi:
                 print("[tools] rate limited — skipping tool path")
                 return None
             except Exception as e:
-                print(f"[tools] round {round_num + 1} error: {e}")
+                # The model sometimes emits a syntactically broken function call
+                # (Groq returns 400 tool_use_failed). One clean retry usually
+                # produces a valid call instead of dropping to plain conversation.
+                if "tool_use_failed" in str(e) and not _malformed_retry_used:
+                    _malformed_retry_used = True
+                    round_num -= 1          # retry doesn't consume a round
+                    print("[tools] malformed tool call from model — retrying once")
+                    continue
+                print(f"[tools] round {round_num} error: {e}")
                 return None
 
             msg = resp.choices[0].message
@@ -1629,6 +1655,47 @@ class TedApi:
             return f"I found {name} but they don't have a phone number in your contacts."
         ok = send_imessage_to_address(addr, msg_text)
         return f"Sent to {name}." if ok else f"Couldn't reach {name}."
+
+    def _apply_correction(self, value):
+        """Re-do the last timer/reminder with a corrected time/duration.
+        Returns a spoken confirmation, or None if `value` doesn't parse
+        (caller falls through to the LLM)."""
+        la = self._last_action
+        if la["kind"] == "timer":
+            secs = assistant.parse_duration(value)
+            if not secs:
+                m = re.search(r"(\d+(?:\.\d+)?)", value)
+                secs = float(m.group(1)) * 60 if m else None
+            if not secs:
+                return None
+            assistant.cancel_by_id(la["rid"])
+            js(self.window, f"tedHud.clearTimerById({la['rid']})")
+            human = assistant.human_duration(secs)
+            end_ts = time.time() + secs
+            lbl = la.get("label")
+            timer_text = (f"Time's up — your {lbl} timer is done." if lbl
+                          else f"Time's up — your {human} timer is done.")
+            rid = assistant.add_reminder(timer_text, end_ts, kind="timer", label=lbl)
+            safe_label = (lbl or human).replace("'", "\\'")
+            js(self.window, f"tedHud.addTimer({rid}, {int(end_ts * 1000)}, '{safe_label}')")
+            self._last_action = {"kind": "timer", "rid": rid, "task": None,
+                                 "label": lbl, "ts": time.time()}
+            return f"Changed it — {human} timer running."
+
+        if la["kind"] == "reminder":
+            due = assistant.parse_when(value)
+            if not due:
+                secs = assistant.parse_duration(value)
+                due = time.time() + secs if secs else None
+            if not due:
+                return None
+            assistant.cancel_by_id(la["rid"])
+            rid = assistant.add_reminder(f"Reminder — {la['task']}.", due, kind="reminder")
+            self._last_action = {"kind": "reminder", "rid": rid, "task": la["task"],
+                                 "label": None, "ts": time.time()}
+            spoken = time.strftime("%-I:%M %p", time.localtime(due)).lstrip("0")
+            return f"Moved it — reminder now at {spoken}."
+        return None
 
     def _briefing(self):
         """Morning rundown: date, weather, calendar, reminders, motivational closer."""

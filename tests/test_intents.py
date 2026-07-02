@@ -102,6 +102,16 @@ check("success phrasing not flagged: 'Closed Spotify.'",
 check("open_app/close_app/play_music are ACTION tools (spoken verbatim)",
       {"open_app", "close_app", "play_music", "spotify_control"} <= ACTION_TOOLS)
 
+print("\n— Use case: 'actually make it 20 minutes' corrects the last timer —")
+check("actually make it 20 minutes", intents._parse_correction("actually make it 20 minutes") == "20 minutes")
+check("no, change it to 5pm", intents._parse_correction("no, change it to 5pm") == "5pm")
+check("i meant friday", intents._parse_correction("i meant friday") == "friday")
+check("wait, make that ten minutes", intents._parse_correction("wait, make that ten minutes") == "ten minutes")
+check("ordinary sentence is not a correction",
+      intents._parse_correction("set a timer for 5 minutes") is None)
+check("'make a note about x' is not a correction",
+      intents._parse_correction("make a note about the delivery") is None)
+
 print("\n— Misc parsing —")
 check("reminder parses", intents._parse_reminder("remind me to call the bank in 10 minutes") is not None)
 check("timer request", intents._is_timer_request("set a timer for 5 minutes"))
