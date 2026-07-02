@@ -279,6 +279,17 @@ class ProactiveScheduler:
                     msg += f" Location: {location}."
                 self._speak_if_free(msg)
 
+    def _fire_action(self, action: str) -> None:
+        """Fire a trigger's action. If the text parses as one of Ted's commands
+        ('give me the rundown', 'give me the weather'), EXECUTE it and speak the
+        result; otherwise speak the text verbatim ('take your medicine')."""
+        result = None
+        try:
+            result = self.api._assistant_command(action)
+        except Exception as e:
+            print(f"[proactive] action exec failed: {e}")
+        self._speak_if_free(result if result else action)
+
     def _check_triggers(self) -> None:
         """Fire any user-defined triggers whose schedule has come."""
         triggers = _load_triggers()
@@ -290,7 +301,7 @@ class ProactiveScheduler:
             if _should_fire(trigger, now):
                 action = trigger.get("action_text", "")
                 if action:
-                    self._speak_if_free(action)
+                    self._fire_action(action)
                 trigger["last_fired"] = now.isoformat()
                 changed = True
         if changed:

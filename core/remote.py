@@ -1,15 +1,17 @@
 """
 core/remote.py — Simple HTTP endpoint for remote Ted control.
 
-Exposes Ted over a local network so iOS Shortcuts or curl can talk to Ted.
+Exposes Ted over the local network so iOS Shortcuts or curl can talk to Ted.
 
 Endpoints:
-    POST /ask   {"text": "..."}  →  {"reply": "..."}
-    GET  /status                 →  {"status": "ok", "muted": bool}
+    POST /ask   {"text": "..."}   →  {"reply": "..."}
+    GET  /ask?text=...            →  {"reply": "..."}   (easiest from Shortcuts)
+    GET  /status                  →  {"status": "ok", "muted": bool}
 
-Usage in hud.py TedApi.start():
-    from core.remote import RemoteServer
-    RemoteServer(api).start()
+Security: set REMOTE_TOKEN in config.py and every request must carry it —
+either an  X-Ted-Token  header or a  &token=  query parameter. With no token
+configured, anyone on your Wi-Fi can command Ted (fine at home, think twice
+on shared networks like the store's guest Wi-Fi).
 """
 
 import threading
@@ -20,6 +22,10 @@ try:
     from config import REMOTE_PORT
 except Exception:
     REMOTE_PORT = 5150
+try:
+    from config import REMOTE_TOKEN
+except Exception:
+    REMOTE_TOKEN = ""
 
 
 class RemoteServer:
@@ -40,14 +46,25 @@ class RemoteServer:
 
         api = self._api
 
+        def _authorized():
+            if not REMOTE_TOKEN:
+                return True
+            supplied = (request.headers.get("X-Ted-Token")
+                        or request.args.get("token") or "")
+            return supplied == REMOTE_TOKEN
+
         @app.route("/status", methods=["GET"])
         def status():
+            if not _authorized():
+                return jsonify({"error": "bad token"}), 403
             return jsonify({"status": "ok", "muted": api.muted})
 
-        @app.route("/ask", methods=["POST"])
+        @app.route("/ask", methods=["GET", "POST"])
         def ask():
+            if not _authorized():
+                return jsonify({"error": "bad token"}), 403
             data = request.get_json(silent=True) or {}
-            text = (data.get("text") or "").strip()
+            text = (data.get("text") or request.args.get("text") or "").strip()
             if not text:
                 return jsonify({"error": "no text provided"}), 400
 

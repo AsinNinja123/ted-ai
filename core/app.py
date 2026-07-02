@@ -29,6 +29,7 @@ from core.intents import (
     _parse_message_cmd, _parse_ask_claude, _parse_reminder, _parse_list_cmd,
     _parse_calc, _parse_cancel_scheduled, _is_timer_request, _is_countdown_request,
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
+    _parse_sale, _is_sales_query, _is_sales_undo,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
     _fix_command_words, _strip_wake_phrase, _needs_web,
 )
@@ -49,6 +50,10 @@ try:
     from config import STORE_LOCATION
 except Exception:
     STORE_LOCATION = ""
+try:
+    from config import DAILY_BRIEFING_TIME
+except Exception:
+    DAILY_BRIEFING_TIME = ""   # e.g. "7:30am" — spoken rundown every morning
 try:
     from config import ATTENTION_WINDOW
 except Exception:
@@ -575,6 +580,18 @@ class TedApi:
                     if mode_req and mode_req != "ted":
                         continue
                     return self._execute_shortcut(action_def)
+
+        # ── store sales tally ──
+        sale = _parse_sale(text)
+        if sale:
+            from core import sales
+            return sales.log_sale(*sale)
+        if _is_sales_undo(text):
+            from core import sales
+            return sales.undo_last()
+        if _is_sales_query(text):
+            from core import sales
+            return sales.today_summary()
 
         # ── cash & change calculator ──
         calc = _parse_calc(text)
@@ -2200,6 +2217,26 @@ class TedApi:
             print("[proactive] scheduler started")
         except Exception as e:
             print(f"[proactive] scheduler unavailable: {e}")
+        # Config-driven morning briefing: register (or retime) the trigger once
+        if DAILY_BRIEFING_TIME:
+            try:
+                from core.intents import _parse_time_to_24h
+                from core.proactive import add_trigger, list_triggers, remove_trigger
+                hhmm = _parse_time_to_24h(DAILY_BRIEFING_TIME)
+                if hhmm:
+                    existing = [t for t in list_triggers()
+                                if t.get("description") == "daily briefing"]
+                    if not any(t.get("schedule_value") == hhmm for t in existing):
+                        for t in existing:
+                            remove_trigger(t["id"])
+                        add_trigger(description="daily briefing",
+                                    schedule_type="daily_at", schedule_value=hhmm,
+                                    action_text="give me the rundown")
+                        print(f"[proactive] daily briefing scheduled at {hhmm}")
+                else:
+                    print(f"[proactive] couldn't parse DAILY_BRIEFING_TIME={DAILY_BRIEFING_TIME!r}")
+            except Exception as e:
+                print(f"[proactive] briefing setup failed: {e}")
         try:
             from core.remote import RemoteServer
             RemoteServer(self).start()

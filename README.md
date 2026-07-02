@@ -61,7 +61,30 @@ The first launch after building asks for **microphone permission** — allow it.
 - **Email (Outlook IMAP):** run `python setup_email.py` once, then "check my email".
 - **Spotify Web API** (playlists + song search, needs Premium): add credentials to
   `config.py`, then run `python authorize_spotify.py`.
-- **Remote control:** Ted runs a small HTTP server (`POST /ask`) for iOS Shortcuts/curl.
+- **Remote control:** Ted runs a small HTTP server for iOS Shortcuts/curl.
+  Set `REMOTE_TOKEN` in config.py so only you can use it.
+
+## Ask Ted from your iPhone (Siri Shortcut)
+
+1. Shortcuts app → **+** → name it "Ask Ted".
+2. Add **Ask for Input** (Text, prompt "What should Ted do?").
+3. Add **Get Contents of URL**:
+   `http://<your-mac's-local-IP>:5150/ask?token=<REMOTE_TOKEN>&text=[Provided Input]`
+   (Method GET; find the Mac's IP in System Settings → Wi-Fi → Details.)
+4. Add **Get Dictionary Value** for key `reply`, then **Show Result** (or **Speak Text**).
+
+Now "Hey Siri, Ask Ted" works anywhere on your home Wi-Fi — timers, reminders,
+Spotify, sales tallies, anything you'd say out loud.
+
+## Store mode helpers
+
+- **Sales tally:** "I sold three Excaliburs" / "just sold a dozen roman candles"
+  logs to `data/sales_log.json`. "How are sales today" / "close out the day"
+  gives the running summary; "undo that last sale" scratches a mistake.
+- **Cash math:** "total on 3 at 45", "change from a hundred for 67.50"
+  (set `SALES_TAX` in config for with-tax totals).
+- **Daily briefing:** set `DAILY_BRIEFING_TIME = "7:30am"` in config and Ted
+  gives the weather/calendar/reminders rundown every morning unprompted.
 
 ## Layout
 

@@ -755,6 +755,44 @@ def _extract_pattern_topic(text):
     kws = [w for w in words if len(w) > 3 and w not in _PAT_STOP]
     return " ".join(kws[:2]) if kws else None
 
+# ---------- store sales tally ----------
+def _parse_sale(text):
+    """Return (qty, product_name) or None. Handles 'I sold 3 Excaliburs',
+    'just sold a dozen roman candles', 'log a sale of two artillery shells'."""
+    m = (re.search(r"\b(?:i |we )?(?:just )?sold (\w+) (.+)", text, re.I)
+         or re.search(r"\blog (?:a )?sale of (\w+) (.+)", text, re.I))
+    if not m:
+        return None
+    qty = _word_to_int(m.group(1))
+    name = m.group(2).strip().rstrip(".!?")
+    if name.lower().startswith("dozen "):          # "a dozen Roman candles"
+        qty = (qty or 1) * 12
+        name = name[6:].strip()
+    if qty is None or qty <= 0 or not name:
+        return None
+    return qty, name
+
+
+_SALES_QUERY_RE = re.compile(
+    r"\b(?:how (?:are|were) sales|sales (?:so far|today|update|summary)"
+    r"|today'?s sales|what did we sell|close out the day|end of day"
+    r"|how much (?:did we|have we) sold?)\b",
+    re.I,
+)
+
+def _is_sales_query(text):
+    return bool(_SALES_QUERY_RE.search(text))
+
+
+_SALES_UNDO_RE = re.compile(
+    r"\b(?:undo|scratch|remove|delete) (?:that|the) (?:last )?sale\b|\bundo (?:the )?last sale\b",
+    re.I,
+)
+
+def _is_sales_undo(text):
+    return bool(_SALES_UNDO_RE.search(text))
+
+
 # ---------- correction of the last action ----------
 # "actually make it 20 minutes", "no, change it to 5pm", "i meant friday".
 # Only acted on when a timer/reminder was created moments ago (the caller

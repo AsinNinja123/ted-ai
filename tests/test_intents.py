@@ -112,6 +112,18 @@ check("ordinary sentence is not a correction",
 check("'make a note about x' is not a correction",
       intents._parse_correction("make a note about the delivery") is None)
 
+print("\n— Use case: store sales tally —")
+check("I sold 3 Excaliburs", intents._parse_sale("I sold 3 Excaliburs") == (3, "Excaliburs"))
+check("just sold a dozen roman candles",
+      intents._parse_sale("just sold a dozen roman candles") == (12, "roman candles"))
+check("log a sale of two artillery shells",
+      intents._parse_sale("log a sale of two artillery shells") == (2, "artillery shells"))
+check("'they sold out of everything' is NOT a sale",
+      intents._parse_sale("they sold out of everything") is None)
+check("sales query", intents._is_sales_query("how are sales today"))
+check("close out the day", intents._is_sales_query("let's close out the day"))
+check("undo last sale", intents._is_sales_undo("undo that last sale"))
+
 print("\n— Misc parsing —")
 check("reminder parses", intents._parse_reminder("remind me to call the bank in 10 minutes") is not None)
 check("timer request", intents._is_timer_request("set a timer for 5 minutes"))
