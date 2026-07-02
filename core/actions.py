@@ -470,6 +470,21 @@ def ensure_spotify_open(timeout=10.0):
     return False
 
 
+def spotify_now_playing():
+    """Return 'Track — Artist' if the desktop app is playing, else None.
+    Cheap enough to poll (single osascript call when Spotify is running)."""
+    if not spotify_is_running():
+        return None
+    state = _osa('tell application "Spotify" to player state')
+    if state != "playing":
+        return None
+    name = _osa('tell application "Spotify" to name of current track')
+    artist = _osa('tell application "Spotify" to artist of current track')
+    if not name:
+        return None
+    return f"{name} — {artist}" if artist else name
+
+
 def spotify_command(action):
     """Control the Spotify desktop app locally (no login needed).
     action: play | pause | playpause | next | previous | current | up | down

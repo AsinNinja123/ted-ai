@@ -49,6 +49,11 @@ try:
     from config import STORE_LOCATION
 except Exception:
     STORE_LOCATION = ""
+try:
+    from config import ATTENTION_WINDOW
+except Exception:
+    ATTENTION_WINDOW = 90   # seconds of open conversation after each interaction;
+                            # after that, "Hey Ted"/"Ted, …" re-engages. 0 = always listening.
 
 assistant = features.assistant   # None when the module is unavailable
 
@@ -140,10 +145,31 @@ class TedApi:
         self._last_wake_time     = 0.0             # epoch; for wake-word cooldown (echo prevention)
         self._last_fired_timer   = None            # last timer that fired — for snooze
 
+        # ── Attention: after ATTENTION_WINDOW s of silence Ted goes to standby
+        #    and only "Hey Ted" (or typing) re-engages — so room conversation
+        #    doesn't get answered. Starts engaged.
+        self.attention_until   = time.time() + max(ATTENTION_WINDOW, 5)
+
     @property
     def busy(self):
         """True when Ted is processing a turn. Thread-safe via Lock."""
         return self._busy.locked()
+
+    # ── Attention helpers ──────────────────────────────────────────────────────
+
+    def _engaged(self):
+        """True while Ted is in open conversation (no wake word needed)."""
+        return ATTENTION_WINDOW <= 0 or time.time() < self.attention_until
+
+    def _touch_attention(self):
+        """Extend the open-conversation window after any accepted interaction.
+        The HUD gets the deadline and flips itself to STANDBY when it passes —
+        Python is usually blocked inside capture() at that moment."""
+        if ATTENTION_WINDOW > 0:
+            self.attention_until = time.time() + ATTENTION_WINDOW
+            js(self.window, f"tedHud.setAttention({int(self.attention_until * 1000)})")
+        else:
+            js(self.window, "tedHud.setAttention(0)")   # 0 = always engaged
 
     @property
     def active_conversation(self):
@@ -159,6 +185,7 @@ class TedApi:
         Returns True if the user barged in by voice during the reply.
         """
         w = self.window
+        self._touch_attention()   # any processed input keeps the conversation open
 
         # ── mute/unmute from typed input or the remote endpoint ──
         # (Voice mute is intercepted in conversation_loop; while muted there is
@@ -1760,6 +1787,7 @@ class TedApi:
             pass
         # Update the HUD Voice readout to reflect the actual TTS engine in use
         js(w, f"tedHud.setVoice({json.dumps(voice.voice_label())})")
+        self._touch_attention()   # seed the HUD with the initial attention deadline
         time.sleep(SETTLE_AFTER_TALK)
 
         # ── Session recap: mention last session if gap > 4 hours ──
@@ -1897,11 +1925,30 @@ class TedApi:
                 self._last_wake_time = _now
                 if not text.strip():
                     # Just the wake phrase alone — acknowledge and re-listen
+                    self._touch_attention()
                     speak(w, random.choice(["Yes.", "Go ahead.", "Sir.", "Here."]), self)
                     prearmed = False
                     continue
                 voice.play_chime(w, self)
                 time.sleep(0.08)   # brief gap after chime before processing
+
+            # ── attention gate: in standby, only "Hey Ted" gets through ────────
+            # After ATTENTION_WINDOW s of silence Ted stops treating room noise
+            # as commands. The one standby exception: stopping Ted's own voice
+            # mid-announcement (a reminder can fire while unengaged).
+            if was_wake:
+                self._touch_attention()
+            elif not self._engaged():
+                if _is_stop_command(text) and getattr(engine, "_playing", False):
+                    self.interrupt_speech = True
+                    engine.stop_playback()
+                    set_state(w, "idle")
+                else:
+                    print(f"   (standby — not addressed: {text!r})")
+                    js(w, f"tedHud.flashHeard({json.dumps(text)}, true)")
+                prearmed = False
+                continue
+            js(w, f"tedHud.flashHeard({json.dumps(text)}, false)")
 
             # ── interrupt-priority commands: bypass the busy lock ──────────────
             # Stop/pause/skip/mute execute immediately even if Ted is mid-response.
@@ -2050,6 +2097,13 @@ class TedApi:
                 except Exception:
                     mem_ok = False
                 spot_ok = ("Spotify" in apps) or music.spotify_web_ready()
+                # Now-playing chip: only poll the track when Spotify is running
+                try:
+                    from core.actions import spotify_now_playing
+                    np = spotify_now_playing() if "Spotify" in apps else None
+                    js(self.window, f"tedHud.setNowPlaying({json.dumps(np)})")
+                except Exception:
+                    pass
                 js(self.window,
                    "tedHud.setHealth({groq:%s,memory:%s,spotify:%s})" % (
                        "true" if llm.groq_ok() else "false",
@@ -2088,6 +2142,18 @@ class TedApi:
 
     def listen(self):
         return self.start()
+
+    def cancel_timer(self, rid):
+        """HUD click-to-cancel on a timer chip. Returns True if cancelled."""
+        if not features.HAS_ASSISTANT:
+            return False
+        try:
+            ok = assistant.cancel_by_id(int(rid))
+        except Exception:
+            ok = False
+        if ok:
+            js(self.window, f"tedHud.clearTimerById({int(rid)})")
+        return ok
 
     def stop(self):
         """Stop button: cut off whatever Ted is saying and go back to listening.

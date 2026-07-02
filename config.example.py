@@ -14,6 +14,12 @@ USE_ELEVENLABS = False
 ELEVENLABS_API_KEY = ""
 ELEVEN_LABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"
 
+# ── Attention ────────────────────────────────────────────────────────────────
+# After this many seconds without an interaction, Ted goes to STANDBY and only
+# "Hey Ted" / "Ted, …" (or typing) re-engages him — so room conversation isn't
+# answered. While engaged, just talk. Set 0 to always listen (old behaviour).
+ATTENTION_WINDOW = 90
+
 # ── Audio ────────────────────────────────────────────────────────────────────
 # Voice barge-in (talking over Ted). Without the native AEC engine, Ted's own
 # voice can leak through SPEAKERS and interrupt himself. Set False to disable

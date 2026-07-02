@@ -109,6 +109,18 @@ def cancel_pending(kind=None):
     return n
 
 
+def cancel_by_id(rid) -> bool:
+    """Cancel a single pending reminder/timer by its id (from add_reminder).
+    Returns True if something was cancelled. Used by the HUD's click-to-cancel."""
+    d = _load()
+    for r in d["reminders"]:
+        if r.get("id") == rid and not r["done"]:
+            r["done"] = True
+            _save(d)
+            return True
+    return False
+
+
 def cancel_by_label(label: str) -> int:
     """Cancel pending timers whose label contains the given string (case-insensitive).
     Returns how many were cancelled."""

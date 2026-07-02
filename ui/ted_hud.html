@@ -49,10 +49,28 @@ canvas{position:absolute;inset:0;width:100%;height:100%}
 /* timers */
 #timers{position:absolute;top:18px;right:22px;z-index:6;display:flex;gap:8px;flex-direction:column;align-items:flex-end}
 .timer-chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;
-  padding:6px 13px;font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center}
+  padding:6px 13px;font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center;
+  cursor:pointer;transition:border-color .2s}
+.timer-chip:hover{border-color:var(--down)}
+.timer-chip:hover .x-hint{opacity:1}
 .timer-chip .lbl{color:var(--dim);font-size:11px;letter-spacing:.06em}
 .timer-chip .cd{font-variant-numeric:tabular-nums;font-weight:600}
+.timer-chip .x-hint{opacity:0;color:var(--down);font-size:11px;transition:opacity .2s}
 .timer-chip.alarm{border-color:var(--warn);color:var(--warn)}
+
+/* heard caption (fleeting transcript of what Ted picked up) */
+#heard{position:absolute;left:50%;transform:translateX(-50%);bottom:112px;z-index:5;
+  max-width:70vw;text-align:center;font-size:12px;color:var(--dim);
+  opacity:0;transition:opacity .4s;pointer-events:none;font-style:italic}
+#heard.show{opacity:.9}
+#heard.standby{opacity:.45}
+
+/* now playing */
+#nowplaying{position:absolute;top:18px;left:50%;transform:translateX(-50%);z-index:5;
+  font-size:11px;letter-spacing:.06em;color:var(--dim);border:1px solid var(--line);
+  border-radius:16px;padding:5px 14px;background:rgba(16,23,34,.7);display:none;
+  max-width:44vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#nowplaying .note{color:var(--ok);margin-right:7px}
 
 /* reminders panel */
 #rempanel{position:absolute;top:60px;right:22px;width:280px;z-index:15;background:var(--panel);
@@ -126,6 +144,9 @@ canvas{position:absolute;inset:0;width:100%;height:100%}
 
 <div id="issue"><span id="issue-body"></span><span class="x" onclick="tedHud.clearIssue()">×</span></div>
 
+<div id="nowplaying"><span class="note">♪</span><span id="np-text"></span></div>
+<div id="heard"></div>
+
 <div id="timers"></div>
 
 <div id="rempanel">
@@ -161,6 +182,12 @@ function inApp(){ return !!(window.pywebview && window.pywebview.api); }
 var state='idle';               // idle|listening|thinking|speaking
 var isMuted=false, extAmp=0;
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
+
+/* attention: Python sends the deadline (ms epoch) after every interaction;
+   0 means "always engaged". Past the deadline Ted is in STANDBY and needs
+   "Hey Ted" to re-engage — the sphere dims and the status says so. */
+var attnDeadline=0;
+function isEngaged(){ return attnDeadline===0 || Date.now()<attnDeadline; }
 
 /* health model:
    ok   → green   (all good)
@@ -240,6 +267,7 @@ function draw(now){
     var sx=cx+x*rr*persp, sy2=cy+y*rr*persp;
     var a=0.14+((z+1)/2)*0.62 + Math.sin(now/650+p.tw)*0.06;
     if(isMuted)a*=0.45;
+    else if(!isEngaged()&&state==='idle')a*=0.55;   // standby: dimmer sphere
     if(state==='listening'||state==='speaking')a*=1.18;
     ctx.fillStyle='rgba('+c[0]+','+c[1]+','+c[2]+','+Math.max(0,Math.min(1,a)).toFixed(3)+')';
     var s=p.sz*persp*(1+smAmp*0.5);
@@ -257,13 +285,20 @@ function draw(now){
 }
 requestAnimationFrame(draw);
 
-/* offline watchdog — repaint status text when the heartbeat dies */
+/* offline + standby watchdog — repaint status text as states pass */
 setInterval(function(){
-  var h=healthState(), st=document.getElementById('status');
+  var h=healthState(), st=document.getElementById('status'), sub=document.getElementById('substatus');
   if(h==='down'){ st.textContent='OFFLINE'; st.classList.remove('live');
-    document.getElementById('substatus').textContent='no heartbeat from ted — restart hud.py'; }
-  else if(h==='warn' && state==='idle' && !isMuted){ st.textContent='DEGRADED'; }
-},2000);
+    sub.textContent='no heartbeat from ted — restart hud.py'; return; }
+  if(isMuted) return;
+  if(h==='warn' && state==='idle'){ st.textContent='DEGRADED'; return; }
+  if(state==='idle'){
+    if(!isEngaged()){ st.textContent='STANDBY'; st.classList.remove('live');
+      sub.textContent='say “hey ted” to get my attention'; }
+    else{ if(st.textContent==='STANDBY'){ st.textContent='READY'; }
+      if(sub.textContent.indexOf('hey ted')!==-1) sub.textContent=''; }
+  }
+},1000);
 
 /* ── chat log ─────────────────────────────────────────────── */
 var log=document.getElementById('log'), curTed=null, lastStreamText=null;
@@ -291,7 +326,7 @@ function appendTed(chunk){
 }
 function endTed(){ curTed=null; }
 
-/* ── timers ───────────────────────────────────────────────── */
+/* ── timers (click a chip to cancel it) ───────────────────── */
 var timerMap={};
 function updateTimers(){
   var host=document.getElementById('timers');
@@ -299,7 +334,12 @@ function updateTimers(){
     var t=timerMap[id];
     if(!t.el){
       t.el=document.createElement('div'); t.el.className='timer-chip';
-      t.el.innerHTML='<span class="lbl">'+(t.label||'timer')+'</span><span class="cd"></span>';
+      t.el.title='Click to cancel this timer';
+      t.el.innerHTML='<span class="lbl">'+(t.label||'timer')+'</span><span class="cd"></span><span class="x-hint">×</span>';
+      t.el.onclick=(function(tid){ return function(){
+        if(inApp() && window.pywebview.api.cancel_timer) window.pywebview.api.cancel_timer(tid);
+        tedHud.clearTimerById(tid);
+      };})(id);
       host.appendChild(t.el);
     }
     var left=Math.max(0,t.endMs-Date.now());
@@ -309,6 +349,17 @@ function updateTimers(){
   });
 }
 setInterval(updateTimers,500);
+
+/* ── heard caption ────────────────────────────────────────── */
+var heardT=null;
+function flashHeardText(text,standby){
+  var e=document.getElementById('heard');
+  e.textContent=(standby?'heard (standby): ':'')+'“'+text+'”';
+  e.classList.toggle('standby',!!standby);
+  e.classList.add('show');
+  clearTimeout(heardT);
+  heardT=setTimeout(function(){ e.classList.remove('show'); },standby?2500:3500);
+}
 
 /* ── tedHud: the full API Python calls ────────────────────── */
 var tedHud={
@@ -372,6 +423,20 @@ var tedHud={
   },
 
   setVoice:function(name){ document.getElementById('voice-eng').textContent=name||''; },
+
+  /* attention (standby / open-conversation) */
+  setAttention:function(deadlineMs){ attnDeadline=deadlineMs||0; },
+  setEngaged:function(on){ attnDeadline=on?0:(Date.now()-1); },   // back-compat toggle
+
+  /* fleeting transcript of what Ted just heard */
+  flashHeard:function(text,standby){ if(text) flashHeardText(text,standby); },
+
+  /* Spotify now-playing chip */
+  setNowPlaying:function(text){
+    var e=document.getElementById('nowplaying');
+    if(text){ document.getElementById('np-text').textContent=text; e.style.display='block'; }
+    else e.style.display='none';
+  },
 
   /* chat panel */
   showChat:function(){ document.getElementById('chat').classList.add('open');

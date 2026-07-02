@@ -132,13 +132,17 @@ _THINK_EXIT = _norm_set(
 )
 
 # ---------- wake phrase ----------
-_WAKE_RE = re.compile(r"^(?:hey|hi|yo)\s+ted\s*[,:]?\s*", re.IGNORECASE)
+# Accepts "hey/hi/yo/ok/okay ted …" and bare "ted, …" at the START of an
+# utterance only — "ted" mid-sentence never wakes (that's just his name coming
+# up in conversation).
+_WAKE_RE = re.compile(r"^(?:(?:hey|hi|yo|ok|okay)[\s,]+)?ted\b[,:.!?]?\s*", re.IGNORECASE)
 
 def _strip_wake_phrase(text):
-    """Detect and strip a 'Hey Ted' prefix. Returns (stripped_text, was_wake: bool)."""
-    m = _WAKE_RE.match(text)
+    """Detect and strip a 'Hey Ted' / 'Ted, …' prefix.
+    Returns (stripped_text, was_wake: bool)."""
+    m = _WAKE_RE.match(text.strip())
     if m:
-        return text[m.end():].strip(), True
+        return text.strip()[m.end():].strip(), True
     return text, False
 
 # ---------- small-number words ----------

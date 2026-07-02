@@ -82,6 +82,12 @@ check("'cancel the timer' is NOT a generic cancel (has its own handler)",
       not intents._is_cancel_command("cancel the timer"))
 check("wake phrase strips", intents._strip_wake_phrase("Hey Ted, what time is it")
       == ("what time is it", True))
+check("bare 'Ted, …' also wakes", intents._strip_wake_phrase("Ted, play some music")
+      == ("play some music", True))
+check("'okay ted' wakes", intents._strip_wake_phrase("okay ted what's up")[1])
+check("'ted' mid-sentence does NOT wake",
+      not intents._strip_wake_phrase("I told ted about it yesterday")[1])
+check("'teddy' does NOT wake", not intents._strip_wake_phrase("teddy bear")[1])
 check("normalize strips straight apostrophes too",
       intents._normalize_cmd("what's playing") == "whats playing")
 
