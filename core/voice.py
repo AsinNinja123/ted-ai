@@ -231,6 +231,8 @@ def _clean_for_speech(text):
     """Sanitise text for the TTS engine: strip markdown/emoji, apply contractions
     and pronunciation overrides, and truncate overlong responses gracefully."""
     t = _EMOJI_RE.sub("", text)
+    t = re.sub(r"https?://\S+|\bwww\.\S+", "", t)   # never read URLs aloud
+    t = re.sub(r"\[(\d+|[^\]]{1,30})\]", "", t)      # web citations like [1]
     t = re.sub(r"[*_`#>~|]+", "", t)        # markdown / stray symbols
     t = re.sub(r"\s+", " ", t).strip()
     t = _enforce_contractions(t)             # natural contractions before TTS

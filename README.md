@@ -45,6 +45,11 @@ The first launch after building asks for **microphone permission** — allow it.
   with a key for ElevenLabs cloud TTS.
 - **LLM:** Groq `llama-3.3-70b-versatile` for replies, `llama-3.1-8b-instant` for
   fact extraction/summaries, Llama-4-Scout for screen vision.
+- **Live info:** questions about today's games, news, prices, schedules, etc. route
+  to `groq/compound-mini`, which runs a real web search before answering — so
+  "what World Cup games are on today" gets today's actual schedule. Falls back
+  to DuckDuckGo + summarisation when compound is rate-limited (free tier limits).
+  "Look up X" / "google X" forces a web answer for anything.
 
 ## Memory
 

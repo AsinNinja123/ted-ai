@@ -656,17 +656,38 @@ def _parse_message_cmd(text):
 
 # ---------- which queries actually need a live web search ----------
 # Searching every turn made Ted slow and robotic. Only reach for the web when
-# the question really needs fresh, external facts.
+# the question plausibly needs fresh, external facts. Deterministic handlers
+# (calendar, weather, reminders…) run BEFORE this gate, so generous hints here
+# don't hijack those — they only affect what would otherwise go to the LLM.
 _WEB_HINTS = (
     "weather", "temperature", "forecast", "rain", "snow", "news", "headline",
-    "current", "currently", "latest", "right now", "today's",
-    "price", "cost", "stock price", "score", "who is the current",
-    "what is the current", "who's the current", "how much is",
-    "happening now", "open now", "store hours", "2025", "2026",
+    "current", "currently", "latest", "right now", "today", "tonight",
+    "this week", "this weekend", "tomorrow", "yesterday",
+    "price", "cost", "stock price", "how much is",
+    "score", "scores", "game", "games", "match", "matches", "schedule",
+    "standings", "playoffs", "world cup", "super bowl", "series",
+    "happening", "open now", "store hours", "election", "released",
+    "come out", "2025", "2026",
+)
+_WEB_Q_RE = re.compile(
+    r"\bwho (?:won|wins|is winning|plays?)\b|\bwhen (?:is|was|does|do|did)\b"
+    r"|\bwhat time (?:is|does|do)\b|\bany news\b|\bwhat happened\b"
+    r"|\bdid (?:the|they|we)\b.{0,30}\b(?:win|lose|play)\b",
+    re.I,
 )
 def _needs_web(text):
     t = text.lower()
-    return any(h in t for h in _WEB_HINTS)
+    return any(h in t for h in _WEB_HINTS) or bool(_WEB_Q_RE.search(t))
+
+
+# "look up X" / "search for X" / "google X" — explicit web request
+_LOOKUP_RE = re.compile(
+    r"^(?:can you\s+|please\s+)?(?:look up|search (?:the web )?for|google|search up|find out)\s+(.+)$",
+    re.I,
+)
+def _parse_lookup(text):
+    m = _LOOKUP_RE.match(text.strip())
+    return m.group(1).strip().rstrip(".?!") if m else None
 
 # ---------- time string parser for proactive triggers ----------
 def _parse_time_to_24h(s):

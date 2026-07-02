@@ -29,9 +29,11 @@ except Exception:
     OWNER_NAME = "Charlie"
 
 # Groq model line-up: big model for replies + tool calling, fast model for
-# JSON extraction and summaries.
+# JSON extraction and summaries, compound for live-web questions (it runs a
+# real web search server-side before answering — no extra API keys needed).
 CHAT_MODEL = "llama-3.3-70b-versatile"
 FAST_MODEL = "llama-3.1-8b-instant"
+WEB_MODEL  = "groq/compound-mini"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -147,22 +149,154 @@ def extract_and_save_facts(user_input, ted_reply):
         print(f"[memory] fact extraction skipped: {e}")
 
 # ---------- web search ----------
+_NEWSY_RE = re.compile(
+    r"\b(?:news|game|games|match|score|won|win|lost|schedule|standings|playoffs"
+    r"|world cup|election|happened|today|tonight|yesterday)\b", re.I)
+
+def _newsy(query):
+    """True when the query wants time-sensitive info — use the news vertical."""
+    return bool(_NEWSY_RE.search(query))
+
+
 def search_web(query):
     """Search the web via DuckDuckGo. Returns a sentinel string on failure —
-    never blocks > 8s."""
+    never blocks > 8s. This is the FALLBACK path; groq/compound (below) is the
+    primary source for live answers. News-ish queries use the news vertical
+    (dated, fresh results) instead of generic web text."""
     try:
         try:
             from ddgs import DDGS          # newer package name
         except ImportError:
             from duckduckgo_search import DDGS  # older package name
+        year = date.today().year           # freshness bias in the query
         with DDGS(timeout=6) as ddgs:
-            results = list(ddgs.text(query + " 2026", max_results=5))
+            if _newsy(query):
+                results = list(ddgs.news(query, max_results=6))
+            else:
+                results = list(ddgs.text(f"{query} {year}", max_results=6))
         if not results:
             return "__NO_RESULTS__"   # sentinel — caller can speak a fallback
-        return " ".join(r["body"] for r in results)
+        parts = []
+        for r in results:
+            body = r.get("body") or r.get("excerpt") or ""
+            when = r.get("date", "")
+            title = r.get("title", "")
+            parts.append(f"[{when}] {title}: {body}" if when else f"{title}: {body}")
+        return " ".join(parts)
     except Exception as e:
         print(f"[web] search failed: {e}")
         return "__SEARCH_ERROR__"
+
+
+# ---------- live web answers via groq/compound ----------
+_web_location = None   # cached "City, Region" for the web prompt
+
+def _get_web_location():
+    global _web_location
+    if _web_location is None:
+        _web_location = ""
+        try:
+            if features.HAS_ASSISTANT:
+                loc = features.assistant.get_location()
+                if loc:
+                    _web_location = f"{loc['city']}, {loc['region']}"
+        except Exception:
+            pass
+    return _web_location
+
+
+def _web_messages(user_input, conversation=None):
+    """Small message set for the compound model: short voice-style system
+    prompt + up to 2 recent exchanges (for follow-ups like 'what about
+    tomorrow?'). Kept lean — compound requests carry search results too."""
+    today = date.today().strftime("%A, %B %d, %Y")
+    loc = _get_web_location()
+    sys_prompt = (
+        f"You are Ted, {OWNER_NAME}'s voice assistant. Today is {today}."
+        + (f" The user is in {loc}." if loc else "")
+        + " Use your web search to answer with CURRENT information. "
+        "Your reply is spoken aloud: two to three short sentences, no markdown, "
+        "no lists, no URLs, no citations. Just the facts, conversational."
+    )
+    msgs = [{"role": "system", "content": sys_prompt}]
+    if conversation:
+        for m in conversation[-2:]:
+            if m["role"] in ("user", "assistant"):
+                msgs.append({"role": m["role"], "content": m["content"][:200]})
+    msgs.append({"role": "user", "content": user_input})
+    return msgs
+
+
+def _compound_answer(user_input, conversation=None, timeout=14.0):
+    """One-shot compound answer, or None on ANY failure so the caller falls
+    back to DuckDuckGo. Deliberately NOT streamed: on the free tier compound
+    can abort mid-stream (413 when its search results blow the request cap),
+    and a non-streaming call either fully succeeds or cleanly fails.
+    Kept small (short history, modest max_tokens) to stay under tier limits.
+    413s (request_too_large) depend on what compound's own search fetched, so
+    one retry often succeeds where the first attempt blew the cap."""
+    for attempt in (0, 1):
+        try:
+            r = groq_client.chat.completions.create(
+                model=WEB_MODEL,
+                messages=_web_messages(user_input, conversation),
+                max_tokens=220,
+                timeout=timeout,
+            )
+            out = (r.choices[0].message.content or "").strip()
+            return out or None
+        except Exception as e:
+            msg = str(e)
+            if "request_too_large" in msg and attempt == 0:
+                print("[web] compound 413 (its search results too big) — one retry")
+                continue
+            print(f"[web] compound failed ({msg[:100]}) — DuckDuckGo fallback")
+            return None
+    return None
+
+
+def web_answer(question):
+    """Live-web answer for explicit 'look up X' commands.
+    compound first, DuckDuckGo+summarise fallback, honest failure last."""
+    out = _compound_answer(question)
+    if out:
+        return out
+    raw = search_web(question)
+    if raw in ("__NO_RESULTS__", "__SEARCH_ERROR__"):
+        return "I couldn't find anything solid on that right now."
+    today = date.today().strftime("%A, %B %d, %Y")
+    try:
+        r = groq_client.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=[{"role": "user", "content":
+                       f"Today is {today}. Using ONLY these web search snippets, answer "
+                       f"the question for a voice assistant in one or two short spoken "
+                       f"sentences. If they don't fully answer it, give the closest "
+                       f"useful information they contain — never mention searching, "
+                       f"snippets, or being unable.\n\nQuestion: {question}\n\n"
+                       f"Snippets:\n{raw[:4000]}"}],
+            max_tokens=140, timeout=10.0,
+        )
+        return (r.choices[0].message.content or "").strip() or raw[:250]
+    except Exception:
+        return raw[:250]
+
+
+def _remember_exchange(user_input, full_reply, conversation):
+    """Append a finished exchange to the conversation and kick off the
+    background memory/fact writes. Shared by the chat and web paths."""
+    _clean = re.sub(r"[\s.,!?;:'\"-]+", "", full_reply)
+    if not (full_reply.strip() and _clean):
+        return
+    conversation.append({"role": "user",      "content": user_input})
+    conversation.append({"role": "assistant", "content": full_reply})
+    if len(conversation) > MAX_CONV_MESSAGES + 1:
+        del conversation[1:len(conversation) - MAX_CONV_MESSAGES]
+    threading.Thread(target=save_memory,
+                     args=(user_input, full_reply), daemon=True).start()
+    if intents._worth_extracting(user_input):
+        threading.Thread(target=extract_and_save_facts,
+                         args=(user_input, full_reply), daemon=True).start()
 
 # ---------- ask Claude (second brain) ----------
 def ask_claude(prompt):
@@ -213,10 +347,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     today = date.today().strftime("%B %d, %Y")
 
-    # --- web search (only when the question needs fresh facts) ---
+    # --- live-web questions: groq/compound answers with a real web search ---
     search_results = ""
     _web_error_msg = None
     if intents._needs_web(user_input):
+        ans = _compound_answer(user_input, conversation)
+        if ans:
+            yield ans
+            _remember_exchange(user_input, ans, conversation)
+            return
+
+        # compound unavailable (rate limit etc.) — fall back to DuckDuckGo
         raw = search_web(user_input)
         if raw == "__NO_RESULTS__":
             _web_error_msg = "I couldn't find anything on that."
@@ -353,25 +494,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         else:
             yield "Something cut out — ask me again."
     finally:
-        # Reject whitespace-only or punctuation-only "responses" before saving.
-        _clean_reply = re.sub(r"[\s.,!?;:'\"-]+", "", full_reply)
-        if full_reply.strip() and _clean_reply:
-            conversation.append({"role": "user",      "content": user_input})
-            conversation.append({"role": "assistant", "content": full_reply})
-            # Keep conversation within the hard cap (always keep [0] = system prompt)
-            if len(conversation) > MAX_CONV_MESSAGES + 1:
-                del conversation[1:len(conversation) - MAX_CONV_MESSAGES]
-
-            # Memory writes run on daemon threads — never block the listen loop
-            threading.Thread(target=save_memory,
-                             args=(user_input, full_reply), daemon=True).start()
-            # Only extract personal facts for substantive turns
-            if intents._worth_extracting(user_input):
-                threading.Thread(
-                    target=extract_and_save_facts,
-                    args=(user_input, full_reply),
-                    daemon=True,
-                ).start()
+        _remember_exchange(user_input, full_reply, conversation)
         try:
             resp.close()
         except Exception:

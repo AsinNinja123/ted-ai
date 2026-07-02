@@ -488,6 +488,16 @@ class TedApi:
             set_state(self.window, "thinking")
             return llm.ask_claude(acq)
 
+        # ── explicit web lookup: "look up X" / "search for X" / "google X" ──
+        from core.intents import _parse_lookup
+        lookup_q = _parse_lookup(text)
+        if lookup_q:
+            speak(self.window, "Looking that up.", self)
+            engine.reset_barge_in()
+            self.interrupt_speech = False
+            set_state(self.window, "thinking")
+            return llm.web_answer(lookup_q)
+
         # ── Spotify ──
         sp = music.handle_spoken(text)
         if sp is not None:
