@@ -43,7 +43,8 @@ The first launch after building asks for **microphone permission** — allow it.
 - **STT:** Groq Whisper (cloud) by default; set `USE_GROQ_STT = False` for local Whisper.
 - **TTS:** Kokoro (local, voice `am_michael`) by default; set `USE_ELEVENLABS = True`
   with a key for ElevenLabs cloud TTS.
-- **LLM:** Groq `llama-3.3-70b-versatile` for replies, `llama-3.1-8b-instant` for
+- **LLM:** Groq `openai/gpt-oss-120b` for replies + tool calling (auto-falls back
+  to `llama-3.3-70b-versatile` when rate-limited), `llama-3.1-8b-instant` for
   fact extraction/summaries, Llama-4-Scout for screen vision.
 - **Live info:** questions about today's games, news, prices, schedules, etc. route
   to `groq/compound-mini`, which runs a real web search before answering — so

@@ -22,7 +22,7 @@ from config import GROQ_API_KEY  # required — app won't start without this
 try:
     from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 except Exception:
-    ANTHROPIC_API_KEY, CLAUDE_MODEL = "", "claude-sonnet-4-6"
+    ANTHROPIC_API_KEY, CLAUDE_MODEL = "", "claude-sonnet-5"
 try:
     from config import OWNER_NAME
 except Exception:
@@ -31,11 +31,47 @@ except Exception:
 # Groq model line-up: big model for replies + tool calling, fast model for
 # JSON extraction and summaries, compound for live-web questions (it runs a
 # real web search server-side before answering — no extra API keys needed).
-CHAT_MODEL = "llama-3.3-70b-versatile"
-FAST_MODEL = "llama-3.1-8b-instant"
-WEB_MODEL  = "groq/compound-mini"
+#
+# gpt-oss-120b benchmarked 5-9x faster than llama-3.3-70b with better tool
+# calling (it handled the misheard-verb cases that made llama emit malformed
+# tool calls). It shares a rate-limit pool with groq/compound, so every chat
+# call goes through chat_create(), which falls back to llama automatically.
+CHAT_MODEL          = "openai/gpt-oss-120b"
+CHAT_FALLBACK_MODEL = "llama-3.3-70b-versatile"
+FAST_MODEL          = "llama-3.1-8b-instant"
+WEB_MODEL           = "groq/compound-mini"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+
+def chat_create(**kwargs):
+    """chat.completions.create on the primary chat model, with automatic
+    fallback to CHAT_FALLBACK_MODEL when the primary is rate-limited or
+    erroring (they share limits with the web-answer model). gpt-oss is a
+    reasoning model — reasoning_effort='low' keeps voice latency snappy and
+    is only sent to models that accept it."""
+    last_exc = None
+    for model in (CHAT_MODEL, CHAT_FALLBACK_MODEL):
+        params = dict(kwargs)
+        params["model"] = model
+        if model.startswith("openai/gpt-oss"):
+            params["reasoning_effort"] = "low"
+        try:
+            return groq_client.chat.completions.create(**params)
+        except Exception as e:
+            last_exc = e
+            msg = str(e)
+            retryable = any(k in msg for k in
+                            ("429", "rate_limit", "over capacity", "503",
+                             "500", "413", "request_too_large",
+                             # model retired/renamed — keep Ted alive on llama
+                             "404", "model_not_found", "decommissioned"))
+            if model != CHAT_FALLBACK_MODEL and retryable:
+                print(f"[llm] {model} unavailable ({msg[:80]}) — "
+                      f"falling back to {CHAT_FALLBACK_MODEL}")
+                continue
+            raise
+    raise last_exc
 
 MAX_HISTORY = 20        # messages sent to LLM per turn
 MAX_CONV_MESSAGES = 40  # hard cap on stored conversation length (keeps system msg at [0])
@@ -266,8 +302,7 @@ def web_answer(question):
         return "I couldn't find anything solid on that right now."
     today = date.today().strftime("%A, %B %d, %Y")
     try:
-        r = groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        r = chat_create(
             messages=[{"role": "user", "content":
                        f"Today is {today}. Using ONLY these web search snippets, answer "
                        f"the question for a voice assistant in one or two short spoken "
@@ -428,11 +463,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 + recent + [{"role": "user", "content": user_input}])
 
     def _do_groq_call():
-        """Inner helper so the retry logic below can call the same request."""
-        return groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        """Inner helper so the retry logic below can call the same request.
+        chat_create handles the gpt-oss → llama fallback internally."""
+        return chat_create(
             messages=messages,
-            max_tokens=200,
+            max_tokens=250,
             stream=True,
             timeout=12.0,
         )
@@ -504,8 +539,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 def generate_message_text(instruction, contact):
     """Use a quick Groq call to turn a spoken instruction into an actual message text."""
     try:
-        resp = groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        resp = chat_create(
             messages=[
                 {"role": "system", "content":
                  "Convert the following spoken instruction into a short, natural, casual "
@@ -531,8 +565,7 @@ def generate_message_with_style(instruction, contact_name, style):
         "Reply with ONLY the message text — no quotes, no preamble, no sign-off."
     )
     try:
-        resp = groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        resp = chat_create(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=120,
             temperature=0.75,
@@ -551,8 +584,7 @@ def generate_email_body(instruction, to_address, subject, style):
         "Reply with ONLY the email body text — no subject line, no 'Dear X', just the body and a short sign-off."
     )
     try:
-        resp = groq_client.chat.completions.create(
-            model=CHAT_MODEL,
+        resp = chat_create(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             temperature=0.6,

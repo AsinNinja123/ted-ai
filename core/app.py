@@ -1201,8 +1201,7 @@ class TedApi:
         while round_num < MAX_ROUNDS:
             round_num += 1
             try:
-                resp = llm.groq_client.chat.completions.create(
-                    model=llm.CHAT_MODEL,
+                resp = llm.chat_create(
                     messages=messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",

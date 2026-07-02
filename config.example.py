@@ -36,7 +36,7 @@ FALLBACK_VOICE_BARGEIN = True
 
 # ── "Ask Claude" second brain (optional) ─────────────────────────────────────
 ANTHROPIC_API_KEY = ""              # enables "ask Claude…" relay for hard questions
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-sonnet-5"
 
 # ── Personal settings ────────────────────────────────────────────────────────
 OWNER_NAME = "Charlie"     # used in greetings: "Good morning, [name]"
