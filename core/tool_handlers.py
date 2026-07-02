@@ -13,9 +13,9 @@ from core import features
 from core.actions import APPS, WEB_APPS, open_app, spotify_command
 
 try:
-    from config import STORE_LOCATION
+    from config import WEATHER_LOCATION
 except Exception:
-    STORE_LOCATION = ""   # auto-detected via IP if blank
+    WEATHER_LOCATION = ""   # auto-detected via IP if blank
 
 
 # Tools that CHANGE something (side effects). Their handler return value is the
@@ -216,7 +216,7 @@ def tool_list_get(list_name):
 
 
 def tool_get_weather():
-    w = features.assistant.get_weather(STORE_LOCATION)
+    w = features.assistant.get_weather(WEATHER_LOCATION)
     if not w:
         return "Couldn't get the weather right now."
     # Open-Meteo returns a multi-part string ("clear skies, 72 degrees. high of 80, low of 65.")

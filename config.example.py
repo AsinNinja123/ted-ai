@@ -40,8 +40,7 @@ CLAUDE_MODEL = "claude-sonnet-5"
 
 # ── Personal settings ────────────────────────────────────────────────────────
 OWNER_NAME = "Charlie"     # used in greetings: "Good morning, [name]"
-STORE_LOCATION = ""        # e.g. "Boise, ID" — for weather; auto-detected via IP if blank
-SALES_TAX = 0.0            # e.g. 0.06 for 6% — cash & change calculator; 0 disables tax
+WEATHER_LOCATION = ""      # e.g. "Boise, ID" — for weather; auto-detected via IP if blank
 
 # ── Daily briefing (optional) ────────────────────────────────────────────────
 DAILY_BRIEFING_TIME = ""   # e.g. "7:30am" — Ted speaks the morning rundown daily

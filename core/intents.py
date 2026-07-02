@@ -14,11 +14,6 @@ import difflib
 
 from core import features
 
-try:
-    from config import SALES_TAX
-except Exception:
-    SALES_TAX = 0.0
-
 # ---------- spoken control commands ----------
 # Whisper almost never returns a clean one-word "stop" — it tacks on your name,
 # filler ("okay…", "please…"), or a trailing word. So every command is matched
@@ -222,12 +217,11 @@ def _parse_calc(text):
         qty = _calc_num(m.group(1))
         if qty is None:
             return None
-        price = float(m.group(2).replace(",", ""))
-        subtotal = qty * price
-        if "tax" in t and SALES_TAX > 0:
-            return (f"{int(qty) if qty == int(qty) else qty} at {_money(price)} is "
-                    f"{_money(subtotal)}, or {_money(subtotal * (1 + SALES_TAX))} with tax.")
-        return f"That comes to {_money(subtotal)}."
+        try:
+            price = float(m.group(2).replace(",", ""))
+        except ValueError:
+            return None
+        return f"That comes to {_money(qty * price)}."
 
     m = re.search(r"([\d.]+)\s*percent of\s+([\d.,]+)", t)
     if m:
@@ -374,12 +368,6 @@ def _is_timer_request(text):
     if nt.startswith("timer"):
         return True
     return False
-
-def _is_countdown_request(text):
-    t = text.lower()
-    if not any(p in t for p in ("days until", "how long until", "how many days", "countdown")):
-        return False
-    return any(k in t for k in ("fourth", "4th", "july", "new year", "fireworks", "season", "holiday"))
 
 # ---------- chat-panel voice commands ----------
 _CHAT_NOUNS = ("chat", "log", "transcript", "history", "chat log", "conversation log")
@@ -786,44 +774,6 @@ def _extract_pattern_topic(text):
     words = [re.sub(r"[^\w]", "", w).lower() for w in text.split()]
     kws = [w for w in words if len(w) > 3 and w not in _PAT_STOP]
     return " ".join(kws[:2]) if kws else None
-
-# ---------- store sales tally ----------
-def _parse_sale(text):
-    """Return (qty, product_name) or None. Handles 'I sold 3 Excaliburs',
-    'just sold a dozen roman candles', 'log a sale of two artillery shells'."""
-    m = (re.search(r"\b(?:i |we )?(?:just )?sold (\w+) (.+)", text, re.I)
-         or re.search(r"\blog (?:a )?sale of (\w+) (.+)", text, re.I))
-    if not m:
-        return None
-    qty = _word_to_int(m.group(1))
-    name = m.group(2).strip().rstrip(".!?")
-    if name.lower().startswith("dozen "):          # "a dozen Roman candles"
-        qty = (qty or 1) * 12
-        name = name[6:].strip()
-    if qty is None or qty <= 0 or not name:
-        return None
-    return qty, name
-
-
-_SALES_QUERY_RE = re.compile(
-    r"\b(?:how (?:are|were) sales|sales (?:so far|today|update|summary)"
-    r"|today'?s sales|what did we sell|close out the day|end of day"
-    r"|how much (?:did we|have we) sold?)\b",
-    re.I,
-)
-
-def _is_sales_query(text):
-    return bool(_SALES_QUERY_RE.search(text))
-
-
-_SALES_UNDO_RE = re.compile(
-    r"\b(?:undo|scratch|remove|delete) (?:that|the) (?:last )?sale\b|\bundo (?:the )?last sale\b",
-    re.I,
-)
-
-def _is_sales_undo(text):
-    return bool(_SALES_UNDO_RE.search(text))
-
 
 # ---------- correction of the last action ----------
 # "actually make it 20 minutes", "no, change it to 5pm", "i meant friday".

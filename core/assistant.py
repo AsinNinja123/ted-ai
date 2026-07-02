@@ -1,6 +1,6 @@
 """
 core/assistant.py — Ted's personal-assistant memory: reminders, timers, lists,
-and a couple of pure helpers (duration parsing, fireworks-season countdown).
+and pure helpers like duration parsing.
 
 Design notes
 ------------
@@ -14,7 +14,7 @@ import os
 import re
 import json
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 HOME = os.path.expanduser("~/ted-ai")
 STORE = os.path.join(HOME, "data", "assistant.json")
@@ -429,21 +429,3 @@ def _get_weather_wttr(location=""):
     except Exception:
         return ""
 
-
-# ---- Fireworks Countdown ----
-
-def next_firework_holiday(today=None):
-    """Nearest upcoming fireworks holiday (July 4 or New Year's Eve).
-    Returns (name, days_until)."""
-    today = today or date.today()
-    y = today.year
-    # Check both holidays in the current year and next year so we always find one.
-    options = [
-        ("the Fourth of July", date(y, 7, 4)),
-        ("New Year's Eve", date(y, 12, 31)),
-        ("the Fourth of July", date(y + 1, 7, 4)),
-        ("New Year's Eve", date(y + 1, 12, 31)),
-    ]
-    upcoming = sorted(((n, (d - today).days) for n, d in options if (d - today).days >= 0),
-                      key=lambda x: x[1])
-    return upcoming[0]  # closest future holiday

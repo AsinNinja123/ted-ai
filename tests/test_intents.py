@@ -89,7 +89,7 @@ check("'Hey Tad' (mishearing) wakes",
       intents._strip_wake_phrase("Hey Tad, set a timer") == ("set a timer", True))
 check("'Hated …' (Whisper glues hey+ted) wakes",
       intents._strip_wake_phrase("Hated what time is it") == ("what time is it", True))
-check("'So Ted, …' wakes", intents._strip_wake_phrase("So Ted, how are sales")[1])
+check("'So Ted, …' wakes", intents._strip_wake_phrase("So Ted, what's the weather")[1])
 check("'Okay, so Ted, …' wakes",
       intents._strip_wake_phrase("Okay, so Ted, pause the music") == ("pause the music", True))
 check("trailing ', Ted?' wakes",
@@ -123,28 +123,16 @@ check("ordinary sentence is not a correction",
 check("'make a note about x' is not a correction",
       intents._parse_correction("make a note about the delivery") is None)
 
-print("\n— Use case: store sales tally —")
-check("I sold 3 Excaliburs", intents._parse_sale("I sold 3 Excaliburs") == (3, "Excaliburs"))
-check("just sold a dozen roman candles",
-      intents._parse_sale("just sold a dozen roman candles") == (12, "roman candles"))
-check("log a sale of two artillery shells",
-      intents._parse_sale("log a sale of two artillery shells") == (2, "artillery shells"))
-check("'they sold out of everything' is NOT a sale",
-      intents._parse_sale("they sold out of everything") is None)
-check("sales query", intents._is_sales_query("how are sales today"))
-check("close out the day", intents._is_sales_query("let's close out the day"))
-check("undo last sale", intents._is_sales_undo("undo that last sale"))
-
 print("\n— Use case: live-web questions actually trigger a search —")
 check("world cup games today", intents._needs_web("what world cup games are on today"))
 check("who won the game", intents._needs_web("who won the cubs game"))
 check("when does the store open", intents._needs_web("when does menards open"))
-check("any news on fireworks", intents._needs_web("any news about fireworks laws"))
+check("any news triggers a search", intents._needs_web("any news about the trade deadline"))
 check("plain chat does NOT search", not intents._needs_web("tell me a joke"))
 check("personal statement does NOT search", not intents._needs_web("i'm feeling pretty good"))
-check("look up parse", intents._parse_lookup("look up the weight of a 500 gram cake")
-      == "the weight of a 500 gram cake")
-check("google parse", intents._parse_lookup("google iowa fireworks laws") == "iowa fireworks laws")
+check("look up parse", intents._parse_lookup("look up the height of mount everest")
+      == "the height of mount everest")
+check("google parse", intents._parse_lookup("google iowa road conditions") == "iowa road conditions")
 check("'search' mid-sentence not a lookup",
       intents._parse_lookup("I want to search my memory") is None)
 

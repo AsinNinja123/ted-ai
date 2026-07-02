@@ -169,7 +169,6 @@ def adjust_speed(delta):
 # kokoro pronounces the respelling, e.g. "Sortly" -> "Sort-lee".
 PRONUNCIATION = {
     # "Sortly":   "Sort-lee",
-    # "Excalibur": "Ex-cal-ih-burr",
 }
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]"

@@ -165,7 +165,7 @@ def extract_and_save_facts(user_input, ted_reply):
                     "Only extract clear, explicit facts — not guesses or implications. "
                     "Return ONLY a JSON array of objects with keys: subject, relationship, object. "
                     "Use short uppercase relationship names like WORKS_AT, LIKES, OWNS, STUDIES, LIVES_IN, PREFERS. "
-                    f"Example: [{{\"subject\": \"{OWNER_NAME}\", \"relationship\": \"WORKS_AT\", \"object\": \"firework store\"}}]. "
+                    f"Example: [{{\"subject\": \"{OWNER_NAME}\", \"relationship\": \"LIKES\", \"object\": \"jazz\"}}]. "
                     "If there are no clear facts about the user, return an empty array []. "
                     "Never include Ted's statements about himself. Never include questions as facts."
                 )},

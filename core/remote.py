@@ -11,7 +11,7 @@ Endpoints:
 Security: set REMOTE_TOKEN in config.py and every request must carry it —
 either an  X-Ted-Token  header or a  &token=  query parameter. With no token
 configured, anyone on your Wi-Fi can command Ted (fine at home, think twice
-on shared networks like the store's guest Wi-Fi).
+on shared networks).
 """
 
 import threading

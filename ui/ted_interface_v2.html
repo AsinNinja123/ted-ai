@@ -767,7 +767,7 @@ var tedHud = {
   hideChat:   function(){},
   toggleChat: function(){ var i=document.getElementById('input'); if(i)i.focus(); },
   micIdle:    function(){},
-  setMode:    function(){},                 // store/Tim mode removed — no-op
+  setMode:    function(){},                 // legacy mode switch — no-op
   setVoice:   function(name){},             // voice engine label — no slot
 
   addTimer: function(id,endMs,label){ timerMap[String(id)]={endMs:endMs,label:label,el:null}; updateTimers(); },

@@ -55,15 +55,6 @@ CREATE TABLE IF NOT EXISTS facts (
     created      TEXT NOT NULL,
     UNIQUE(subject, relationship, object)
 );
-CREATE TABLE IF NOT EXISTS goals (
-    id             INTEGER PRIMARY KEY,
-    name           TEXT NOT NULL UNIQUE,
-    description    TEXT DEFAULT '',
-    created        TEXT NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'active',
-    last_mentioned TEXT,
-    completed_at   TEXT
-);
 CREATE TABLE IF NOT EXISTS patterns (
     topic      TEXT NOT NULL,
     hour       INTEGER NOT NULL,
@@ -225,71 +216,6 @@ def close():
         except Exception:
             pass
         _conn = None
-
-
-# ---- Store-mode namespace (kept for API compatibility) ----
-
-def save_store_memory(user_input, store_reply):
-    save_memory(user_input, store_reply, who="store")
-
-
-def get_store_memory(query, limit=3):
-    return get_memory(query, limit=limit, who="store")
-
-
-# ---- Goal tracking ----
-
-def _norm_goal(name):
-    """Normalize a goal name for deduplication: lowercase, strip punctuation."""
-    import re as _re
-    return _re.sub(r"[^\w\s]", "", name.lower()).strip()
-
-
-def save_goal(name, description=""):
-    """Save or update a goal; deduplicates on fuzzy (substring) name overlap."""
-    name_norm = _norm_goal(name)
-    if not name_norm:
-        return
-    rows = _query("SELECT id, name FROM goals")
-    for gid, gname in rows:
-        gnorm = _norm_goal(gname)
-        if gnorm and (name_norm in gnorm or gnorm in name_norm):
-            # Already tracked — bump last_mentioned and re-activate
-            _exec("UPDATE goals SET last_mentioned = ?, status = 'active' WHERE id = ?",
-                  (_now(), gid))
-            return
-    _exec("INSERT OR IGNORE INTO goals (name, description, created, status, last_mentioned) "
-          "VALUES (?,?,?,'active',?)", (name, description, _now(), _now()))
-
-
-def get_goals(active_only=True):
-    """Return goal dicts: name, description, created (+status when active_only=False)."""
-    if active_only:
-        rows = _query("SELECT name, description, created, last_mentioned FROM goals "
-                      "WHERE status = 'active' ORDER BY created DESC")
-        return [{"name": n, "description": d, "created": c, "last_mentioned": lm}
-                for n, d, c, lm in rows]
-    rows = _query("SELECT name, description, created, status FROM goals "
-                  "ORDER BY created DESC")
-    return [{"name": n, "description": d, "created": c, "status": s}
-            for n, d, c, s in rows]
-
-
-def complete_goal(name):
-    """Mark a goal as completed (case-insensitive partial match). True if found."""
-    cur = _exec("UPDATE goals SET status = 'completed', completed_at = ? "
-                "WHERE status = 'active' AND lower(name) LIKE ?",
-                (_now(), f"%{name.lower()}%"))
-    return bool(cur and cur.rowcount)
-
-
-def goals_needing_checkin(days=3):
-    """Return active goals not mentioned in the last `days` days."""
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-    rows = _query("SELECT name, created FROM goals WHERE status = 'active' "
-                  "AND (last_mentioned IS NULL OR last_mentioned < ?) "
-                  "ORDER BY created ASC", (cutoff,))
-    return [{"name": n, "created": c} for n, c in rows]
 
 
 # ---- Pattern tracking (topic × hour-of-day counts) ----

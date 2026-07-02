@@ -27,15 +27,13 @@ from core.intents import (
     _chat_command, _reminders_command,
     _parse_open_apps, _parse_close_apps, _resolve_context_app,
     _parse_message_cmd, _parse_ask_claude, _parse_reminder, _parse_list_cmd,
-    _parse_calc, _parse_cancel_scheduled, _is_timer_request, _is_countdown_request,
+    _parse_calc, _parse_cancel_scheduled, _is_timer_request,
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
-    _parse_sale, _is_sales_query, _is_sales_undo,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
     _fix_command_words, _strip_wake_phrase, _needs_web,
 )
 from core.logs import error_log
-from core.memory import (save_goal, get_goals, complete_goal,
-                         goals_needing_checkin, log_pattern, get_frequent_patterns,
+from core.memory import (log_pattern, get_frequent_patterns,
                          save_session_summary, get_last_session_summary,
                          log_habit, get_habit_streak, get_all_habits)
 from core.paths import SHORTCUTS_PATH
@@ -47,9 +45,9 @@ try:
 except Exception:
     OWNER_NAME = "Charlie"
 try:
-    from config import STORE_LOCATION
+    from config import WEATHER_LOCATION
 except Exception:
-    STORE_LOCATION = ""
+    WEATHER_LOCATION = ""
 try:
     from config import DAILY_BRIEFING_TIME
 except Exception:
@@ -529,39 +527,6 @@ class TedApi:
             self.thinking_mode = False
             return "There you go."
 
-        # ── goal tracking ──
-        # "I'm working on X"
-        gm = re.search(r"\bi'?m working on\s+(.+)", text, re.I)
-        if not gm:
-            gm = re.search(r"\bmy goal is\s+(?:to\s+)?(.+)", text, re.I)
-        if gm:
-            gname = gm.group(1).strip().rstrip(".")
-            if 2 <= len(gname.split()) <= 12:
-                save_goal(gname)
-                return f"Tracking: {gname}."
-
-        # "I finished / I completed X" → only fires if it matches a saved goal
-        gdone = re.search(
-            r"\b(?:i finished|i completed|i'm done with|done with)\s+(.+?)\.?\s*$",
-            text, re.I,
-        )
-        if gdone:
-            gname = gdone.group(1).strip()
-            if complete_goal(gname):
-                return "Marked done."
-            # No matching goal → fall through to LLM
-
-        # "What am I working on?"
-        if re.search(
-            r"\bwhat am i working on\b|\bmy (?:active )?goals?\b|\bshow my goals\b",
-            text, re.I,
-        ):
-            goals = get_goals()
-            if not goals:
-                return "You don't have any active goals saved right now."
-            names = "; ".join(g["name"] for g in goals[:5])
-            return f"You're working on: {names}."
-
         # ── mood music ──
         mood = _detect_mood(text)
         if mood and features.HAS_SPOTIFY_WEB:
@@ -586,9 +551,6 @@ class TedApi:
             for key, action_def in SHORTCUTS.items():
                 k_norm = _normalize_cmd(key)
                 if k_norm and (k_norm == t_norm or t_norm.startswith(k_norm)):
-                    mode_req = action_def.get("mode")
-                    if mode_req and mode_req != "ted":
-                        continue
                     return self._execute_shortcut(action_def)
 
         # ── mic recalibration: fixes 'Ted seems deaf' after a noisy launch ──
@@ -627,29 +589,10 @@ class TedApi:
             return ("Voice profile deleted." if speaker.forget()
                     else "No voice profile saved.")
 
-        # ── store sales tally ──
-        sale = _parse_sale(text)
-        if sale:
-            from core import sales
-            return sales.log_sale(*sale)
-        if _is_sales_undo(text):
-            from core import sales
-            return sales.undo_last()
-        if _is_sales_query(text):
-            from core import sales
-            return sales.today_summary()
-
-        # ── cash & change calculator ──
+        # ── quick spoken math ──
         calc = _parse_calc(text)
         if calc:
             return calc
-
-        # ── fireworks-season countdown ──
-        if _is_countdown_request(text):
-            name, days = assistant.next_firework_holiday()
-            if days == 0:
-                return f"It's {name} today — the big one."
-            return f"{days} day" + ("s" if days != 1 else "") + f" until {name}."
 
         # ── cancel a running timer / reminders ──
         csch = _parse_cancel_scheduled(text)
@@ -1763,7 +1706,7 @@ class TedApi:
         """Morning rundown: date, weather, calendar, reminders, motivational closer."""
         parts = [f"It's {date.today().strftime('%A, %B %d')}."]
         try:
-            w = assistant.get_weather(STORE_LOCATION)
+            w = assistant.get_weather(WEATHER_LOCATION)
             if w:
                 parts.append(f"Right now it's {w}.")
         except Exception:
@@ -1811,15 +1754,13 @@ class TedApi:
 
     def reminder_watch(self, interval=4):
         """Background thread: poll for due reminders/timers every `interval` seconds
-        and speak them aloud when Ted is free. Also pings the user about stale goals
-        once per day.
+        and speak them aloud when Ted is free.
 
         Uses a spin-wait (up to 30 s) before each spoken reminder so Ted never
         interrupts a response mid-sentence — reminders wait for the lock to free.
         """
         if not features.HAS_ASSISTANT:
             return
-        _goal_checkin_at = time.time() + 3600   # first potential check-in after 1 h
         while True:
             if self.muted:           # stay quiet; reminders wait until unmuted
                 time.sleep(interval)
@@ -1861,28 +1802,6 @@ class TedApi:
                     except RuntimeError:
                         pass
 
-            # ── goal check-in: nudge on stale goals once per day ──────────
-            if (not self.muted and time.time() >= _goal_checkin_at):
-                try:
-                    stale = goals_needing_checkin(days=3)
-                    if stale:
-                        goal = random.choice(stale)
-                        msg = f"Hey, how's it going with {goal['name']}?"
-                        if self._busy.acquire(blocking=False):
-                            try:
-                                add_message(self.window, "ted", msg)
-                                speak(self.window, msg, self)
-                                self._touch_attention()   # Ted asked — listen for the answer
-                            except Exception as e:
-                                print(f"Goal check-in error: {e}")
-                            finally:
-                                try:
-                                    self._busy.release()
-                                except RuntimeError:
-                                    pass
-                except Exception as e:
-                    print(f"[goals] check-in skipped: {e}")
-                _goal_checkin_at = time.time() + 86400   # next check in 24 h
             time.sleep(interval)
 
     def _track_frustration(self, text):

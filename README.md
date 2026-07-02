@@ -3,7 +3,7 @@
 A local, always-listening voice assistant for macOS — Jarvis-style. Ted streams
 answers in a chosen voice, lets you talk over him (barge-in), and handles a wide
 range of spoken commands: timers, reminders, lists, calendar, notes, email,
-Spotify, habits, goals, screen vision, and general questions.
+Spotify, habits, screen vision, and general questions.
 
 ## Setup
 
@@ -56,7 +56,7 @@ The first launch after building asks for **microphone permission** — allow it.
 
 - **In-session:** recent turns are sent to the model each reply.
 - **Long-term:** stored in a local SQLite file (`data/memory.db`) — exchanges,
-  facts, goals, habits, patterns, session summaries. No server to run; it just
+  facts, habits, patterns, session summaries. No server to run; it just
   always works. (Replaced the old Neo4j backend, which required Neo4j Desktop
   to be running and usually wasn't.)
 - **Knowledge base:** drop PDFs/text into `inbox/` and say "index my documents" to
@@ -80,15 +80,12 @@ The first launch after building asks for **microphone permission** — allow it.
 4. Add **Get Dictionary Value** for key `reply`, then **Show Result** (or **Speak Text**).
 
 Now "Hey Siri, Ask Ted" works anywhere on your home Wi-Fi — timers, reminders,
-Spotify, sales tallies, anything you'd say out loud.
+Spotify, anything you'd say out loud.
 
-## Store mode helpers
+## Everyday helpers
 
-- **Sales tally:** "I sold three Excaliburs" / "just sold a dozen roman candles"
-  logs to `data/sales_log.json`. "How are sales today" / "close out the day"
-  gives the running summary; "undo that last sale" scratches a mistake.
-- **Cash math:** "total on 3 at 45", "change from a hundred for 67.50"
-  (set `SALES_TAX` in config for with-tax totals).
+- **Quick math:** "total on 3 at 45", "change from a hundred for 67.50",
+  "8 percent of 250".
 - **Daily briefing:** set `DAILY_BRIEFING_TIME = "7:30am"` in config and Ted
   gives the weather/calendar/reminders rundown every morning unprompted.
 
@@ -114,7 +111,7 @@ ted-ai/
 │   ├── audio.py           # audio engine: capture, playback, barge-in (+ fallback)
 │   ├── actions.py         # app/website launchers, Spotify transport, contacts/iMessage
 │   ├── assistant.py       # reminders, timers, lists, duration/time parsing, weather, location
-│   ├── memory.py          # Neo4j long-term memory, facts, goals, habits, patterns (graceful)
+│   ├── memory.py          # SQLite long-term memory: exchanges, facts, habits, patterns
 │   ├── knowledge.py       # ChromaDB knowledge base + inbox/PDF indexing
 │   ├── calendar_app.py    # read/write Calendar.app via AppleScript
 │   ├── notes.py           # read/write Apple Notes via AppleScript

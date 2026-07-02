@@ -24,24 +24,16 @@ def check(desc, cond):
 
 print("\n— exchanges + recall —")
 check("driver opens", memory._get_driver() is not None)
-memory.save_memory("what fireworks sell best", "Artillery shells and the big cakes.")
-memory.save_memory("remind me to restock sparklers", "Reminder set.")
-got = memory.get_memory("fireworks")
-check("keyword recall finds the fireworks exchange", "Artillery shells" in got)
+memory.save_memory("what's a good road trip snack", "Beef jerky and trail mix.")
+memory.save_memory("remind me to water the plants", "Reminder set.")
+got = memory.get_memory("road trip")
+check("keyword recall finds the road-trip exchange", "Beef jerky" in got)
 check("recency fallback when no keyword hits", memory.get_memory("zzzunmatched") != "")
 
 print("\n— facts —")
-memory.save_fact("Charlie", "OWNS", "a fireworks store")
-memory.save_fact("Charlie", "OWNS", "a fireworks store")   # duplicate is a no-op
-check("fact recall", "OWNS a fireworks store" in memory.get_facts_about("Charlie"))
-
-print("\n— goals —")
-memory.save_goal("learn python")
-memory.save_goal("Learn Python!")     # fuzzy duplicate — must not create a second goal
-check("fuzzy dedup keeps one goal", len(memory.get_goals()) == 1)
-check("complete_goal matches partial name", memory.complete_goal("python"))
-check("completed goal leaves active list", memory.get_goals() == [])
-check("completing again returns False", not memory.complete_goal("python"))
+memory.save_fact("Charlie", "LIKES", "jazz")
+memory.save_fact("Charlie", "LIKES", "jazz")   # duplicate is a no-op
+check("fact recall", "LIKES jazz" in memory.get_facts_about("Charlie"))
 
 print("\n— habits —")
 check("first log today is new", memory.log_habit("workout"))
@@ -56,14 +48,9 @@ for _ in range(3):
     memory.log_pattern("weather", 8)
 pats = memory.get_frequent_patterns(min_count=3)
 check("pattern reaches threshold", pats and pats[0]["topic"] == "weather" and pats[0]["count"] == 3)
-memory.save_session_summary("Talked about fireworks inventory.")
+memory.save_session_summary("Talked about weekend plans.")
 check("fresh summary hidden until gap passes", memory.get_last_session_summary(4.0) == "")
-check("summary visible with zero gap", "fireworks" in memory.get_last_session_summary(0.0))
-
-print("\n— store namespace stays separate —")
-memory.save_store_memory("stock question", "store answer")
-check("store recall", "store answer" in memory.get_store_memory("stock"))
-check("ted recall unpolluted", "store answer" not in memory.get_memory("stock question"))
+check("summary visible with zero gap", "weekend" in memory.get_last_session_summary(0.0))
 
 memory.close()
 print(f"\n{'='*50}\n{PASS} passed, {FAIL} failed")
