@@ -40,3 +40,7 @@ pypdf
 
 # Remote HTTP endpoint (iOS Shortcuts / curl access)
 flask
+
+# OPTIONAL — voice recognition for VOICE_LOCK ("Ted, learn my voice").
+# Big install (pulls in torch); uncomment if you want it:
+# resemblyzer

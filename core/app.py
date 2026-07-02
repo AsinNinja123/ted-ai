@@ -581,6 +581,30 @@ class TedApi:
                         continue
                     return self._execute_shortcut(action_def)
 
+        # ── voice enrollment / voice lock ──
+        if re.search(r"\b(?:learn|enroll|remember) my voice\b", text, re.I):
+            from core import speaker
+            if not speaker.available():
+                return ("Voice recognition needs one extra package — run "
+                        "pip install resemblyzer in my venv, restart me, then ask again.")
+            speak(self.window, "After the chime, talk to me for about ten seconds — "
+                               "anything you like.", self)
+            voice.play_chime(self.window, self)
+            audio = engine.capture_turn(prearmed=True)
+            if audio is None or len(audio) < 16000 * 3:
+                return "I didn't get enough audio — give it another go."
+            if not speaker.enroll(audio):
+                return "Something went wrong saving the voice profile."
+            n = speaker.profile_count()
+            hint = ("Voice lock is on — I only answer to you now." if voice.VOICE_LOCK
+                    else "Set VOICE_LOCK = True in config.py and I'll only answer to you.")
+            return f"Got it — voice profile saved, {n} sample{'s' if n != 1 else ''}. {hint}"
+
+        if re.search(r"\bforget my voice\b", text, re.I):
+            from core import speaker
+            return ("Voice profile deleted." if speaker.forget()
+                    else "No voice profile saved.")
+
         # ── store sales tally ──
         sale = _parse_sale(text)
         if sale:

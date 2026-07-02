@@ -43,6 +43,14 @@ try:
     from config import OWNER_NAME
 except Exception:
     OWNER_NAME = "Charlie"
+try:
+    from config import VOICE_LOCK
+except Exception:
+    VOICE_LOCK = False
+try:
+    from config import VOICE_LOCK_THRESHOLD
+except Exception:
+    VOICE_LOCK_THRESHOLD = 0.68
 
 try:
     from elevenlabs.client import ElevenLabs as _ElevenLabsClient
@@ -432,6 +440,14 @@ def capture(prearmed=False):
     _last_capture_rms = rms   # stored for whisper-mode volume scaling
     if dur < MIN_CAPTURE_SEC or rms < MIN_CAPTURE_RMS:
         return None
+
+    # Gate 1.5: voice lock — when enabled and a profile is enrolled, only the
+    # owner's voice gets through (None = can't verify → let it through).
+    if VOICE_LOCK:
+        from core import speaker
+        if speaker.verify(audio, threshold=VOICE_LOCK_THRESHOLD) is False:
+            print(f"   (ignored — voice lock: not {OWNER_NAME})")
+            return None
 
     sf.write(INPUT_FILE, audio, SAMPLE_RATE)
 

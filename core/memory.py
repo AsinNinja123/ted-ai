@@ -17,7 +17,6 @@ matches, so there's always some grounding context.
 import os
 import sqlite3
 import threading
-import time
 from datetime import date as _date_cls, datetime, timedelta
 
 from core.paths import DATA
