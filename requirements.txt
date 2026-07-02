@@ -26,8 +26,7 @@ soundfile==0.14.0
 # Desktop window
 pywebview
 
-# Long-term memory (graph DB driver)
-neo4j==6.2.0
+# Long-term memory: SQLite (stdlib) — no dependency needed
 
 # Numerics
 numpy==2.4.6

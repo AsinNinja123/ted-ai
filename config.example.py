@@ -21,11 +21,6 @@ ELEVEN_LABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"
 # / headphones to interrupt instead). Has no effect when the AEC engine is active.
 FALLBACK_VOICE_BARGEIN = True
 
-# ── Neo4j long-term memory (optional — Ted runs fine without it) ──────────────
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USERNAME = "neo4j"
-NEO4J_PASSWORD = ""        # set to your Neo4j Desktop database password
-
 # ── "Ask Claude" second brain (optional) ─────────────────────────────────────
 ANTHROPIC_API_KEY = ""              # enables "ask Claude…" relay for hard questions
 CLAUDE_MODEL = "claude-sonnet-4-6"

@@ -49,9 +49,10 @@ The first launch after building asks for **microphone permission** — allow it.
 ## Memory
 
 - **In-session:** recent turns are sent to the model each reply.
-- **Long-term:** stored in Neo4j (`bolt://localhost:7687`). If Neo4j isn't running,
-  Ted **doesn't crash** — it falls back to in-session memory. Start your Neo4j
-  Desktop database before launching to enable it.
+- **Long-term:** stored in a local SQLite file (`data/memory.db`) — exchanges,
+  facts, goals, habits, patterns, session summaries. No server to run; it just
+  always works. (Replaced the old Neo4j backend, which required Neo4j Desktop
+  to be running and usually wasn't.)
 - **Knowledge base:** drop PDFs/text into `inbox/` and say "index my documents" to
   make them searchable (ChromaDB + local embeddings).
 
@@ -70,7 +71,6 @@ ted-ai/
 ├── config.example.py      # copy to config.py and fill in keys
 ├── authorize_spotify.py   # one-time Spotify OAuth
 ├── setup_email.py         # one-time Outlook IMAP setup
-├── check_neo4j.py         # Neo4j memory diagnostic
 ├── shortcuts.json         # custom voice shortcuts
 ├── core/
 │   ├── app.py             # TedApi — conversation loop, command routing, threads

@@ -2051,7 +2051,7 @@ class TedApi:
                     mem_ok = False
                 spot_ok = ("Spotify" in apps) or music.spotify_web_ready()
                 js(self.window,
-                   "tedHud.setHealth({groq:%s,neo4j:%s,spotify:%s})" % (
+                   "tedHud.setHealth({groq:%s,memory:%s,spotify:%s})" % (
                        "true" if llm.groq_ok() else "false",
                        "true" if mem_ok else "false",
                        "true" if spot_ok else "false",
