@@ -1,0 +1,43 @@
+# Ted AI — core dependencies (for the hud.py runtime)
+#
+# NOTE: the authoritative, reproducible list is whatever your working venv has.
+# Regenerate any time with:   pip freeze > requirements.txt
+# The pins below are a known-good baseline.
+
+# LLM
+groq==1.4.0
+
+# Web search — ddgs is the current package; hud.py imports it first and falls
+# back to the older duckduckgo_search name only if ddgs isn't installed.
+ddgs
+
+# Spotify Web API (playlists + song search; optional)
+spotipy==2.24.0
+
+# Speech: transcription + TTS
+openai-whisper==20250625   # local STT fallback (used when USE_GROQ_STT=False)
+kokoro-onnx                # local TTS — Ted's default voice engine
+elevenlabs                 # optional cloud TTS (used when USE_ELEVENLABS=True)
+
+# Audio I/O (fallback path when the native engine isn't built)
+sounddevice==0.5.5
+soundfile==0.14.0
+
+# Desktop window
+pywebview
+
+# Long-term memory (graph DB driver)
+neo4j==6.2.0
+
+# Numerics
+numpy==2.4.6
+
+# RAG knowledge base
+chromadb
+fastembed
+
+# Document intake (PDF indexing for inbox/)
+pypdf
+
+# Remote HTTP endpoint (iOS Shortcuts / curl access)
+flask

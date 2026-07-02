@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ted</title>
+<style>
+/* ────────────────────────────────────────────────────────────────
+   Ted HUD v4 — particle sphere.
+   Sphere colour = system health:
+     green  · everything working
+     yellow · something's wrong (Groq down / an action failed)
+     red    · offline (Python stopped sending heartbeats, or crashed)
+   Sphere motion = activity (idle / listening / thinking / speaking).
+   ──────────────────────────────────────────────────────────────── */
+:root{
+  --bg:#0A0E14; --panel:#101722; --panel2:#151E2C;
+  --text:#D7E0EC; --dim:#5C6B80; --line:#1D2838;
+  --ok:#39D98A; --warn:#F2B33D; --down:#E5484D;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-user-select:none;user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
+  font-family:-apple-system,"SF Pro Display","Helvetica Neue",sans-serif;color:var(--text)}
+#stage{position:absolute;inset:0}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+
+/* vignette */
+#vig{position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse at 50% 42%, transparent 30%, rgba(4,7,12,.55) 100%)}
+
+/* header */
+#hdr{position:absolute;top:18px;left:22px;z-index:5}
+#hdr .t{font-size:13px;font-weight:700;letter-spacing:.35em;color:var(--text)}
+#hdr .v{font-size:10px;letter-spacing:.18em;color:var(--dim);margin-top:3px}
+
+/* status under sphere */
+#status-wrap{position:absolute;left:0;right:0;text-align:center;z-index:4;pointer-events:none}
+#status{font-size:11px;letter-spacing:.42em;color:var(--dim);text-transform:uppercase;transition:color .4s}
+#status.live{color:var(--text)}
+#substatus{font-size:10px;letter-spacing:.14em;color:var(--dim);opacity:.65;margin-top:6px;min-height:12px}
+
+/* issue toast */
+#issue{position:absolute;top:16px;left:50%;transform:translate(-50%,-70px);z-index:20;
+  max-width:520px;background:var(--panel2);border:1px solid rgba(242,179,61,.45);
+  border-radius:10px;padding:10px 34px 10px 14px;font-size:12.5px;line-height:1.45;color:#F5D9A0;
+  box-shadow:0 8px 30px rgba(0,0,0,.5);transition:transform .35s cubic-bezier(.2,.9,.25,1),opacity .35s;opacity:0}
+#issue.show{transform:translate(-50%,0);opacity:1}
+#issue .x{position:absolute;top:8px;right:11px;cursor:pointer;color:var(--dim);font-size:14px;pointer-events:auto}
+
+/* timers */
+#timers{position:absolute;top:18px;right:22px;z-index:6;display:flex;gap:8px;flex-direction:column;align-items:flex-end}
+.timer-chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;
+  padding:6px 13px;font-size:12px;color:var(--text);display:flex;gap:8px;align-items:center}
+.timer-chip .lbl{color:var(--dim);font-size:11px;letter-spacing:.06em}
+.timer-chip .cd{font-variant-numeric:tabular-nums;font-weight:600}
+.timer-chip.alarm{border-color:var(--warn);color:var(--warn)}
+
+/* reminders panel */
+#rempanel{position:absolute;top:60px;right:22px;width:280px;z-index:15;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:14px;display:none;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+#rempanel.open{display:block}
+#rempanel h3{font-size:10px;letter-spacing:.28em;color:var(--dim);margin-bottom:10px;font-weight:600}
+.rem-item{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.rem-item:last-child{border-bottom:none}
+.rem-when{color:var(--dim);font-size:11.5px;margin-left:10px;white-space:nowrap}
+.rem-empty{color:var(--dim);font-size:12px;padding:6px 0}
+#rempanel .x{position:absolute;top:10px;right:12px;cursor:pointer;color:var(--dim)}
+
+/* health dots */
+#health{position:absolute;left:22px;bottom:20px;z-index:6;display:flex;gap:16px}
+.hd{display:flex;align-items:center;gap:6px;font-size:9.5px;letter-spacing:.16em;color:var(--dim)}
+.hd i{width:7px;height:7px;border-radius:50%;background:#2A3648;display:inline-block;transition:background .4s,box-shadow .4s}
+.hd i.up{background:var(--ok);box-shadow:0 0 6px rgba(57,217,138,.7)}
+.hd i.down{background:var(--down);box-shadow:0 0 6px rgba(229,72,77,.7)}
+#voice-eng{position:absolute;left:22px;bottom:42px;font-size:9.5px;letter-spacing:.14em;color:var(--dim);opacity:.7;z-index:6}
+
+/* open apps */
+#apps{position:absolute;right:22px;bottom:20px;z-index:6;display:flex;gap:6px;max-width:46vw;
+  flex-wrap:wrap;justify-content:flex-end;opacity:.85}
+.app-chip{font-size:9.5px;letter-spacing:.1em;color:var(--dim);border:1px solid var(--line);
+  border-radius:12px;padding:3px 9px;background:rgba(16,23,34,.6)}
+
+/* input bar */
+#bar{position:absolute;left:50%;bottom:56px;transform:translateX(-50%);z-index:10;
+  display:flex;gap:10px;align-items:center;width:min(560px,80vw)}
+#input{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:22px;
+  color:var(--text);font-size:13.5px;padding:11px 18px;outline:none;font-family:inherit;
+  -webkit-user-select:text;user-select:text;transition:border-color .25s}
+#input:focus{border-color:#2E4058}
+#input::placeholder{color:var(--dim)}
+.btn{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--panel);
+  color:var(--dim);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;
+  transition:all .25s;flex:none}
+.btn:hover{color:var(--text);border-color:#2E4058}
+.btn.live{color:var(--ok);border-color:rgba(57,217,138,.4)}
+.btn.off{color:var(--down);border-color:rgba(229,72,77,.4)}
+.btn.armed{color:var(--warn);border-color:rgba(242,179,61,.4)}
+
+/* chat panel */
+#chat{position:absolute;top:0;right:0;bottom:0;width:min(380px,86vw);z-index:12;
+  background:rgba(13,18,27,.96);border-left:1px solid var(--line);
+  transform:translateX(102%);transition:transform .38s cubic-bezier(.2,.9,.25,1);
+  display:flex;flex-direction:column;backdrop-filter:blur(8px)}
+#chat.open{transform:translateX(0)}
+#chat header{padding:16px 18px 10px;font-size:10px;letter-spacing:.3em;color:var(--dim);
+  display:flex;justify-content:space-between;align-items:center}
+#chat header span{cursor:pointer;font-size:14px;letter-spacing:0}
+#log{flex:1;overflow-y:auto;padding:6px 16px 16px;-webkit-user-select:text;user-select:text}
+#log::-webkit-scrollbar{width:4px}
+#log::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+.msg{margin:10px 0;font-size:13px;line-height:1.5;max-width:92%}
+.msg .who{font-size:9px;letter-spacing:.24em;color:var(--dim);margin-bottom:4px}
+.msg.user{margin-left:auto;text-align:right}
+.msg.user .body{background:var(--panel2);display:inline-block;padding:8px 13px;border-radius:14px 14px 4px 14px;text-align:left}
+.msg.ted .body{color:#B9C6D8}
+#chat-toggle{position:absolute;right:22px;bottom:56px;z-index:11}
+.empty{color:var(--dim);font-size:12px;text-align:center;margin-top:40px;line-height:1.7}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="vig"></div>
+
+<div id="hdr"><div class="t">T E D</div><div class="v" id="hdr-v">v4</div></div>
+
+<div id="status-wrap"><div id="status">STARTING</div><div id="substatus"></div></div>
+
+<div id="issue"><span id="issue-body"></span><span class="x" onclick="tedHud.clearIssue()">×</span></div>
+
+<div id="timers"></div>
+
+<div id="rempanel">
+  <span class="x" onclick="tedHud.hideReminders()">×</span>
+  <h3>SCHEDULED</h3><div id="remlist"></div>
+</div>
+
+<div id="voice-eng"></div>
+<div id="health">
+  <span class="hd"><i id="h-groq"></i>GROQ</span>
+  <span class="hd"><i id="h-neo4j"></i>MEMORY</span>
+  <span class="hd"><i id="h-spotify"></i>SPOTIFY</span>
+</div>
+<div id="apps"></div>
+
+<div id="bar">
+  <button class="btn live" id="mic" title="Mute / unmute Ted's ears">&#9679;</button>
+  <input id="input" placeholder="Type to Ted — or just talk" autocomplete="off">
+  <button class="btn" id="stop" title="Stop talking">&#9632;</button>
+</div>
+<button class="btn" id="chat-toggle" title="Chat log">&#9776;</button>
+
+<div id="chat">
+  <header>CHAT LOG <span onclick="tedHud.hideChat()">×</span></header>
+  <div id="log"><div class="empty" id="log-empty">Everything you and Ted say<br>shows up here.</div></div>
+</div>
+
+<script>
+"use strict";
+/* ── plumbing ─────────────────────────────────────────────── */
+function inApp(){ return !!(window.pywebview && window.pywebview.api); }
+
+var state='idle';               // idle|listening|thinking|speaking
+var isMuted=false, extAmp=0;
+var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
+
+/* health model:
+   ok   → green   (all good)
+   warn → yellow  (Groq down, an action failed, or Ted reported an error state)
+   down → red     (no heartbeat from Python — crashed/offline)                  */
+var lastBeat=0, bootTime=Date.now();
+var groqUp=true, errLatch=false, issueLatch=false;
+
+function healthState(){
+  if(!inApp()) return 'ok';                          // browser demo mode
+  var age=Date.now()-(lastBeat||bootTime);
+  if(age>15000) return 'down';                       // heartbeat lost
+  if(!groqUp||errLatch||issueLatch) return 'warn';
+  return 'ok';
+}
+
+/* ── particle sphere ──────────────────────────────────────── */
+var cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+var W=0,H=0,DPR=Math.min(2,window.devicePixelRatio||1);
+function resize(){ W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0);
+  var sw=document.getElementById('status-wrap');
+  sw.style.top=(H*0.42+Math.min(W,H)*0.26+26)+'px';
+}
+window.addEventListener('resize',resize); resize();
+
+var N=850, pts=[];
+(function(){ // fibonacci sphere
+  var ga=Math.PI*(3-Math.sqrt(5));
+  for(var i=0;i<N;i++){
+    var y=1-(i/(N-1))*2, r=Math.sqrt(1-y*y), th=ga*i;
+    pts.push({x:Math.cos(th)*r,y:y,z:Math.sin(th)*r,
+              tw:Math.random()*Math.PI*2,sz:.6+Math.random()*.9});
+  }
+})();
+
+var COLORS={ok:[57,217,138],warn:[242,179,61],down:[229,72,77],muted:[92,107,128]};
+var curCol=[57,217,138];
+function lerpCol(t){ for(var i=0;i<3;i++) curCol[i]+=(t[i]-curCol[i])*0.06; }
+
+var rotY=0,rotX=0.35,smAmp=0,breath=0;
+function draw(now){
+  ctx.clearRect(0,0,W,H);
+  var cx=W/2, cy=H*0.42, base=Math.min(W,H)*0.21;
+
+  var h=healthState();
+  var target=isMuted?COLORS.muted:COLORS[h];
+  lerpCol(target);
+
+  /* motion by state */
+  var spin=0.0016, jitter=0, pulse=0;
+  breath+=0.02;
+  if(state==='listening'){ spin=0.003;  pulse=Math.sin(breath*2)*0.03+0.03; }
+  if(state==='thinking'){  spin=0.011;  jitter=0.9; }
+  if(state==='speaking'){  spin=0.004; }
+  if(h==='down'){ spin=0.0006; }
+  smAmp+=(extAmp-smAmp)*0.25;
+  var R=base*(1+Math.sin(breath)*0.012+pulse+smAmp*0.16);
+
+  rotY+=spin; rotX=0.35+Math.sin(now/9000)*0.06;
+  var cY=Math.cos(rotY),sY=Math.sin(rotY),cX=Math.cos(rotX),sX=Math.sin(rotX);
+  var c=curCol.map(Math.round);
+
+  /* soft core glow */
+  var g=ctx.createRadialGradient(cx,cy,0,cx,cy,R*1.5);
+  g.addColorStop(0,'rgba('+c[0]+','+c[1]+','+c[2]+',0.10)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.fillRect(cx-R*1.6,cy-R*1.6,R*3.2,R*3.2);
+
+  for(var i=0;i<N;i++){
+    var p=pts[i];
+    var x=p.x*cY+p.z*sY, z=-p.x*sY+p.z*cY;
+    var y=p.y*cX-z*sX;   z=p.y*sX+z*cX;
+    var jr=jitter?Math.sin(now/90+p.tw)*jitter:0;
+    var rr=R+jr+(state==='speaking'?Math.sin(now/70+p.tw*3)*smAmp*R*0.10:0);
+    var persp=1/(1.6-z*0.55);
+    var sx=cx+x*rr*persp, sy2=cy+y*rr*persp;
+    var a=0.14+((z+1)/2)*0.62 + Math.sin(now/650+p.tw)*0.06;
+    if(isMuted)a*=0.45;
+    if(state==='listening'||state==='speaking')a*=1.18;
+    ctx.fillStyle='rgba('+c[0]+','+c[1]+','+c[2]+','+Math.max(0,Math.min(1,a)).toFixed(3)+')';
+    var s=p.sz*persp*(1+smAmp*0.5);
+    ctx.fillRect(sx-s/2,sy2-s/2,s,s);
+  }
+
+  /* listening ring */
+  if(state==='listening'&&!isMuted){
+    var rp=(now/1400)%1;
+    ctx.strokeStyle='rgba('+c[0]+','+c[1]+','+c[2]+','+(0.28*(1-rp)).toFixed(3)+')';
+    ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.arc(cx,cy,R*(1.05+rp*0.28),0,Math.PI*2); ctx.stroke();
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* offline watchdog — repaint status text when the heartbeat dies */
+setInterval(function(){
+  var h=healthState(), st=document.getElementById('status');
+  if(h==='down'){ st.textContent='OFFLINE'; st.classList.remove('live');
+    document.getElementById('substatus').textContent='no heartbeat from ted — restart hud.py'; }
+  else if(h==='warn' && state==='idle' && !isMuted){ st.textContent='DEGRADED'; }
+},2000);
+
+/* ── chat log ─────────────────────────────────────────────── */
+var log=document.getElementById('log'), curTed=null, lastStreamText=null;
+function _norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function clearEmpty(){ var e=document.getElementById('log-empty'); if(e)e.remove(); }
+function scrollLog(){ log.scrollTop=log.scrollHeight; }
+function newUserTurn(text){
+  clearEmpty(); curTed=null;
+  var m=document.createElement('div'); m.className='msg user';
+  m.innerHTML='<div class="who">YOU</div>';
+  var b=document.createElement('div'); b.className='body'; b.textContent=text;
+  m.appendChild(b); log.appendChild(m); scrollLog();
+}
+function beginTed(){
+  clearEmpty();
+  var m=document.createElement('div'); m.className='msg ted';
+  m.innerHTML='<div class="who">TED</div>';
+  var b=document.createElement('div'); b.className='body';
+  m.appendChild(b); log.appendChild(m); curTed=b; lastStreamText=''; scrollLog();
+}
+function appendTed(chunk){
+  if(!curTed) beginTed();
+  curTed.textContent+=(curTed.textContent?' ':'')+chunk.trim();
+  lastStreamText=curTed.textContent; scrollLog();
+}
+function endTed(){ curTed=null; }
+
+/* ── timers ───────────────────────────────────────────────── */
+var timerMap={};
+function updateTimers(){
+  var host=document.getElementById('timers');
+  Object.keys(timerMap).forEach(function(id){
+    var t=timerMap[id];
+    if(!t.el){
+      t.el=document.createElement('div'); t.el.className='timer-chip';
+      t.el.innerHTML='<span class="lbl">'+(t.label||'timer')+'</span><span class="cd"></span>';
+      host.appendChild(t.el);
+    }
+    var left=Math.max(0,t.endMs-Date.now());
+    var m=Math.floor(left/60000), s=Math.floor(left%60000/1000);
+    t.el.querySelector('.cd').textContent=m+':'+(s<10?'0':'')+s;
+    t.el.classList.toggle('alarm',left===0);
+  });
+}
+setInterval(updateTimers,500);
+
+/* ── tedHud: the full API Python calls ────────────────────── */
+var tedHud={
+  setState:function(s){
+    if(s==='error'){ errLatch=true; return; }
+    if(s==='offline'){ lastBeat=Date.now()-99999; return; }
+    if(!(s in STATE_TEXT)) return;
+    state=s;
+    if(s==='idle'&&groqUp) errLatch=false;      // good turn clears the latch
+    var st=document.getElementById('status');
+    if(!isMuted){ st.textContent=STATE_TEXT[s];
+      st.classList.toggle('live',s==='listening'||s==='speaking'); }
+    document.getElementById('stop').classList.toggle('armed',s==='speaking');
+  },
+
+  addMessage:function(role,text){
+    if(role==='user'){ newUserTurn(text); return; }
+    if(lastStreamText!==null && _norm(text)===_norm(lastStreamText)){ lastStreamText=null; return; }
+    beginTed(); appendTed(text); endTed();
+  },
+  beginTedReply:function(){ beginTed(); },
+  streamTedText:function(chunk){ appendTed(chunk); },
+  endTedReply:function(){ endTed(); },
+
+  pushAmplitude:function(v){ extAmp=Math.max(0,Math.min(1,v)); },
+  clearAmplitude:function(){ extAmp=0; },
+
+  setMuted:function(m){
+    isMuted=!!m;
+    var mic=document.getElementById('mic');
+    mic.classList.toggle('off',isMuted); mic.classList.toggle('live',!isMuted);
+    var st=document.getElementById('status');
+    st.textContent=isMuted?'MUTED':(STATE_TEXT[state]||'READY');
+    if(isMuted)st.classList.remove('live');
+    document.getElementById('substatus').textContent=
+      isMuted?'mic is fully off — click ● or type ‘unmute’':'';
+  },
+
+  showIssue:function(text){
+    issueLatch=true;
+    document.getElementById('issue-body').textContent=text||'Ted hit a problem.';
+    document.getElementById('issue').classList.add('show');
+    clearTimeout(tedHud._issueT);
+    tedHud._issueT=setTimeout(function(){ tedHud.clearIssue(); },14000);
+  },
+  clearIssue:function(){ issueLatch=false;
+    document.getElementById('issue').classList.remove('show'); },
+
+  setActionResult:function(ok,text){ if(!ok&&text) tedHud.showIssue(text); },
+
+  setHealth:function(h){
+    h=h||{}; lastBeat=Date.now();
+    if(h.groq!==undefined) groqUp=!!h.groq;
+    if(groqUp&&state==='idle') errLatch=false;
+    function set(id,v){ var e=document.getElementById(id);
+      e.classList.remove('up','down');
+      if(v===true)e.classList.add('up'); else if(v===false)e.classList.add('down'); }
+    set('h-groq',h.groq);
+    set('h-neo4j',h.neo4j!==undefined?h.neo4j:h.memory);
+    set('h-spotify',h.spotify);
+  },
+
+  setVoice:function(name){ document.getElementById('voice-eng').textContent=name||''; },
+
+  /* chat panel */
+  showChat:function(){ document.getElementById('chat').classList.add('open');
+    setTimeout(function(){document.getElementById('input').focus();},380); },
+  hideChat:function(){ document.getElementById('chat').classList.remove('open'); },
+  toggleChat:function(){ document.getElementById('chat').classList.toggle('open'); },
+  micIdle:function(){},
+  setMode:function(){}, setVoiceMode:function(){}, toggleMode:function(){},
+  setConversations:function(){}, setWeather:function(){},
+
+  /* timers */
+  addTimer:function(id,endMs,label){ timerMap[String(id)]={endMs:endMs,label:label,el:null}; updateTimers(); },
+  clearTimerById:function(id){ id=String(id);
+    if(timerMap[id]){ if(timerMap[id].el)timerMap[id].el.remove(); delete timerMap[id]; } },
+  clearTimer:function(){ Object.keys(timerMap).forEach(function(id){
+    if(timerMap[id].el)timerMap[id].el.remove(); }); timerMap={}; },
+  setTimer:function(endMs){ this.clearTimer(); this.addTimer('_',endMs,'timer'); },
+  flashAlarm:function(){ extAmp=1.0; setTimeout(function(){extAmp=0;},900); },
+  playBell:function(){
+    try{ var ac=new (window.AudioContext||window.webkitAudioContext)();
+      function ring(t){ var o=ac.createOscillator(),g=ac.createGain();
+        o.connect(g); g.connect(ac.destination); o.type='sine'; o.frequency.value=880;
+        g.gain.setValueAtTime(0.3,ac.currentTime+t);
+        g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+t+1.5);
+        o.start(ac.currentTime+t); o.stop(ac.currentTime+t+1.7); }
+      ring(0); ring(0.85);
+    }catch(e){}
+  },
+
+  /* reminders */
+  showReminders:function(items){
+    var list=document.getElementById('remlist'); list.innerHTML='';
+    if(!items||!items.length){
+      var e=document.createElement('div'); e.className='rem-empty';
+      e.textContent='Nothing scheduled.'; list.appendChild(e);
+    } else items.forEach(function(it){
+      var row=document.createElement('div'); row.className='rem-item';
+      var l=document.createElement('span'); l.textContent=it.label;
+      var w=document.createElement('span'); w.className='rem-when'; w.textContent=it.when;
+      row.appendChild(l); row.appendChild(w); list.appendChild(row);
+    });
+    document.getElementById('rempanel').classList.add('open');
+  },
+  hideReminders:function(){ document.getElementById('rempanel').classList.remove('open'); },
+  toggleReminders:function(){ document.getElementById('rempanel').classList.toggle('open'); },
+
+  setOpenApps:function(apps){
+    var host=document.getElementById('apps'); host.innerHTML='';
+    (apps||[]).slice(0,8).forEach(function(a){
+      var c=document.createElement('div'); c.className='app-chip'; c.textContent=a;
+      host.appendChild(c);
+    });
+  },
+};
+window.tedHud=tedHud;
+
+/* ── controls ─────────────────────────────────────────────── */
+document.getElementById('mic').onclick=function(){
+  if(inApp()) window.pywebview.api.toggle_mute().then(function(m){ tedHud.setMuted(m); });
+  else tedHud.setMuted(!isMuted);
+};
+document.getElementById('stop').onclick=function(){
+  if(inApp()) window.pywebview.api.stop(); else tedHud.setState('idle');
+};
+document.getElementById('chat-toggle').onclick=function(){ tedHud.toggleChat(); };
+
+var input=document.getElementById('input');
+input.addEventListener('keydown',function(e){
+  e.stopPropagation();
+  if(e.key==='Enter'){
+    var txt=input.value.trim(); if(!txt)return;
+    input.value='';
+    tedHud.showChat(); newUserTurn(txt);
+    if(inApp()) window.pywebview.api.ask(txt);
+  }
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') tedHud.toggleChat();
+});
+
+/* boot status */
+(function(){
+  var st=document.getElementById('status');
+  if(inApp()){ st.textContent='STARTING'; }
+  else{
+    st.textContent='DEMO';
+    document.getElementById('substatus').textContent='open through hud.py to bring ted online';
+  }
+  // pywebview injects the bridge slightly after load
+  window.addEventListener('pywebviewready',function(){
+    document.getElementById('status').textContent='READY';
+    document.getElementById('substatus').textContent='';
+  });
+})();
+</script>
+</body>
+</html>

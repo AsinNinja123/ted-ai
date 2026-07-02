@@ -1,0 +1,14 @@
+{
+  "_comment": "Voice shortcuts for Ted/Tim. Edit this file to add your own.",
+  "_format": "key = spoken phrase (case-insensitive), mode = 'ted'|'store' (omit for either), action = built-in action name",
+
+  "briefing":         {"mode": "ted",   "action": "morning_briefing"},
+  "morning briefing": {"mode": "ted",   "action": "morning_briefing"},
+
+  "store briefing":   {"mode": "store", "action": "daily_open_briefing"},
+  "open briefing":    {"mode": "store", "action": "daily_open_briefing"},
+  "situation":        {"mode": "store", "action": "daily_open_briefing"},
+
+  "think":            {"mode": "ted",   "action": "thinking_partner"},
+  "thinking partner": {"mode": "ted",   "action": "thinking_partner"}
+}

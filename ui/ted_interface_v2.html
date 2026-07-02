@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ted</title>
+<style>
+/* ============================================================
+   Ted — v2 HUD  (warm cream / gold, chat-first + voice mode)
+
+   TWO MODES, one window, one backend session:
+     • CHAT MODE  (default) — Claude-style transcript: Ted's replies
+       are full-width plain text, your messages are contained bubbles.
+       Saved-chat sidebar on the left.
+     • VOICE MODE — minimal: a particle sphere that breathes with
+       Ted's voice. Green = working, orange = problem, red = off.
+   Toggling modes is purely cosmetic on the JS side; the Python
+   session (history, memory) is never touched, so Ted picks up
+   exactly where you left off.
+
+   EVERY tedHud.* function the Python side already calls is preserved.
+   New functions added for v2 are marked  [v2]  and documented at the
+   bottom of this file so you know which need a one-line Python hook.
+
+   Colors live in :root below — change them freely.
+   ============================================================ */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  /* —— warm paper palette (edit these) —— */
+  --paper:      #F4EEE0;   /* base cream                */
+  --paper-2:    #EFE7D5;   /* slightly deeper cream     */
+  --paper-3:    #E7DCC4;   /* panels / sidebar          */
+  --ink:        #3B342A;   /* primary warm-dark text    */
+  --ink-2:      #6E6354;   /* secondary text            */
+  --ink-3:      #A1937E;   /* faint labels              */
+  --gold:       #B8923A;   /* primary gold accent       */
+  --gold-soft:  #C9A24B;   /* lighter gold              */
+  --gold-dim:   rgba(184,146,58,0.14);
+  --gold-line:  rgba(184,146,58,0.28);
+  --user-bg:    #E9DEC6;   /* your message bubble       */
+  --user-bd:    rgba(184,146,58,0.34);
+  --hair:       rgba(90,70,40,0.12);   /* hairline borders */
+
+  /* —— state colors (sphere + status) —— */
+  --st-work:    #4E9E6A;   /* green  — working/normal   */
+  --st-warn:    #D98A3A;   /* orange — hit a problem    */
+  --st-off:     #C2503C;   /* red    — off / can't reply*/
+
+  --mono: 'SF Mono','JetBrains Mono','Menlo','Consolas',monospace;
+  --sans: -apple-system,'SF Pro Text','Helvetica Neue',sans-serif;
+  --serif:'Iowan Old Style','Palatino','Georgia',serif;
+}
+
+html, body {
+  width:100%; height:100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  overflow: hidden;
+}
+
+/* soft botanical wash + warm vignette so it reads as paper, not a glowing slab */
+body::before {
+  content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(60% 50% at 14% 8%,  rgba(201,162,75,0.10), transparent 70%),
+    radial-gradient(55% 45% at 88% 14%, rgba(184,146,58,0.08), transparent 70%),
+    radial-gradient(80% 70% at 50% 112%,rgba(120,95,45,0.07), transparent 70%);
+}
+/* faint floral motif, very low opacity — calm, not busy */
+body::after {
+  content:''; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'><g fill='none' stroke='%23B8923A' stroke-width='1'><circle cx='90' cy='90' r='5'/><path d='M90 90c0-22 14-36 0-54-14 18 0 32 0 54zM90 90c0 22-14 36 0 54 14-18 0-32 0-54zM90 90c22 0 36-14 54 0-18 14-32 0-54 0zM90 90c-22 0-36 14-54 0 18-14 32 0 54 0zM90 90c16-16 16-16 38-20-4 22-4 22-38 20zM90 90c-16 16-16 16-38 20 4-22 4-22 38-20zM90 90c16 16 16 16 20 38-22-4-22-4-20-38zM90 90c-16-16-16-16-20-38 22 4 22 4 20 38z'/></g></svg>");
+  background-size: 240px 240px;
+}
+
+#root { position:relative; z-index:1; display:flex; height:100%; }
+
+/* ============================================================
+   SAVED-CHATS SIDEBAR  (chat mode only)
+   Shell UI — needs Python to populate via tedHud.setConversations().
+   ============================================================ */
+#sidebar {
+  width: 236px; flex-shrink:0;
+  background: var(--paper-3);
+  border-right: 1px solid var(--hair);
+  display:flex; flex-direction:column;
+  transition: width .28s cubic-bezier(.16,1,.3,1), opacity .25s;
+  overflow:hidden;
+}
+#sidebar.collapsed { width: 0; opacity:0; }
+.sb-top { display:flex; align-items:center; gap:8px; padding:14px 14px 10px; -webkit-app-region:drag; }
+.sb-title { font-family:var(--mono); font-size:9px; letter-spacing:.22em; text-transform:uppercase; color:var(--ink-3); flex:1; }
+.sb-new {
+  -webkit-app-region:no-drag;
+  display:flex; align-items:center; gap:7px; margin:2px 12px 10px;
+  padding:9px 12px; border:1px solid var(--gold-line); border-radius:11px;
+  background:var(--gold-dim); color:var(--ink); cursor:pointer;
+  font-size:12.5px; font-weight:600; transition:background .15s, border-color .15s;
+}
+.sb-new:hover { background:rgba(184,146,58,0.20); border-color:var(--gold); }
+#sb-list { flex:1; overflow-y:auto; padding:4px 8px 12px; display:flex; flex-direction:column; gap:3px; }
+#sb-list::-webkit-scrollbar { width:5px; }
+#sb-list::-webkit-scrollbar-thumb { background:var(--gold-line); border-radius:3px; }
+.sb-item {
+  padding:9px 11px; border-radius:9px; cursor:pointer;
+  display:flex; flex-direction:column; gap:2px;
+  transition:background .14s;
+}
+.sb-item:hover { background:rgba(184,146,58,0.10); }
+.sb-item.active { background:rgba(184,146,58,0.18); }
+.sb-item-t { font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sb-item-w { font-family:var(--mono); font-size:9.5px; color:var(--ink-3); }
+.sb-empty { padding:14px 12px; font-size:12px; color:var(--ink-3); line-height:1.6; }
+
+/* ============================================================
+   MAIN COLUMN
+   ============================================================ */
+#main { flex:1; display:flex; flex-direction:column; min-width:0; position:relative; }
+
+/* —— HEADER —— */
+.hdr {
+  display:flex; align-items:center; gap:14px;
+  padding:11px 16px;
+  border-bottom:1px solid var(--hair);
+  background:rgba(244,238,224,0.72);
+  backdrop-filter:blur(16px) saturate(140%);
+  -webkit-backdrop-filter:blur(16px) saturate(140%);
+  -webkit-app-region:drag; flex-shrink:0;
+}
+.hdr-btn-sm {
+  -webkit-app-region:no-drag; width:30px; height:30px; border-radius:9px;
+  border:1px solid var(--hair); background:transparent; color:var(--ink-2);
+  cursor:pointer; display:flex; align-items:center; justify-content:center;
+  transition:color .15s, border-color .15s, background .15s; flex-shrink:0;
+}
+.hdr-btn-sm:hover { color:var(--ink); border-color:var(--gold-line); background:var(--gold-dim); }
+.hdr-btn-sm.on { color:var(--gold); border-color:var(--gold-line); background:var(--gold-dim); }
+
+#mini-orb { width:30px; height:30px; flex-shrink:0; -webkit-app-region:no-drag; }
+.hdr-id { display:flex; flex-direction:column; gap:1px; }
+.hdr-name { font-family:var(--mono); font-size:14px; font-weight:700; letter-spacing:.34em; color:var(--ink); padding-left:.34em; }
+.hdr-status { font-family:var(--mono); font-size:8.5px; font-weight:600; letter-spacing:.22em; color:var(--ink-2); text-transform:uppercase; min-height:11px; transition:color .3s; }
+.hdr-status.live { color:var(--gold); }
+.hdr-spacer { flex:1; }
+
+/* health dots — quick truth about what's actually connected */
+#health { display:flex; gap:10px; -webkit-app-region:no-drag; }
+.h-dot { display:flex; align-items:center; gap:4px; font-family:var(--mono); font-size:8px; letter-spacing:.1em; color:var(--ink-3); text-transform:uppercase; }
+.h-dot::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--ink-3); box-shadow:0 0 0 0 transparent; }
+.h-dot.up::before   { background:var(--st-work); }
+.h-dot.down::before { background:var(--st-off); }
+
+/* timers */
+#timer-container { display:flex; gap:6px; -webkit-app-region:no-drag; }
+.timer-badge { display:flex; align-items:center; gap:6px; background:var(--gold-dim); border:1px solid var(--gold-line); border-radius:11px; padding:3px 9px; animation:pop .2s ease; }
+.timer-dot { width:5px; height:5px; border-radius:50%; background:var(--gold); animation:blink 1s step-start infinite; }
+@keyframes blink { 50%{opacity:0;} }
+.timer-lbl { font-size:10px; color:var(--ink-2); }
+.timer-val { font-family:var(--mono); font-size:11px; font-weight:600; color:var(--gold); font-variant-numeric:tabular-nums; }
+
+/* weather chip */
+#weather { -webkit-app-region:no-drag; display:flex; align-items:center; gap:7px; padding:3px 10px; border:1px solid var(--hair); border-radius:11px; color:var(--ink-2); }
+#weather.empty { display:none; }
+#wx-ico { font-size:14px; line-height:1; }
+#wx-t { font-family:var(--mono); font-size:12px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+#wx-c { font-size:10px; color:var(--ink-3); }
+
+/* clock w/ seconds */
+.clock { font-family:var(--mono); text-align:right; display:flex; flex-direction:column; gap:1px; }
+.clock-t { font-size:14px; font-weight:600; color:var(--ink); font-variant-numeric:tabular-nums; }
+.clock-d { font-size:8.5px; letter-spacing:.12em; color:var(--ink-3); text-transform:uppercase; }
+
+/* —— MODE TOGGLE (chat ⇄ voice) —— */
+.mode-toggle {
+  -webkit-app-region:no-drag;
+  display:flex; align-items:center; gap:7px;
+  padding:6px 12px 6px 10px; border-radius:13px;
+  border:1px solid var(--gold-line); background:var(--gold-dim);
+  color:var(--ink); cursor:pointer; font-size:11px; font-weight:600;
+  letter-spacing:.04em; transition:background .15s, border-color .15s, transform .1s;
+}
+.mode-toggle:hover { background:rgba(184,146,58,0.22); border-color:var(--gold); }
+.mode-toggle:active { transform:scale(.96); }
+.mode-toggle svg { stroke:var(--gold); }
+
+/* ============================================================
+   VIEW STACK — chat view & voice view cross-fade
+   ============================================================ */
+#views { flex:1; position:relative; min-height:0; }
+.view {
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  opacity:1; transform:scale(1); transition:opacity .4s ease, transform .45s cubic-bezier(.16,1,.3,1);
+}
+.view.hidden { opacity:0; transform:scale(.97); pointer-events:none; }
+
+/* ---------- CHAT VIEW ---------- */
+#log {
+  flex:1; overflow-y:auto;
+  padding:26px 22px 10px;
+  display:flex; flex-direction:column; gap:22px;
+  scroll-behavior:smooth;
+}
+#log::-webkit-scrollbar { width:6px; }
+#log::-webkit-scrollbar-thumb { background:var(--gold-line); border-radius:3px; }
+
+.empty { margin:auto; text-align:center; color:var(--ink-3); display:flex; flex-direction:column; align-items:center; gap:10px; user-select:none; max-width:340px; }
+.empty-o { font-family:var(--serif); font-size:19px; color:var(--ink-2); letter-spacing:.02em; }
+.empty-s { font-size:12.5px; color:var(--ink-3); line-height:1.7; }
+
+/* Claude-style: Ted = full-width plain text, no bubble. You = contained bubble. */
+.turn { display:flex; flex-direction:column; animation:rise .24s cubic-bezier(.16,1,.3,1); }
+@keyframes rise { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes pop  { from{opacity:0;transform:scale(.9)} to{opacity:1;transform:scale(1)} }
+
+.turn.ted { align-items:flex-start; }
+.turn.ted .who {
+  font-family:var(--mono); font-size:8.5px; font-weight:700; letter-spacing:.2em;
+  text-transform:uppercase; color:var(--gold); margin:0 0 7px 2px;
+}
+.turn.ted .body {
+  font-size:15px; line-height:1.7; color:var(--ink);
+  max-width:none; padding-left:14px; border-left:2px solid var(--gold-line);
+  user-select:text; -webkit-user-select:text;
+}
+
+.turn.user { align-items:flex-end; }
+.turn.user .who { display:none; }
+.turn.user .body {
+  max-width:74%; padding:11px 15px; border-radius:16px 16px 5px 16px;
+  background:var(--user-bg); border:1px solid var(--user-bd);
+  font-size:14.5px; line-height:1.55; color:var(--ink);
+  user-select:text; -webkit-user-select:text;
+}
+
+/* streaming caret (read-along) */
+.caret { display:inline-block; width:2px; height:1.05em; margin-left:1px; background:var(--gold); vertical-align:-2px; animation:cb .9s step-start infinite; }
+@keyframes cb { 50%{opacity:0;} }
+
+/* thinking dots */
+.typing .body { display:inline-flex; gap:5px; align-items:center; }
+.typing .d { width:6px; height:6px; border-radius:50%; background:var(--ink-3); animation:td 1.2s infinite ease-in-out; }
+.typing .d:nth-child(2){ animation-delay:.18s; }
+.typing .d:nth-child(3){ animation-delay:.36s; }
+@keyframes td { 0%,60%,100%{opacity:.25;transform:translateY(0)} 30%{opacity:.9;transform:translateY(-3px)} }
+
+/* ground-truth action chip — shows what Ted ACTUALLY did, not what he claims */
+.act-chip { display:inline-flex; align-items:center; gap:6px; margin-top:8px; padding:4px 10px; border-radius:9px; font-family:var(--mono); font-size:10.5px; font-weight:600; animation:pop .2s ease; }
+.act-chip.ok   { color:var(--st-work); background:rgba(78,158,106,0.12); border:1px solid rgba(78,158,106,0.30); }
+.act-chip.fail { color:var(--st-off);  background:rgba(194,80,60,0.12);  border:1px solid rgba(194,80,60,0.30); }
+
+/* ---------- VOICE VIEW ---------- */
+#voice { align-items:center; justify-content:center; gap:4px; }
+#sphere-wrap { flex:1; display:flex; align-items:center; justify-content:center; width:100%; position:relative; }
+#sphere { width:340px; height:340px; max-width:80vw; max-height:60vh; }
+#voice-caption {
+  width:100%; max-width:620px; min-height:96px; padding:0 30px 6px;
+  text-align:center; align-self:center;
+}
+#vc-user { font-family:var(--mono); font-size:11px; letter-spacing:.06em; color:var(--ink-3); text-transform:uppercase; min-height:16px; margin-bottom:8px; }
+#vc-ted  { font-family:var(--serif); font-size:17px; line-height:1.55; color:var(--ink); min-height:48px; }
+#vc-ted .caret { background:var(--gold); height:1em; }
+#vc-state { font-family:var(--mono); font-size:9px; letter-spacing:.24em; text-transform:uppercase; color:var(--ink-3); margin-top:12px; min-height:12px; }
+
+/* voice-mode controls — mute + stop, mirrors the chat bar */
+#voice-controls { display:flex; align-items:center; justify-content:center; gap:16px; margin-top:20px; }
+.vbtn { width:50px; height:50px; border-radius:50%; border:1px solid var(--gold-line); background:var(--gold-dim); color:var(--gold); cursor:pointer; display:flex; align-items:center; justify-content:center; position:relative; transition:all .18s; }
+.vbtn:hover { background:rgba(184,146,58,0.22); }
+.vbtn:active { transform:scale(.94); }
+.vmic.off { border-color:rgba(194,80,60,0.4); background:rgba(194,80,60,0.12); color:var(--st-off); }
+.vmic.live::after { content:''; position:absolute; inset:-5px; border-radius:50%; border:1.5px solid var(--gold); opacity:.5; animation:micpulse 1.6s ease-out infinite; }
+.vstop { color:var(--ink-3); border-color:var(--hair); background:transparent; opacity:.45; }
+.vstop.armed { opacity:1; color:var(--st-off); border-color:rgba(194,80,60,0.34); background:rgba(194,80,60,0.08); }
+.vstop:hover { color:var(--ink); opacity:1; }
+
+/* issue popup — relevant problem surfaces here when Ted stalls */
+#issue {
+  position:absolute; left:50%; bottom:18px; transform:translateX(-50%) translateY(14px);
+  max-width:560px; width:calc(100% - 48px);
+  background:var(--paper-2); border:1px solid var(--st-warn);
+  border-left:3px solid var(--st-warn);
+  border-radius:12px; padding:12px 40px 12px 14px;
+  box-shadow:0 8px 28px rgba(120,80,20,0.14);
+  opacity:0; pointer-events:none; transition:opacity .25s, transform .25s;
+  z-index:30;
+}
+#issue.show { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+#issue .it-h { display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; color:var(--st-warn); margin-bottom:4px; }
+#issue .it-b { font-size:13px; line-height:1.5; color:var(--ink); }
+#issue .it-x { position:absolute; top:9px; right:11px; color:var(--ink-3); cursor:pointer; font-size:18px; line-height:1; }
+#issue .it-x:hover { color:var(--ink); }
+
+/* ============================================================
+   INPUT BAR  (chat mode)
+   ============================================================ */
+.bar {
+  display:flex; align-items:flex-end; gap:10px;
+  padding:12px 18px 14px;
+  border-top:1px solid var(--hair);
+  background:rgba(244,238,224,0.78);
+  backdrop-filter:blur(16px) saturate(140%);
+  -webkit-backdrop-filter:blur(16px) saturate(140%);
+  -webkit-app-region:no-drag; flex-shrink:0;
+}
+.mic {
+  width:42px; height:42px; border-radius:50%; flex-shrink:0;
+  border:1px solid var(--gold-line); background:var(--gold-dim); color:var(--gold);
+  cursor:pointer; position:relative; display:flex; align-items:center; justify-content:center;
+  transition:all .18s;
+}
+.mic:hover { background:rgba(184,146,58,0.22); }
+.mic.off { border-color:rgba(194,80,60,0.4); background:rgba(194,80,60,0.10); color:var(--st-off); }
+.mic.live::after { content:''; position:absolute; inset:-4px; border-radius:50%; border:1.5px solid var(--gold); opacity:.55; animation:micpulse 1.6s ease-out infinite; }
+@keyframes micpulse { 0%{transform:scale(1);opacity:.55} 100%{transform:scale(1.4);opacity:0} }
+
+.field { flex:1; display:flex; align-items:flex-end; background:rgba(255,255,255,0.40); border:1px solid var(--hair); border-radius:18px; padding:4px 6px 4px 14px; transition:border-color .18s, background .18s; }
+.field:focus-within { border-color:var(--gold-line); background:rgba(255,255,255,0.62); }
+#input { flex:1; resize:none; border:none; background:transparent; color:var(--ink); font-family:var(--sans); font-size:14.5px; line-height:1.5; padding:7px 0; max-height:120px; outline:none; }
+#input::placeholder { color:var(--ink-3); }
+
+.send { width:34px; height:34px; border-radius:50%; flex-shrink:0; border:none; background:var(--gold); color:#FAF5E8; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:opacity .15s, transform .1s; }
+.send:hover { transform:scale(1.06); }
+.send:disabled { opacity:.3; cursor:default; transform:none; }
+
+.stopbtn { width:42px; height:42px; border-radius:50%; flex-shrink:0; border:1px solid var(--hair); background:transparent; color:var(--ink-3); cursor:pointer; display:none; align-items:center; justify-content:center; transition:all .15s; }
+.stopbtn.armed { display:flex; color:var(--st-off); border-color:rgba(194,80,60,0.34); background:rgba(194,80,60,0.08); }
+.stopbtn:hover { color:var(--ink); }
+
+/* ============================================================
+   REMINDERS PANEL (slide-in)
+   ============================================================ */
+#rempanel { position:fixed; top:0; right:0; bottom:0; width:300px; background:var(--paper-3); backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%); border-left:1px solid var(--hair); transform:translateX(100%); transition:transform .32s cubic-bezier(.16,1,.3,1); display:flex; flex-direction:column; z-index:50; }
+#rempanel.open { transform:translateX(0); }
+.rem-hdr { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid var(--hair); }
+.rem-title { font-family:var(--mono); font-size:9px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--ink-2); }
+.rem-x { color:var(--ink-2); cursor:pointer; font-size:20px; line-height:1; }
+.rem-x:hover { color:var(--ink); }
+#remlist { flex:1; overflow-y:auto; padding:10px 16px; display:flex; flex-direction:column; gap:9px; }
+.rem-item { display:flex; justify-content:space-between; align-items:center; gap:10px; animation:rise .18s ease; }
+.rem-label { font-size:13px; color:var(--ink); }
+.rem-when { font-family:var(--mono); font-size:10px; font-weight:600; color:var(--gold); white-space:nowrap; }
+.rem-empty { font-size:12px; color:var(--ink-3); padding:8px 0; }
+
+/* ============================================================
+   APPS STRIP (kept in BOTH modes)
+   ============================================================ */
+#apps-strip { display:none; align-items:center; gap:6px; padding:5px 18px; overflow-x:auto; border-top:1px solid var(--hair); background:rgba(231,220,196,0.5); flex-shrink:0; }
+#apps-strip.visible { display:flex; }
+#apps-strip::-webkit-scrollbar { display:none; }
+.app-chip { font-family:var(--mono); font-size:9px; letter-spacing:.04em; color:var(--ink-3); white-space:nowrap; flex-shrink:0; padding:2px 9px; border:1px solid var(--gold-line); border-radius:8px; }
+.apps-tag { font-family:var(--mono); font-size:8px; letter-spacing:.16em; color:var(--ink-3); text-transform:uppercase; margin-right:2px; }
+</style>
+</head>
+<body>
+<div id="root">
+
+  <!-- ============ SIDEBAR (saved chats) ============ -->
+  <aside id="sidebar">
+    <div class="sb-top">
+      <span class="sb-title">Conversations</span>
+    </div>
+    <button class="sb-new" onclick="newConversation()">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6.5 2v9M2 6.5h9"/></svg>
+      New chat
+    </button>
+    <div id="sb-list">
+      <div class="sb-empty">No saved conversations yet. Past chats will appear here once Ted starts saving them.</div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div id="main">
+
+    <!-- HEADER -->
+    <div class="hdr">
+      <button class="hdr-btn-sm" id="btn-sidebar" onclick="toggleSidebar()" title="Toggle conversations (\\)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2" width="11" height="10" rx="1.5"/><line x1="5" y1="2" x2="5" y2="12"/></svg>
+      </button>
+      <canvas id="mini-orb" width="60" height="60"></canvas>
+      <div class="hdr-id">
+        <div class="hdr-name">TED</div>
+        <div class="hdr-status" id="status">READY</div>
+      </div>
+      <div class="hdr-spacer"></div>
+
+      <div id="health" title="What's actually connected">
+        <span class="h-dot" id="h-groq">GROQ</span>
+        <span class="h-dot" id="h-neo4j">MEM</span>
+        <span class="h-dot" id="h-spotify">SPOT</span>
+      </div>
+
+      <div id="timer-container"></div>
+
+      <div id="weather" class="empty">
+        <span id="wx-ico">·</span>
+        <div style="display:flex;flex-direction:column;line-height:1.1;">
+          <span id="wx-t">—°</span><span id="wx-c"></span>
+        </div>
+      </div>
+
+      <button class="hdr-btn-sm" id="btn-rem" onclick="tedHud.toggleReminders()" title="Reminders & timers">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="8" r="5"/><path d="M7 5.5V8l1.6 1.2" stroke-linecap="round"/><path d="M5 1.5h4" stroke-linecap="round"/></svg>
+      </button>
+
+      <button class="mode-toggle" id="mode-toggle" onclick="toggleMode()" title="Switch chat / voice (V)">
+        <svg id="mt-ico" width="14" height="16" viewBox="0 0 13 16" fill="none"><rect x="3.5" y=".75" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M1 8.5a5.5 5.5 0 0011 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6.5" y1="14" x2="6.5" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <span id="mt-label">Voice</span>
+      </button>
+
+      <div class="clock">
+        <div class="clock-t" id="ck-t">12:00:00</div>
+        <div class="clock-d" id="ck-d">MON JAN 1</div>
+      </div>
+    </div>
+
+    <!-- VIEW STACK -->
+    <div id="views">
+
+      <!-- CHAT VIEW -->
+      <div class="view" id="chat">
+        <div id="log">
+          <div class="empty" id="empty">
+            <div class="empty-o">Ted is listening.</div>
+            <div class="empty-s">Type below, or tap <b>Voice</b> to talk. Try "what's on my calendar today" or "remind me to study at 7."</div>
+          </div>
+        </div>
+        <div class="bar">
+          <button class="mic live" id="mic" onclick="clickMute()" title="Voice input on/off (M)">
+            <svg width="15" height="18" viewBox="0 0 13 16" fill="none"><rect x="3.5" y=".75" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M1 8.5a5.5 5.5 0 0011 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6.5" y1="14" x2="6.5" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button class="stopbtn" id="stop" onclick="clickStop()" title="Stop Ted mid-sentence (Esc)">
+            <svg width="11" height="11" viewBox="0 0 11 11" fill="currentColor"><rect x="1.5" y="1.5" width="8" height="8" rx="1.5"/></svg>
+          </button>
+          <div class="field">
+            <textarea id="input" rows="1" placeholder="Message Ted…" autocomplete="off" spellcheck="false"></textarea>
+          </div>
+          <button class="send" id="send" onclick="submitInput()" title="Send (Enter)" disabled>
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 12V3M7.5 3L3.5 7M7.5 3l4 4"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- VOICE VIEW -->
+      <div class="view hidden" id="voice">
+        <div id="sphere-wrap">
+          <canvas id="sphere" width="680" height="680"></canvas>
+        </div>
+        <div id="voice-caption">
+          <div id="vc-user"></div>
+          <div id="vc-ted"></div>
+          <div id="vc-state">READY</div>
+          <div id="voice-controls">
+            <button class="vbtn vmic live" id="vmic" onclick="clickMute()" title="Voice on/off (M)">
+              <svg width="17" height="20" viewBox="0 0 13 16" fill="none"><rect x="3.5" y=".75" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M1 8.5a5.5 5.5 0 0011 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="6.5" y1="14" x2="6.5" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </button>
+            <button class="vbtn vstop" id="vstop" onclick="clickStop()" title="Stop Ted (Esc)">
+              <svg width="13" height="13" viewBox="0 0 11 11" fill="currentColor"><rect x="1.5" y="1.5" width="8" height="8" rx="1.5"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="issue">
+          <div class="it-h"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1L11 10.5H1L6 1z"/><line x1="6" y1="5" x2="6" y2="7.5" stroke-linecap="round"/><circle cx="6" cy="9" r=".4" fill="currentColor"/></svg> Heads up</div>
+          <div class="it-b" id="issue-body"></div>
+          <span class="it-x" onclick="tedHud.clearIssue()">×</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- APPS STRIP (both modes) -->
+    <div id="apps-strip"></div>
+  </div>
+</div>
+
+<!-- REMINDERS PANEL -->
+<div id="rempanel">
+  <div class="rem-hdr">
+    <span class="rem-title">Reminders &amp; Timers</span>
+    <span class="rem-x" onclick="tedHud.hideReminders()">×</span>
+  </div>
+  <div id="remlist"></div>
+</div>
+
+<script>
+'use strict';
+function inApp(){ return typeof window !== 'undefined' && !!window.pywebview; }
+
+/* ── State ─────────────────────────────────────────────────── */
+var S = { IDLE:0, LISTENING:1, THINKING:2, SPEAKING:3, ERROR:4, OFFLINE:5 };
+var STATE_TEXT = {0:'READY',1:'LISTENING',2:'THINKING',3:'SPEAKING',4:'PROBLEM',5:'OFFLINE'};
+var state = S.IDLE, extAmp = 0, sAmp = 0, isMuted = false, voiceMode = false;
+
+/* status → working / warn / off  (drives sphere + orb color) */
+function statusClass(){
+  if (state === S.ERROR)   return 'warn';
+  if (state === S.OFFLINE || isMuted) return 'off';
+  return 'work';
+}
+function stateRGB(){
+  var cs = getComputedStyle(document.documentElement);
+  var v = { work:cs.getPropertyValue('--st-work'), warn:cs.getPropertyValue('--st-warn'), off:cs.getPropertyValue('--st-off') }[statusClass()];
+  v = v.trim();
+  // hex -> rgb
+  var m = v.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
+  return m ? [parseInt(m[1],16),parseInt(m[2],16),parseInt(m[3],16)] : [78,158,106];
+}
+
+/* ── Clock (with seconds) ──────────────────────────────────── */
+function tickClock(){
+  var n=new Date(), h=n.getHours(), ap=h>=12?'PM':'AM'; h=h%12||12;
+  var p=function(x){return String(x).padStart(2,'0');};
+  document.getElementById('ck-t').textContent = h+':'+p(n.getMinutes())+':'+p(n.getSeconds())+' '+ap;
+  document.getElementById('ck-d').textContent =
+    n.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}).toUpperCase();
+  updateTimers();
+  setTimeout(tickClock, 1000 - n.getMilliseconds());
+}
+
+/* ── Timers ────────────────────────────────────────────────── */
+var timerMap = {};
+function _esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function updateTimers(){
+  var c=document.getElementById('timer-container'), now=Date.now();
+  Object.keys(timerMap).forEach(function(id){
+    var t=timerMap[id], rem=Math.max(0,t.endMs-now);
+    if(rem===0){ if(t.el&&t.el.parentNode)t.el.parentNode.removeChild(t.el); delete timerMap[id]; return; }
+    if(!t.el){
+      var b=document.createElement('div'); b.className='timer-badge';
+      b.innerHTML='<span class="timer-dot"></span><span class="timer-lbl">'+_esc(t.label)+'</span><span class="timer-val">0:00</span>';
+      c.appendChild(b); t.el=b;
+    }
+    var s=Math.ceil(rem/1000);
+    t.el.querySelector('.timer-val').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+  });
+}
+
+/* ── Mini orb (header, both modes) ─────────────────────────── */
+(function(){
+  var cv=document.getElementById('mini-orb'), ctx=cv.getContext('2d');
+  var W=cv.width,H=cv.height,cx=W/2,cy=H/2;
+  function frame(now){
+    requestAnimationFrame(frame);
+    sAmp += ((isMuted?0:extAmp)-sAmp)*(extAmp>sAmp?0.2:0.08);
+    ctx.clearRect(0,0,W,H);
+    var c=stateRGB(), breath=0.5+0.5*Math.sin(now*0.0016);
+    var rR=20+(state===S.LISTENING?4*Math.sin(now*0.005):0)+sAmp*8;
+    var g=ctx.createRadialGradient(cx,cy,0,cx,cy,rR);
+    g.addColorStop(0,'rgba('+c[0]+','+c[1]+','+c[2]+','+(0.28+sAmp*0.4)+')');
+    g.addColorStop(1,'rgba('+c[0]+','+c[1]+','+c[2]+',0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,rR,0,Math.PI*2); ctx.fill();
+    var coreR=6+breath*2+sAmp*9;
+    ctx.beginPath(); ctx.arc(cx,cy,coreR,0,Math.PI*2);
+    ctx.fillStyle='rgba('+c[0]+','+c[1]+','+c[2]+',0.9)';
+    ctx.shadowBlur=10+sAmp*14; ctx.shadowColor='rgb('+c[0]+','+c[1]+','+c[2]+')';
+    ctx.fill(); ctx.shadowBlur=0;
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ── Particle sphere (voice mode) ──────────────────────────── */
+(function(){
+  var cv=document.getElementById('sphere'), ctx=cv.getContext('2d');
+  var W=cv.width,H=cv.height,cx=W/2,cy=H/2;
+  var N=150, pts=[];
+  // fibonacci sphere for even distribution
+  var off=2/N, inc=Math.PI*(3-Math.sqrt(5));
+  for(var i=0;i<N;i++){
+    var y=i*off-1+off/2, r=Math.sqrt(1-y*y), phi=i*inc;
+    pts.push({x:Math.cos(phi)*r, y:y, z:Math.sin(phi)*r});
+  }
+  var rot=0;
+  function frame(now){
+    requestAnimationFrame(frame);
+    if(!voiceMode){ ctx.clearRect(0,0,W,H); return; }   // idle when hidden
+    sAmp += ((isMuted?0:extAmp)-sAmp)*(extAmp>sAmp?0.22:0.08);
+    ctx.clearRect(0,0,W,H);
+    var c=stateRGB();
+    var breath=0.5+0.5*Math.sin(now*0.0016);
+    var speaking=(state===S.SPEAKING);
+    var listening=(state===S.LISTENING);
+    rot += 0.0024 + (speaking?0.004:0) + sAmp*0.01;
+    var base=150, R=base*(1 + sAmp*0.55 + (speaking?0.06:0) + breath*0.02);
+
+    // soft glow halo
+    var halo=ctx.createRadialGradient(cx,cy,R*0.2,cx,cy,R*1.5);
+    halo.addColorStop(0,'rgba('+c[0]+','+c[1]+','+c[2]+','+(0.16+sAmp*0.25)+')');
+    halo.addColorStop(1,'rgba('+c[0]+','+c[1]+','+c[2]+',0)');
+    ctx.fillStyle=halo; ctx.beginPath(); ctx.arc(cx,cy,R*1.5,0,Math.PI*2); ctx.fill();
+
+    // inner core
+    var core=ctx.createRadialGradient(cx,cy,0,cx,cy,R*0.5);
+    core.addColorStop(0,'rgba('+c[0]+','+c[1]+','+c[2]+','+(0.55+sAmp*0.3)+')');
+    core.addColorStop(1,'rgba('+c[0]+','+c[1]+','+c[2]+',0)');
+    ctx.fillStyle=core; ctx.beginPath(); ctx.arc(cx,cy,R*0.5,0,Math.PI*2); ctx.fill();
+
+    // particles
+    var sin=Math.sin(rot), cos=Math.cos(rot);
+    var expand = 1 + sAmp*0.7 + (speaking?0.10:0);   // particles push outward on voice
+    for(var i=0;i<N;i++){
+      var p=pts[i];
+      var x=p.x*cos - p.z*sin, z=p.x*sin + p.z*cos, y=p.y;
+      var rr=R*expand;
+      var depth=(z+1)/2;                         // 0 back … 1 front
+      var persp=0.55+0.45*depth;
+      var px=cx + x*rr*persp, py=cy + y*rr*persp;
+      var size=0.8 + depth*2.2 + sAmp*1.4;
+      var alpha=0.18 + depth*0.62;
+      ctx.beginPath(); ctx.arc(px,py,size,0,Math.PI*2);
+      ctx.fillStyle='rgba('+c[0]+','+c[1]+','+c[2]+','+alpha+')';
+      ctx.fill();
+    }
+
+    // listening ring pulse
+    if(listening){
+      var pr=R*(1.15+0.12*Math.sin(now*0.005));
+      ctx.beginPath(); ctx.arc(cx,cy,pr,0,Math.PI*2);
+      ctx.strokeStyle='rgba('+c[0]+','+c[1]+','+c[2]+',0.22)'; ctx.lineWidth=1.4; ctx.stroke();
+    }
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ── Conversation rendering (chat) ─────────────────────────── */
+var curTed=null;        // element currently being streamed into
+var lastStreamText=null; // text of the most recently stream-completed Ted reply (for dedupe)
+function _norm(s){ return (s||'').replace(/\s+/g,' ').trim(); }
+function clearEmpty(){ var e=document.getElementById('empty'); if(e)e.remove(); }
+function clearTyping(){ var t=document.getElementById('typing'); if(t)t.remove(); }
+function atBottom(log){ return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
+function scrollLog(){ var l=document.getElementById('log'); l.scrollTop=l.scrollHeight; }
+
+function showTyping(){
+  if(document.getElementById('typing')||curTed) return;
+  clearEmpty();
+  var log=document.getElementById('log');
+  var el=document.createElement('div'); el.className='turn ted typing'; el.id='typing';
+  el.innerHTML='<span class="who">Ted</span><div class="body"><span class="d"></span><span class="d"></span><span class="d"></span></div>';
+  log.appendChild(el); scrollLog();
+}
+
+function newUserTurn(text){
+  clearEmpty(); clearTyping();
+  lastStreamText=null;   // a new turn started; clear the dedupe marker
+  var log=document.getElementById('log');
+  var el=document.createElement('div'); el.className='turn user';
+  var b=document.createElement('div'); b.className='body'; b.textContent=text;
+  el.appendChild(b); log.appendChild(el); scrollLog();
+  // mirror into voice caption
+  document.getElementById('vc-user').textContent='You: '+text;
+}
+
+function beginTed(){
+  clearEmpty(); clearTyping();
+  var log=document.getElementById('log'), stick=atBottom(log);
+  var el=document.createElement('div'); el.className='turn ted';
+  el.innerHTML='<span class="who">Ted</span><div class="body"><span class="txt"></span><span class="caret"></span></div>';
+  log.appendChild(el); curTed=el;
+  document.getElementById('vc-ted').innerHTML='<span class="txt"></span><span class="caret"></span>';
+  if(stick) scrollLog();
+}
+function appendTed(chunk){
+  if(!curTed) beginTed();
+  var log=document.getElementById('log'), stick=atBottom(log);
+  var sp=curTed.querySelector('.txt'); sp.textContent += chunk;
+  var vc=document.getElementById('vc-ted').querySelector('.txt'); if(vc) vc.textContent += chunk;
+  if(stick) scrollLog();
+}
+function endTed(){
+  if(curTed){
+    var c=curTed.querySelector('.caret'); if(c)c.remove();
+    var sp=curTed.querySelector('.txt'); lastStreamText = sp ? sp.textContent : null;
+  }
+  var vcc=document.getElementById('vc-ted').querySelector('.caret'); if(vcc)vcc.remove();
+  curTed=null;
+}
+
+/* ── HUD API — preserved + extended ───────────────────────── */
+var tedHud = {
+  setState: function(s){
+    var map={idle:S.IDLE,listening:S.LISTENING,thinking:S.THINKING,speaking:S.SPEAKING,error:S.ERROR,offline:S.OFFLINE};
+    var nx=map[s]; if(nx===undefined) return;
+    state=nx;
+    var st=document.getElementById('status');
+    if(!isMuted){ st.textContent=STATE_TEXT[nx]||''; st.classList.toggle('live', nx===S.LISTENING||nx===S.SPEAKING); }
+    document.getElementById('vc-state').textContent=STATE_TEXT[nx]||'';
+    document.getElementById('stop').classList.toggle('armed', nx===S.SPEAKING);
+    var vstop=document.getElementById('vstop'); if(vstop) vstop.classList.toggle('armed', nx===S.SPEAKING);
+    if(nx===S.THINKING) showTyping(); else clearTyping();
+    if(nx!==S.ERROR) { /* leave issue card alone; cleared explicitly */ }
+  },
+
+  // full-message path (back-compat): begin + stream + end in one shot
+  addMessage: function(role, text){
+    if(role==='user'){ newUserTurn(text); return; }
+    // If this exact reply was just streamed sentence-by-sentence (read-along),
+    // don't render it again as a second bubble.
+    if(lastStreamText!==null && _norm(text)===_norm(lastStreamText)){ lastStreamText=null; return; }
+    beginTed(); appendTed(text); endTed();
+  },
+
+  // [v2] read-along streaming — call per sentence/token from the TTS loop
+  beginTedReply: function(){ beginTed(); },
+  streamTedText: function(chunk){ appendTed(chunk); },
+  endTedReply:  function(){ endTed(); },
+
+  pushAmplitude: function(v){ extAmp=Math.max(0,Math.min(1,v)); },
+  clearAmplitude:function(){ extAmp=0; },
+
+  setMuted: function(m){
+    isMuted=!!m;
+    var mic=document.getElementById('mic');
+    mic.classList.toggle('off', isMuted); mic.classList.toggle('live', !isMuted);
+    var vmic=document.getElementById('vmic');
+    if(vmic){ vmic.classList.toggle('off', isMuted); vmic.classList.toggle('live', !isMuted); }
+    var st=document.getElementById('status');
+    if(isMuted){ st.textContent='VOICE OFF'; st.classList.remove('live'); document.getElementById('vc-state').textContent='VOICE OFF'; }
+    else { st.textContent=STATE_TEXT[state]||'READY'; document.getElementById('vc-state').textContent=STATE_TEXT[state]||'READY'; }
+  },
+
+  // [v2] mode control from Python (optional)
+  setVoiceMode: function(on){ setMode(!!on); },
+  toggleMode:   function(){ toggleMode(); },
+
+  // [v2] issue popup — surface the real problem when Ted stalls
+  showIssue: function(text){
+    document.getElementById('issue-body').textContent=text||'Ted hit a problem.';
+    document.getElementById('issue').classList.add('show');
+  },
+  clearIssue: function(){ document.getElementById('issue').classList.remove('show'); },
+
+  // [v2] ground-truth action result chip (anti-lying UI)
+  setActionResult: function(ok, text){
+    var host = curTed || (function(){ var n=document.querySelectorAll('.turn.ted'); return n[n.length-1]; })();
+    if(!host) return;
+    var body=host.querySelector('.body'); if(!body) return;
+    var chip=document.createElement('div'); chip.className='act-chip '+(ok?'ok':'fail');
+    chip.textContent=(ok?'✓ ':'✗ ')+(text||(ok?'Done':'Failed'));
+    body.appendChild(chip);
+  },
+
+  // [v2] connection health dots
+  setHealth: function(h){
+    h=h||{};
+    function set(id,v){ var e=document.getElementById(id); e.classList.remove('up','down'); if(v===true)e.classList.add('up'); else if(v===false)e.classList.add('down'); }
+    set('h-groq',h.groq); set('h-neo4j',h.neo4j!==undefined?h.neo4j:h.memory); set('h-spotify',h.spotify);
+  },
+
+  // [v2] saved-chat sidebar (needs Python to send the list)
+  setConversations: function(items){
+    var list=document.getElementById('sb-list'); list.innerHTML='';
+    if(!items||!items.length){ var e=document.createElement('div'); e.className='sb-empty'; e.textContent='No saved conversations yet.'; list.appendChild(e); return; }
+    items.forEach(function(it){
+      var row=document.createElement('div'); row.className='sb-item'+(it.active?' active':'');
+      row.onclick=function(){ loadConversation(it.id); };
+      var t=document.createElement('div'); t.className='sb-item-t'; t.textContent=it.title||'Conversation';
+      var w=document.createElement('div'); w.className='sb-item-w'; w.textContent=it.when||'';
+      row.appendChild(t); row.appendChild(w); list.appendChild(row);
+    });
+  },
+
+  // [v2] weather from Python (optional — JS also self-fetches below)
+  setWeather: function(temp, code, label){ paintWeather(temp, code, label); },
+
+  // chat panel legacy hooks
+  showChat:   function(){ if(voiceMode) setMode(false); var i=document.getElementById('input'); if(i)i.focus(); },
+  hideChat:   function(){},
+  toggleChat: function(){ var i=document.getElementById('input'); if(i)i.focus(); },
+  micIdle:    function(){},
+  setMode:    function(){},                 // store/Tim mode removed — no-op
+  setVoice:   function(name){},             // voice engine label — no slot
+
+  addTimer: function(id,endMs,label){ timerMap[String(id)]={endMs:endMs,label:label,el:null}; updateTimers(); },
+  clearTimerById: function(id){ id=String(id); if(timerMap[id]){ if(timerMap[id].el&&timerMap[id].el.parentNode)timerMap[id].el.parentNode.removeChild(timerMap[id].el); delete timerMap[id]; } },
+  clearTimer: function(){ Object.keys(timerMap).forEach(function(id){ var t=timerMap[id]; if(t.el&&t.el.parentNode)t.el.parentNode.removeChild(t.el); }); timerMap={}; },
+  setTimer: function(endMs){ this.clearTimer(); timerMap['_']={endMs:endMs,label:'Timer',el:null}; updateTimers(); },
+  flashAlarm: function(){ extAmp=1.0; setTimeout(function(){extAmp=0;},900); },
+  playBell: function(){
+    try{ var ac=new (window.AudioContext||window.webkitAudioContext)();
+      function ring(t){ var o=ac.createOscillator(),g=ac.createGain(); o.connect(g); g.connect(ac.destination); o.type='sine'; o.frequency.value=880; g.gain.setValueAtTime(0.3,ac.currentTime+t); g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+t+1.5); o.start(ac.currentTime+t); o.stop(ac.currentTime+t+1.7); }
+      ring(0); ring(0.85);
+    }catch(e){}
+  },
+
+  showReminders: function(items){
+    var list=document.getElementById('remlist'); list.innerHTML='';
+    if(!items||!items.length){ var e=document.createElement('div'); e.className='rem-empty'; e.textContent='Nothing scheduled.'; list.appendChild(e); }
+    else items.forEach(function(it){ var row=document.createElement('div'); row.className='rem-item'; var l=document.createElement('span'); l.className='rem-label'; l.textContent=it.label; var w=document.createElement('span'); w.className='rem-when'; w.textContent=it.when; row.appendChild(l); row.appendChild(w); list.appendChild(row); });
+    document.getElementById('rempanel').classList.add('open'); document.getElementById('btn-rem').classList.add('on');
+  },
+  hideReminders: function(){ document.getElementById('rempanel').classList.remove('open'); document.getElementById('btn-rem').classList.remove('on'); },
+  toggleReminders: function(){ var p=document.getElementById('rempanel'); var open=p.classList.toggle('open'); document.getElementById('btn-rem').classList.toggle('on',open); },
+
+  setOpenApps: function(apps){
+    var strip=document.getElementById('apps-strip'); strip.innerHTML='';
+    if(!apps||!apps.length){ strip.classList.remove('visible'); return; }
+    var tag=document.createElement('span'); tag.className='apps-tag'; tag.textContent='Open'; strip.appendChild(tag);
+    apps.forEach(function(a){ var c=document.createElement('div'); c.className='app-chip'; c.textContent=a; strip.appendChild(c); });
+    strip.classList.add('visible');
+  },
+};
+
+/* ── Mode switching (chat ⇄ voice) ─────────────────────────── */
+function setMode(toVoice){
+  if(voiceMode===toVoice) return;
+  voiceMode=toVoice;
+  document.getElementById('chat').classList.toggle('hidden', toVoice);
+  document.getElementById('voice').classList.toggle('hidden', !toVoice);
+  document.getElementById('sidebar').classList.toggle('collapsed', toVoice);
+  document.getElementById('btn-sidebar').style.visibility = toVoice ? 'hidden' : 'visible';
+  document.getElementById('mt-label').textContent = toVoice ? 'Chat' : 'Voice';
+  // mic on the input bar only exists in chat; in voice mode the sphere IS the mic state
+  if(!toVoice){ var i=document.getElementById('input'); if(i) setTimeout(function(){i.focus();},420); }
+}
+function toggleMode(){ setMode(!voiceMode); }
+
+/* ── Sidebar ───────────────────────────────────────────────── */
+var sbCollapsed=false;
+function toggleSidebar(){ sbCollapsed=!sbCollapsed; document.getElementById('sidebar').classList.toggle('collapsed',sbCollapsed); document.getElementById('btn-sidebar').classList.toggle('on',!sbCollapsed); }
+function newConversation(){
+  if(inApp() && window.pywebview.api.new_conversation){ window.pywebview.api.new_conversation(); }
+  var log=document.getElementById('log'); log.innerHTML='<div class="empty" id="empty"><div class="empty-o">New conversation.</div><div class="empty-s">Ted still remembers what matters from before — this just starts a fresh thread.</div></div>';
+  curTed=null;
+}
+function loadConversation(id){
+  if(inApp() && window.pywebview.api.load_conversation){ window.pywebview.api.load_conversation(id); }
+}
+
+/* ── Weather (keyless, open-meteo) ─────────────────────────── */
+/* Spirit Lake, IA. Change LAT/LON to your spot. No API key needed. */
+var WX_LAT=43.4216, WX_LON=-95.1022;
+var WX_ICON={0:'☀️',1:'🌤️',2:'⛅',3:'☁️',45:'🌫️',48:'🌫️',51:'🌦️',53:'🌦️',55:'🌧️',61:'🌧️',63:'🌧️',65:'🌧️',71:'🌨️',73:'🌨️',75:'❄️',80:'🌦️',81:'🌧️',82:'⛈️',95:'⛈️',96:'⛈️',99:'⛈️'};
+var WX_LABEL={0:'Clear',1:'Mostly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Fog',51:'Drizzle',53:'Drizzle',55:'Drizzle',61:'Rain',63:'Rain',65:'Heavy rain',71:'Snow',73:'Snow',75:'Heavy snow',80:'Showers',81:'Showers',82:'Storms',95:'Storm',96:'Storm',99:'Storm'};
+function paintWeather(temp, code, label){
+  var w=document.getElementById('weather'); w.classList.remove('empty');
+  document.getElementById('wx-ico').textContent = WX_ICON[code]||'·';
+  document.getElementById('wx-t').textContent = Math.round(temp)+'°';
+  document.getElementById('wx-c').textContent = label || WX_LABEL[code] || '';
+}
+function fetchWeather(){
+  try{
+    fetch('https://api.open-meteo.com/v1/forecast?latitude='+WX_LAT+'&longitude='+WX_LON+'&current=temperature_2m,weather_code&temperature_unit=fahrenheit')
+      .then(function(r){return r.json();})
+      .then(function(d){ if(d&&d.current){ paintWeather(d.current.temperature_2m, d.current.weather_code); } })
+      .catch(function(){});
+  }catch(e){}
+}
+
+/* ── Input handling ────────────────────────────────────────── */
+var input=document.getElementById('input'), sendBtn=document.getElementById('send');
+function autoGrow(){ input.style.height='auto'; input.style.height=Math.min(120,input.scrollHeight)+'px'; }
+function refreshSend(){ sendBtn.disabled=input.value.trim().length===0; }
+function submitInput(){
+  var txt=(input.value||'').trim(); if(!txt) return;
+  input.value=''; autoGrow(); refreshSend();
+  newUserTurn(txt);
+  if(inApp()) window.pywebview.api.ask(txt);
+}
+input.addEventListener('input', function(){ autoGrow(); refreshSend(); });
+input.addEventListener('keydown', function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submitInput(); } e.stopPropagation(); });
+
+/* ── Voice / stop buttons ──────────────────────────────────── */
+function clickMute(){ if(inApp()) window.pywebview.api.toggle_mute().then(function(m){ tedHud.setMuted(m); }); else tedHud.setMuted(!isMuted); }
+function clickStop(){ if(inApp()) window.pywebview.api.stop(); else tedHud.setState('idle'); }
+
+/* ── Keyboard shortcuts ────────────────────────────────────── */
+document.addEventListener('keydown', function(e){
+  var a=document.activeElement, typing=a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA');
+  if(e.key==='Escape'){ clickStop(); return; }
+  if(typing) return;
+  if(e.key==='/'){ e.preventDefault(); if(voiceMode) setMode(false); input.focus(); }
+  if(e.key==='m'||e.key==='M'){ clickMute(); }
+  if(e.key==='v'||e.key==='V'){ toggleMode(); }
+  if(e.key==='\\'){ toggleSidebar(); }
+});
+
+/* ── Boot ──────────────────────────────────────────────────── */
+tickClock();
+refreshSend();
+fetchWeather(); setInterval(fetchWeather, 15*60*1000);
+document.getElementById('btn-sidebar').classList.add('on');
+window.addEventListener('pywebviewready', function(){ window.pywebview.api.listen(); });
+
+/* ════════════════════════════════════════════════════════════
+   NEW v2 BRIDGE FUNCTIONS — what to wire on the Python side
+   (everything else already works with your existing hud.py)
+   ────────────────────────────────────────────────────────────
+   READ-ALONG STREAMING (your TTS is already sentence-by-sentence):
+     In the speak/stream loop, instead of one add_message(window,'ted',full):
+       js(window, "tedHud.beginTedReply()")
+       # per sentence, right before/as you synth it:
+       js(window, f"tedHud.streamTedText({json.dumps(sentence)})")
+       # after the last sentence:
+       js(window, "tedHud.endTedReply()")
+     (addMessage('ted', full) still works if you don't stream.)
+
+   SPHERE COLOR STATES:
+     set_state(window,'error')   -> orange  (hit a problem)
+     set_state(window,'offline') -> red     (off / can't respond)
+     idle|listening|thinking|speaking -> green (normal)
+
+   ISSUE POPUP (surface the real reason he stalled):
+     js(window, f"tedHud.showIssue({json.dumps('Groq request timed out')})")
+     js(window, "tedHud.clearIssue()")
+
+   ANTI-LYING ACTION CHIP (show ground truth, not LLM claims):
+     ok = bool(open_app(key))            # real return value
+     js(window, f"tedHud.setActionResult({str(ok).lower()}, "
+                f"{json.dumps('Opened Spotify' if ok else 'Couldnt open Spotify')})")
+
+   HEALTH DOTS:
+     js(window, "tedHud.setHealth({groq:true,neo4j:false,spotify:true})")
+
+   SAVED-CHAT SIDEBAR (needs transcript storage you may not have yet):
+     js(window, f"tedHud.setConversations({json.dumps(list_of_dicts)})")
+       each: {id, title, when, active?}
+     Add JS-callable methods to TedApi:  new_conversation(self),
+       load_conversation(self, id)   — the sidebar calls these.
+
+   WEATHER: self-fetches from open-meteo (no key). Edit WX_LAT/WX_LON above.
+   ════════════════════════════════════════════════════════════ */
+</script>
+</body>
+</html>

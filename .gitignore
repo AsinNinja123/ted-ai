@@ -1,0 +1,57 @@
+# ───────────────────────────────────────────────────────────────
+# Ted AI — .gitignore
+# NOTE: gitignore does NOT support inline comments — a pattern with a trailing
+# "# comment" matches nothing. Keep every comment on its own line.
+# ───────────────────────────────────────────────────────────────
+
+# === SECRETS — never commit these ===
+# real API keys live in config.py; commit config.example.py instead
+config.py
+.env
+*.env
+# Spotify OAuth token
+data/.spotify_cache
+# email credentials (also lives in ~ — here for safety)
+.ted_email_config.json
+
+# === Python ===
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# === Large model files (download separately, don't commit) ===
+data/kokoro-v1.0.onnx
+data/voices-v1.0.bin
+
+# === Generated / runtime data ===
+# scratch capture file
+data/input.wav
+# ChromaDB vector store (rebuilt from inbox/)
+data/knowledge_db/
+data/indexed_files.json
+# local reminders/lists/memory (user data, not code)
+data/assistant.json
+data/proactive_triggers.json
+data/memory.db
+data/sales_log.json
+data/voice_profile.npy
+ted_errors.log
+ted_errors.log.*
+
+# === Build artifacts ===
+# compiled Swift binary (build with native/build.sh)
+native/ted_audio
+*.o
+
+# === Editor / OS cruft ===
+.DS_Store
+**/.DS_Store
+.claude/
+.vscode/
+.idea/
+
+# === User inbox contents (documents you drop in to index) ===
+inbox/*
+!inbox/.gitkeep
