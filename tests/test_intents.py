@@ -85,8 +85,19 @@ check("wake phrase strips", intents._strip_wake_phrase("Hey Ted, what time is it
 check("bare 'Ted, …' also wakes", intents._strip_wake_phrase("Ted, play some music")
       == ("play some music", True))
 check("'okay ted' wakes", intents._strip_wake_phrase("okay ted what's up")[1])
+check("'Hey Tad' (mishearing) wakes",
+      intents._strip_wake_phrase("Hey Tad, set a timer") == ("set a timer", True))
+check("'Hated …' (Whisper glues hey+ted) wakes",
+      intents._strip_wake_phrase("Hated what time is it") == ("what time is it", True))
+check("'So Ted, …' wakes", intents._strip_wake_phrase("So Ted, how are sales")[1])
+check("'Okay, so Ted, …' wakes",
+      intents._strip_wake_phrase("Okay, so Ted, pause the music") == ("pause the music", True))
+check("trailing ', Ted?' wakes",
+      intents._strip_wake_phrase("what time is it, Ted?") == ("what time is it", True))
 check("'ted' mid-sentence does NOT wake",
       not intents._strip_wake_phrase("I told ted about it yesterday")[1])
+check("'Ted's not working' does NOT wake",
+      not intents._strip_wake_phrase("Ted's not working")[1])
 check("'teddy' does NOT wake", not intents._strip_wake_phrase("teddy bear")[1])
 check("normalize strips straight apostrophes too",
       intents._normalize_cmd("what's playing") == "whats playing")

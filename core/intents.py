@@ -132,17 +132,28 @@ _THINK_EXIT = _norm_set(
 )
 
 # ---------- wake phrase ----------
-# Accepts "hey/hi/yo/ok/okay ted …" and bare "ted, …" at the START of an
-# utterance only — "ted" mid-sentence never wakes (that's just his name coming
-# up in conversation).
-_WAKE_RE = re.compile(r"^(?:(?:hey|hi|yo|ok|okay)[\s,]+)?ted\b[,:.!?]?\s*", re.IGNORECASE)
+# Robust to how Whisper ACTUALLY transcribes "Hey Ted":
+#   "Hey Ted, …"  "Hey, Ted. …"  "Hey Tad, …"  "Hated …" (glued!)  "So Ted, …"
+#   "Okay, so Ted, …"  and bare "Ted, …" — all at the START of an utterance,
+# plus addressing at the END: "what time is it, Ted?".
+# "ted" mid-sentence never wakes, and "Ted's"/"teddy" are excluded.
+_WAKE_RE = re.compile(
+    r"^(?:(?:so|okay|ok|hey|hi|yo|um|uh|well|alright|now|oh)[,!.]?\s+){0,2}"
+    r"(?:ted|tad|tedd|hated|heyted)(?!['’\w])[,:.!?]?\s*",
+    re.IGNORECASE,
+)
+_WAKE_TAIL_RE = re.compile(r"[,!?\s](?:ted|tad)(?!['’\w])[.!?]?$", re.IGNORECASE)
 
 def _strip_wake_phrase(text):
-    """Detect and strip a 'Hey Ted' / 'Ted, …' prefix.
+    """Detect and strip a 'Hey Ted' prefix or a trailing ', Ted'.
     Returns (stripped_text, was_wake: bool)."""
-    m = _WAKE_RE.match(text.strip())
+    t = text.strip()
+    m = _WAKE_RE.match(t)
     if m:
-        return text.strip()[m.end():].strip(), True
+        return t[m.end():].strip(), True
+    m = _WAKE_TAIL_RE.search(t)
+    if m:
+        return t[:m.start()].strip().rstrip(",;"), True
     return text, False
 
 # ---------- small-number words ----------

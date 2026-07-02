@@ -581,6 +581,18 @@ class TedApi:
                         continue
                     return self._execute_shortcut(action_def)
 
+        # ── mic recalibration: fixes 'Ted seems deaf' after a noisy launch ──
+        # (the VAD threshold is set from ambient noise at startup; if the room
+        # was loud then, quiet speech gets rejected before transcription)
+        if re.search(r"\brecalibrat|\bcalibrate (?:the |your )?(?:mic|microphone|ears)\b",
+                     text, re.I):
+            speak(self.window, "Recalibrating — stay quiet for a second.", self)
+            try:
+                thr = engine.calibrate()
+                return f"Done. New silence threshold {thr:.3f}."
+            except Exception:
+                return "Calibration failed — mic may be busy."
+
         # ── voice enrollment / voice lock ──
         if re.search(r"\b(?:learn|enroll|remember) my voice\b", text, re.I):
             from core import speaker
@@ -1829,6 +1841,9 @@ class TedApi:
                         self._last_fired_timer = r   # saved for snooze
                     add_message(self.window, "ted", r["text"])
                     speak(self.window, r["text"], self)
+                    # Ted spoke first — open the conversation so "snooze" /
+                    # "stop" work without a wake word even from standby.
+                    self._touch_attention()
                 except Exception as e:
                     print("Reminder speak error:", e)
                 finally:
@@ -1848,6 +1863,7 @@ class TedApi:
                             try:
                                 add_message(self.window, "ted", msg)
                                 speak(self.window, msg, self)
+                                self._touch_attention()   # Ted asked — listen for the answer
                             except Exception as e:
                                 print(f"Goal check-in error: {e}")
                             finally:

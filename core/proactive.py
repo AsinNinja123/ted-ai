@@ -241,6 +241,12 @@ class ProactiveScheduler:
                 try:
                     self._add_message(self.api.window, "ted", message)
                     self._speak(self.api.window, message, self.api)
+                    # Ted initiated — open the attention window so the user's
+                    # reply is heard without a wake word.
+                    try:
+                        self.api._touch_attention()
+                    except Exception:
+                        pass
                 except Exception as e:
                     print(f"[proactive] speak failed: {e}")
                 finally:
