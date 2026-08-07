@@ -152,21 +152,66 @@ THINKING_CONTEXT = (
 )
 
 # ---------- fact extraction (background, never blocks Ted) ----------
+def _parse_fact_payload(raw):
+    """Pull a list of fact dicts out of whatever the model returned.
+
+    Small models wrap JSON in prose ("Here is the array:") or fences even when
+    told not to, and json.loads on that raises — which is how fact extraction
+    used to fail silently and lose everything. So: try strict JSON first, then
+    salvage the first {...} or [...] block out of the text.
+    """
+    if not raw:
+        return []
+    raw = raw.replace("```json", "").replace("```", "").strip()
+
+    def _coerce(obj):
+        # JSON mode returns an object; accept {"facts": [...]}, a bare list, or
+        # a single fact dict.
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict):
+            for key in ("facts", "results", "items", "data"):
+                if isinstance(obj.get(key), list):
+                    return obj[key]
+            if all(k in obj for k in ("subject", "relationship", "object")):
+                return [obj]
+        return []
+
+    try:
+        return _coerce(json.loads(raw))
+    except Exception:
+        pass
+    # Salvage: grab the outermost JSON-looking span and retry.
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = raw.find(opener), raw.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return _coerce(json.loads(raw[start:end + 1]))
+            except Exception:
+                continue
+    return []
+
+
 def extract_and_save_facts(user_input, ted_reply):
     """Fire-and-forget background task: ask the fast LLM to extract structured
-    facts from the exchange and save them to Neo4j. Never raises — skips silently
-    on any network or parse error so it can't crash the conversation loop."""
+    facts from the exchange and persist them. Never raises — it runs on a daemon
+    thread and must not be able to take the conversation loop down with it."""
     try:
         resp = groq_client.chat.completions.create(
             model=FAST_MODEL,   # fast model is plenty for JSON extraction
+            # JSON mode: the model is constrained to emit a parseable object, so
+            # it can't prepend "Sure! Here's the JSON:" and break the parse.
+            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": (
                     f"Extract factual statements about the user ({OWNER_NAME}) from this exchange. "
                     "Only extract clear, explicit facts — not guesses or implications. "
-                    "Return ONLY a JSON array of objects with keys: subject, relationship, object. "
-                    "Use short uppercase relationship names like WORKS_AT, LIKES, OWNS, STUDIES, LIVES_IN, PREFERS. "
-                    f"Example: [{{\"subject\": \"{OWNER_NAME}\", \"relationship\": \"LIKES\", \"object\": \"jazz\"}}]. "
-                    "If there are no clear facts about the user, return an empty array []. "
+                    'Respond with a JSON object of the form {"facts": [...]} where each element '
+                    "has the keys: subject, relationship, object. "
+                    "Use short uppercase relationship names like WORKS_AT, LIKES, OWNS, STUDIES, "
+                    "LIVES_IN, PREFERS, IS_AGE, HAS_PET, DISLIKES. "
+                    f'Example: {{"facts": [{{"subject": "{OWNER_NAME}", "relationship": "LIKES", "object": "jazz"}}]}}. '
+                    'If there are no clear facts about the user, return {"facts": []}. '
                     "Never include Ted's statements about himself. Never include questions as facts."
                 )},
                 {"role": "user", "content": f"User said: {user_input}\nTed replied: {ted_reply}"}
@@ -174,15 +219,23 @@ def extract_and_save_facts(user_input, ted_reply):
             max_tokens=300,
             timeout=10.0,
         )
-        raw = resp.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        facts = json.loads(raw)
+        raw = (resp.choices[0].message.content or "").strip()
+        facts = _parse_fact_payload(raw)
+        if not facts and raw and raw not in ('{"facts": []}', '{"facts":[]}'):
+            # Nothing parsed out of a non-empty reply — that's a real failure,
+            # not "no facts here". Surface it instead of losing it to a print.
+            error_log.error(f"[memory] fact extraction returned unparseable output: {raw[:200]!r}")
+        saved = 0
         for f in facts:
-            if all(k in f for k in ("subject", "relationship", "object")):
+            if isinstance(f, dict) and all(k in f for k in ("subject", "relationship", "object")):
                 save_fact(f["subject"], f["relationship"], f["object"])
+                saved += 1
                 print(f"[memory] fact saved: {f['subject']} → {f['relationship']} → {f['object']}")
+        return saved
     except Exception as e:
         print(f"[memory] fact extraction skipped: {e}")
+        error_log.error(f"[memory] fact extraction failed: {e}")
+        return 0
 
 # ---------- web search ----------
 _NEWSY_RE = re.compile(

@@ -194,17 +194,110 @@ def get_memory(query, limit=3, who="ted"):
 
 # ---- Facts ----
 
+# Relationships where the user can only have ONE current value. Learning a new
+# one means the old one is wrong, not additional — so we replace instead of
+# accumulating. Without this, "I moved to Ames" leaves the old LIVES_IN in place
+# and Ted ends up holding two contradictory facts forever.
+SINGLE_VALUED = {
+    "LIVES_IN", "WORKS_AT", "IS_AGE", "AGE", "NAME", "IS_NAMED", "STUDIES_AT",
+    "ATTENDS", "BIRTHDAY", "PHONE", "EMAIL", "DRIVES", "MAJORS_IN",
+}
+
+# Cap on how many facts get injected into the prompt. Unbounded growth would
+# silently eat the context window as the database fills up.
+MAX_FACTS_IN_PROMPT = 40
+
+
+def _norm_rel(relationship):
+    """Normalize a relationship name: uppercase, underscores, no stray punctuation."""
+    r = (relationship or "").strip().upper().replace(" ", "_").replace("-", "_")
+    return "".join(ch for ch in r if ch.isalnum() or ch == "_") or "RELATED_TO"
+
+
+def _norm_obj(obj):
+    """Normalize a fact's object value for comparison (not for storage)."""
+    return " ".join((obj or "").strip().lower().rstrip(".!,").split())
+
+
 def save_fact(subject, relationship, obj):
     """Store a fact triple, e.g. save_fact('Charlie', 'STUDIES', 'CS').
-    Re-stating a known fact is a no-op (UNIQUE constraint)."""
+
+    Three behaviours worth knowing:
+      • The relationship is normalized, so 'lives in' and 'LIVES_IN' are one thing.
+      • For SINGLE_VALUED relationships the new value REPLACES any old one, so
+        Ted never holds two contradictory answers to the same question.
+      • Near-duplicate objects ('Spirit Lake' vs 'Spirit Lake, Iowa') collapse to
+        the more specific (longer) form rather than both being kept.
+    """
+    subject = (subject or "").strip()
+    obj = (obj or "").strip()
+    if not subject or not obj:
+        return
+    rel = _norm_rel(relationship)
+    new_key = _norm_obj(obj)
+
+    existing = _query("SELECT rowid, object FROM facts WHERE subject = ? AND relationship = ?",
+                      (subject, rel))
+
+    # Specificity check runs first, for single- and multi-valued alike. Two
+    # extractions of one sentence often yield "Spirit Lake" and "Spirit Lake,
+    # Iowa"; that's the same fact at two levels of detail, not a change of
+    # address, so keep the more specific form regardless of which arrived last.
+    for rowid, old in existing:
+        old_key = _norm_obj(old)
+        if old_key == new_key:
+            return                          # exact duplicate — nothing to do
+        if old_key in new_key:
+            _exec("DELETE FROM facts WHERE rowid = ?", (rowid,))   # new is richer
+        elif new_key in old_key:
+            return                          # what we already have is richer
+
+    if rel in SINGLE_VALUED:
+        # Genuinely different value for a one-answer question — the old one is
+        # now wrong, so clear whatever survived the specificity pass.
+        for rowid, _old in _query(
+                "SELECT rowid, object FROM facts WHERE subject = ? AND relationship = ?",
+                (subject, rel)):
+            _exec("DELETE FROM facts WHERE rowid = ?", (rowid,))
+
     _exec("INSERT OR IGNORE INTO facts (subject, relationship, object, created) "
-          "VALUES (?,?,?,?)", (subject, relationship, obj, _now()))
+          "VALUES (?,?,?,?)", (subject, rel, obj, _now()))
+
+
+def forget_fact(subject, relationship=None, obj=None):
+    """Delete facts about a subject. Returns the number of rows removed.
+
+    Called with just a subject it wipes everything known about them; narrow it
+    with relationship and/or object to remove one specific thing.
+    """
+    sql = "DELETE FROM facts WHERE subject = ?"
+    params = [subject]
+    if relationship:
+        sql += " AND relationship = ?"
+        params.append(_norm_rel(relationship))
+    if obj:
+        sql += " AND lower(object) LIKE ?"
+        params.append(f"%{_norm_obj(obj)}%")
+    cur = _exec(sql, tuple(params))
+    return cur.rowcount if cur is not None else 0
 
 
 def get_facts_about(subject):
-    """Return a space-joined string of all known facts about subject, or ''."""
-    rows = _query("SELECT relationship, object FROM facts WHERE subject = ?", (subject,))
+    """Return a space-joined string of known facts about subject, or ''.
+
+    Newest first and capped at MAX_FACTS_IN_PROMPT so a long-lived database
+    can't quietly crowd out the rest of the prompt.
+    """
+    rows = _query("SELECT relationship, object FROM facts WHERE subject = ? "
+                  "ORDER BY created DESC LIMIT ?", (subject, MAX_FACTS_IN_PROMPT))
     return " ".join(f"{subject} {r} {o}" for r, o in rows)
+
+
+def list_facts(subject):
+    """Return facts as a list of (relationship, object) tuples, newest first.
+    Used by the spoken 'what do you know about me' command."""
+    return _query("SELECT relationship, object FROM facts WHERE subject = ? "
+                  "ORDER BY created DESC LIMIT ?", (subject, MAX_FACTS_IN_PROMPT))
 
 
 def close():

@@ -85,6 +85,47 @@ _HALLUCINATIONS = {
 def _looks_hallucinated(text):
     return text.strip().lower() in _HALLUCINATIONS
 
+# ---------- short-fragment guard ----------
+# A cough, a chair creak or a door closing is loud enough to pass the energy gate
+# and confident enough to pass the logprob gate, and Whisper renders it as a
+# short plausible word ("Tep.", "Start.", "Hmm."). Those then got acted on as
+# commands. But plenty of REAL commands are one or two words, so length alone
+# can't decide — anything short has to match something Ted actually does.
+_SHORT_OK = {
+    # transport / playback
+    "stop", "pause", "play", "resume", "next", "skip", "back", "previous",
+    "louder", "quieter", "mute", "unmute", "shuffle", "repeat",
+    # confirmations
+    "yes", "yeah", "yep", "no", "nope", "okay", "ok", "sure", "cancel",
+    "nevermind", "never mind", "done", "go", "wait", "stop it", "shut up",
+    # address / attention
+    "ted", "hey ted", "hi ted", "hello", "hi", "hey",
+    # common one-word asks
+    "weather", "time", "help", "again", "repeat that", "continue", "listen",
+    "sleep", "wake up", "mute yourself", "what", "why", "how", "more",
+}
+MIN_WORDS_UNLESS_KNOWN = 3   # under this, the phrase must be in _SHORT_OK
+
+
+def _is_junk_fragment(text):
+    """True when a short transcription isn't a command Ted recognises.
+
+    Only applies to fragments under MIN_WORDS_UNLESS_KNOWN words — longer
+    utterances are handled by the ambient-speech guards further down.
+    """
+    cleaned = text.strip().lower().strip(".,!?;:'\"")
+    if not cleaned:
+        return True
+    words = cleaned.split()
+    if len(words) >= MIN_WORDS_UNLESS_KNOWN:
+        return False
+    if cleaned in _SHORT_OK:
+        return False
+    # Allow short phrases built entirely from known command words ("play next").
+    if all(w in _SHORT_OK for w in words):
+        return False
+    return True
+
 # Whisper prints a harmless FP16 warning on CPU — silence it.
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
 
@@ -128,7 +169,8 @@ engine = AudioEngine(
 )
 _mode = engine.start()
 if _mode == "aec":
-    print("🎧 Audio: native engine with echo cancellation — voice barge-in ON.")
+    print("🎧 Audio: native engine — voice barge-in ON. (No echo cancellation: "
+          "if Ted interrupts himself, lower the speaker volume.)")
 else:
     print("🔉 Audio: sounddevice fallback (no echo cancellation). Build native/ted_audio "
           "to enable talking over Ted.")
@@ -339,6 +381,7 @@ def speak(window, text, api):
     """Speak a fixed string."""
     set_state(window, "speaking")
     samples, sr = synth(text)
+    engine.reset_barge_in()   # play_samples no longer resets — arm fresh per utterance
     engine.play_samples(samples, sr, on_amplitude=amp_cb(window),
                         should_stop=lambda: api.interrupt_speech)
     js(window, "tedHud.clearAmplitude()")
@@ -379,39 +422,47 @@ def speak_streaming(window, text_gen, api, speed=None, volume=None):
         samples, sr = synth(piece, speed=speed, volume=volume)
         return engine.play_samples(samples, sr, on_amplitude=amp, should_stop=stop)
 
-    for chunk in text_gen:
-        if api.interrupt_speech or engine.barge_in:
-            interrupted = True
-            break
-        buffer += chunk   # accumulate tokens until we have a complete sentence
-        full   += chunk
-        while True:
-            cut = _find_sentence_break(buffer)
-            if cut == -1:
-                break   # no complete sentence yet — keep accumulating
-            synth_chunk = buffer[:cut + 1]
-            # If this sentence is very short, merge it with the next before synthesis
-            # so Kokoro has enough context for natural prosody ("Sure." sounds choppy alone).
-            if len(synth_chunk.split()) < _MIN_SYNTH_WORDS:
-                rest = buffer[cut + 1:]
-                cut2 = _find_sentence_break(rest)
-                if cut2 != -1:
-                    synth_chunk = buffer[:cut + 1 + cut2 + 1]   # merged pair
-                    buffer = buffer[cut + 1 + cut2 + 1:]
-                else:
-                    break  # second sentence hasn't arrived yet — wait
-            else:
-                buffer = buffer[cut + 1:]
-            if not say(synth_chunk, strip_opener=first_sentence):
+    # Arm barge-in once for the WHOLE reply. play_samples no longer resets it,
+    # so a voice interruption during the synth gap between sentences is kept,
+    # and set_in_reply keeps detection live through those gaps.
+    engine.reset_barge_in()
+    engine.set_in_reply(True)
+    try:
+        for chunk in text_gen:
+            if api.interrupt_speech or engine.barge_in:
                 interrupted = True
                 break
-            first_sentence = False
-        if interrupted:
-            break
+            buffer += chunk   # accumulate tokens until we have a complete sentence
+            full   += chunk
+            while True:
+                cut = _find_sentence_break(buffer)
+                if cut == -1:
+                    break   # no complete sentence yet — keep accumulating
+                synth_chunk = buffer[:cut + 1]
+                # If this sentence is very short, merge it with the next before synthesis
+                # so Kokoro has enough context for natural prosody ("Sure." sounds choppy alone).
+                if len(synth_chunk.split()) < _MIN_SYNTH_WORDS:
+                    rest = buffer[cut + 1:]
+                    cut2 = _find_sentence_break(rest)
+                    if cut2 != -1:
+                        synth_chunk = buffer[:cut + 1 + cut2 + 1]   # merged pair
+                        buffer = buffer[cut + 1 + cut2 + 1:]
+                    else:
+                        break  # second sentence hasn't arrived yet — wait
+                else:
+                    buffer = buffer[cut + 1:]
+                if not say(synth_chunk, strip_opener=first_sentence):
+                    interrupted = True
+                    break
+                first_sentence = False
+            if interrupted:
+                break
 
-    if not interrupted and buffer.strip():
-        if not say(buffer, strip_opener=first_sentence):
-            interrupted = True
+        if not interrupted and buffer.strip():
+            if not say(buffer, strip_opener=first_sentence):
+                interrupted = True
+    finally:
+        engine.set_in_reply(False)   # leaves barge_in itself intact for the read below
 
     js(window, "tedHud.clearAmplitude()")
     js(window, "tedHud.endTedReply()")
@@ -514,6 +565,13 @@ def capture(prearmed=False):
         print(f"   (ignored — hallucination: {text!r})")
         return None
 
+    # 3.5) short-fragment guard — a cough or bump transcribes as a short plausible
+    #      word ("Tep.", "Start.") that clears every gate above and then gets run
+    #      as a command. Anything under 3 words now has to be a real command.
+    if _is_junk_fragment(text):
+        print(f"   (ignored — short fragment: {text!r})")
+        return None
+
     # 4) ambient-speech guard — background TV/conversation produces plausible English
     #    sentences that don't address Ted. Real commands almost never start with
     #    connective or referential words like "and", "it", "they", "one", "so", etc.
@@ -549,6 +607,7 @@ def play_chime(window, api):
     dur = 0.12
     t   = np.linspace(0, dur, int(SAMPLE_RATE * dur), endpoint=False)
     tone = (np.sin(2 * np.pi * 440 * t) * np.exp(-30 * t) * 0.22).astype(np.float32)
+    engine.reset_barge_in()   # a stale barge flag would silently skip the chime
     engine.play_samples(tone, SAMPLE_RATE, on_amplitude=amp_cb(window))
 
 

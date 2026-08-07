@@ -1,15 +1,17 @@
 // ted_audio.swift
 // ---------------------------------------------------------------------------
-// Full-duplex audio bridge for Ted with hardware echo cancellation (AEC).
+// Full-duplex audio bridge for Ted.
 //
 // WHY THIS EXISTS:
-//   To barge in on Ted while he's talking (like Siri / ChatGPT voice), the mic
-//   must NOT hear Ted's own speaker output as "you talking." macOS's Voice
-//   Processing I/O unit (the same AEC FaceTime and Siri use) removes that echo
-//   — but it only cancels audio that is RENDERED THROUGH THE SAME ENGINE. So
-//   Ted's TTS playback has to go through this engine too, not a separate
-//   sounddevice stream. That's why this binary owns both mic capture AND
-//   playback.
+//   Full-duplex capture + playback in one process, with a mic-mute that truly
+//   releases the device (orange dot off). NOTE: despite the binary's "aec"
+//   mode name in core/audio.py, there is NO echo cancellation here — Voice
+//   Processing I/O was removed because it permanently ducks Spotify and other
+//   apps. The mic streams CONTINUOUSLY, including while Ted speaks; telling
+//   the user's voice apart from Ted's own speaker leak is the Python side's
+//   job (energy threshold + margin in core/audio.py). That works when the
+//   speakers aren't blasting straight into the mic; on a loud speaker-next-to-
+//   mic setup Ted may hear himself — use headphones or lower the volume.
 //
 // PROTOCOL (talks to core/audio.py over stdio):
 //   stdout : continuous raw mic audio — int16 little-endian, mono, 16 kHz,
@@ -83,10 +85,13 @@ let player = AVAudioPlayerNode()
 let captureEngine = AVAudioEngine()
 let inputNode = captureEngine.inputNode
 
-// Voice processing is intentionally OFF — enabling it causes macOS to
-// permanently duck Spotify and other apps. The tradeoff: barge-in over
-// external speakers may pick up Ted's own voice; use headphones or the Stop
-// button if that happens.
+// Voice processing (real AEC — cancels Ted's own speaker output from the mic
+// so the user can talk over him). It was previously disabled because enabling
+// it made macOS permanently duck Spotify and other apps; macOS 14 added
+// voiceProcessingOtherAudioDuckingConfiguration, which lets us turn that
+// ducking down to minimum. If enabling fails we log and carry on without it —
+// Python's energy threshold is then the only guard against self-interruption.
+var vpEnabled = false
 
 // Attach the player and connect it at the engine's canonical format.
 // Ted's 16 kHz audio up to this format ourselves before scheduling it.
@@ -118,7 +123,11 @@ func installMicTap() {
     guard !tapInstalled else { return }
     tapInstalled = true
     inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { (buffer, _) in
-        if ttsActive { return }   // drop mic frames while Ted is speaking
+        // Mic frames stream UNCONDITIONALLY — including while Ted speaks.
+        // (An earlier version dropped frames during TTS to fake echo-safety,
+        // which made voice barge-in physically impossible: Python never saw
+        // the user talking over Ted. Barge-in vs. self-echo discrimination
+        // happens in core/audio.py via the energy threshold.)
         let inFormat = buffer.format
         let n = Int(buffer.frameLength)
         if inFormat.sampleRate <= 0 || n == 0 { return }
@@ -138,10 +147,25 @@ func installMicTap() {
         monoBuf.frameLength = AVAudioFrameCount(n)
         let mono = monoBuf.floatChannelData![0]
 
-        // Pick the SINGLE loudest channel rather than averaging. A multi-channel
-        // virtual device usually carries the real mic on one channel; averaging all
-        // of them dilutes your voice and adds noise, which wrecks transcription.
-        if inFormat.isInterleaved {
+        // Channel selection:
+        //  • Voice processing ON — ALWAYS take channel 0, the processed (echo-
+        //    cancelled) primary. VP exposes multiple channels, and the loudest-
+        //    channel heuristic anti-selects the AEC: during playback the raw
+        //    channels carry Ted's uncancelled voice, so they are the loudest —
+        //    picking them reintroduces the very echo VP just removed.
+        //  • VP off — pick the SINGLE loudest channel rather than averaging. A
+        //    multi-channel virtual device usually carries the real mic on one
+        //    channel; averaging dilutes the voice and wrecks transcription.
+        if vpEnabled {
+            let src = inFormat.isInterleaved ? nil : chData[0]
+            if let p = src {
+                for i in 0..<n { mono[i] = p[i] }
+            } else {
+                let base = chData[0]
+                var idx = 0
+                for i in 0..<n { mono[i] = base[idx]; idx += channels }
+            }
+        } else if inFormat.isInterleaved {
             let base = chData[0]
             var bestCh = 0
             var bestE: Float = -1
@@ -225,35 +249,35 @@ func micOn() {
     installMicTap()
 }
 
+// Enable voice processing BEFORE the tap is installed and the engine starts —
+// it changes the input node's format, and must be set while the engine is idle.
+do {
+    try inputNode.setVoiceProcessingEnabled(true)
+    vpEnabled = true
+    // Leave VP's AGC on: it boosts the brief near-end bursts that survive
+    // double-talk suppression, and measured barge reliability drops (4/6 → 2/6)
+    // without it. The distortion it adds is handled on the Python side by
+    // waiving the pitch gate during active playback.
+    if #available(macOS 14.0, *) {
+        inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+            AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                enableAdvancedDucking: false, duckingLevel: .min)
+        log("voice processing ON (AEC) — other-audio ducking set to minimum")
+    } else {
+        log("voice processing ON (AEC) — pre-macOS-14: other apps may be ducked")
+    }
+} catch {
+    log("voice processing unavailable (\(error)) — no echo cancellation; " +
+        "Ted may hear himself on loud speakers")
+}
+
 // Install the tap on startup (mic on by default).
 installMicTap()
-
-// ---- mic suppression during TTS playback -----------------------------------
-// Without hardware AEC, the mic would pick up Ted's own speaker output.
-// We suppress mic frames while TTS is playing and for 450 ms after the last
-// chunk — long enough for room echo to die down, short enough not to feel laggy.
-var ttsActive = false
-var suppressWorkItem: DispatchWorkItem? = nil
-
-func startSuppression() {
-    ttsActive = true
-    suppressWorkItem?.cancel()
-    suppressWorkItem = nil
-}
-
-func scheduleSuppressEnd() {
-    suppressWorkItem?.cancel()
-    let wi = DispatchWorkItem { ttsActive = false }
-    suppressWorkItem = wi
-    DispatchQueue.global().asyncAfter(deadline: .now() + 0.45, execute: wi)
-}
 
 // ---- playback: int16 16k bytes from Python -> engine format -> player ------
 func schedulePCM(_ int16Bytes: Data) {
     let count = int16Bytes.count / 2
     if count == 0 { return }
-
-    startSuppression()   // mic suppressed while audio is being scheduled
 
     // Wrap the raw 16 kHz int16 from Python in a buffer.
     guard let inBuf = AVAudioPCMBuffer(pcmFormat: pcm16Format,
@@ -282,21 +306,13 @@ func schedulePCM(_ int16Bytes: Data) {
     conv.convert(to: outBuf, error: &err, withInputFrom: inputBlock)
     if let err = err { log("play convert error: \(err.localizedDescription)"); return }
 
-    // When this buffer finishes playing, schedule the end-of-suppression timer.
-    // If another buffer arrives before the timer fires, startSuppression() cancels
-    // it and we stay suppressed until audio truly stops.
-    player.scheduleBuffer(outBuf) { scheduleSuppressEnd() }
+    player.scheduleBuffer(outBuf, completionHandler: nil)
     if !player.isPlaying { player.play() }
 }
 
 func stopPlayback() {
     // .stop() discards everything still queued — instant cutoff on Stop button.
     player.stop()
-    // Cancel any pending suppress-end and re-enable the mic immediately so Ted
-    // can hear the user's next command right after they press Stop.
-    suppressWorkItem?.cancel()
-    suppressWorkItem = nil
-    ttsActive = false
 }
 
 // ---- stdin reader: parse the control protocol -----------------------------

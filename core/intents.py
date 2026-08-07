@@ -207,7 +207,10 @@ def _parse_calc(text):
     if m:
         if not m.group(2):
             return None
-        change = float(m.group(1).replace(",", "")) - float(m.group(2).replace(",", ""))
+        try:
+            change = float(m.group(1).replace(",", "")) - float(m.group(2).replace(",", ""))
+        except ValueError:
+            return None
         if change < 0:
             return f"That's {_money(-change)} short."
         return f"Change is {_money(change)}."
@@ -225,7 +228,10 @@ def _parse_calc(text):
 
     m = re.search(r"([\d.]+)\s*percent of\s+([\d.,]+)", t)
     if m:
-        return f"{_money(float(m.group(1)) / 100 * float(m.group(2).replace(',', '')))}."
+        try:
+            return f"{_money(float(m.group(1)) / 100 * float(m.group(2).replace(',', '')))}."
+        except ValueError:
+            return None
     return None
 
 # ---------- Spotify phrase sets + song parsing ----------

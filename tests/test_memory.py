@@ -35,6 +35,35 @@ memory.save_fact("Charlie", "LIKES", "jazz")
 memory.save_fact("Charlie", "LIKES", "jazz")   # duplicate is a no-op
 check("fact recall", "LIKES jazz" in memory.get_facts_about("Charlie"))
 
+print("\n— facts: normalization, supersede, dedupe —")
+memory.save_fact("Charlie", "lives in", "Spirit Lake")      # lowercase + spaces
+check("relationship normalized to LIVES_IN",
+      "LIVES_IN Spirit Lake" in memory.get_facts_about("Charlie"))
+memory.save_fact("Charlie", "LIVES_IN", "Spirit Lake, Iowa")
+_towns = [o for r, o in memory.list_facts("Charlie") if r == "LIVES_IN"]
+check("single-valued fact keeps exactly one value", len(_towns) == 1)
+check("newest value wins (no contradictory pair)", _towns[0] == "Spirit Lake, Iowa")
+memory.save_fact("Charlie", "LIVES_IN", "Ames")
+check("moving supersedes the old town",
+      [o for r, o in memory.list_facts("Charlie") if r == "LIVES_IN"] == ["Ames"])
+
+memory.save_fact("Charlie", "LIKES", "jazz music")   # more specific than "jazz"
+_likes = [o for r, o in memory.list_facts("Charlie") if r == "LIKES"]
+check("more specific value replaces the vaguer one",
+      "jazz music" in _likes and "jazz" not in _likes)
+
+memory.save_fact("", "LIKES", "nothing")
+memory.save_fact("Charlie", "LIKES", "")
+check("blank subject/object are ignored",
+      not any(o == "" for _, o in memory.list_facts("Charlie")))
+
+print("\n— facts: forget —")
+memory.save_fact("Charlie", "LIKES", "fireworks")
+check("forget one relationship only", memory.forget_fact("Charlie", "LIKES") == 2)
+check("other facts survive", memory.list_facts("Charlie") != [])
+check("forget everything about a subject", memory.forget_fact("Charlie") >= 1)
+check("subject reads empty afterwards", memory.get_facts_about("Charlie") == "")
+
 print("\n— habits —")
 check("first log today is new", memory.log_habit("workout"))
 check("second log today is not", not memory.log_habit("workout"))

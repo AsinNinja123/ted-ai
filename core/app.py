@@ -35,7 +35,8 @@ from core.intents import (
 from core.logs import error_log
 from core.memory import (log_pattern, get_frequent_patterns,
                          save_session_summary, get_last_session_summary,
-                         log_habit, get_habit_streak, get_all_habits)
+                         log_habit, get_habit_streak, get_all_habits,
+                         list_facts, forget_fact)
 from core.paths import SHORTCUTS_PATH
 from core.tools import TOOL_SCHEMAS
 from core.voice import speak, speak_streaming, capture, engine
@@ -179,6 +180,12 @@ class TedApi:
     def active_conversation(self):
         """Returns the conversation list."""
         return self.ted_conversation
+
+    @active_conversation.setter
+    def active_conversation(self, value):
+        # _try_tools assigns a trimmed copy back when the history exceeds 42
+        # messages — without this setter every tool call crashed the turn.
+        self.ted_conversation = value
 
     def _respond(self, text, echo_user=True, spoken_prefix=None):
         """
@@ -664,18 +671,73 @@ class TedApi:
         if li is not None:
             return li
 
-        # ── knowledge base: "remember this / note this / add to knowledge: ..." ──
-        km = re.search(
-            r'\b(?:remember this|add to (?:your )?knowledge|note this|save this'
-            r'|teach you(?:rself)?)\s*[:\-,]?\s*(.+)',
-            text, re.I,
-        )
+        # ── remember: personal facts → facts table, everything else → knowledge base ──
+        # "remember this" used to be the only phrasing that matched, and it only
+        # ever wrote to the knowledge base. That meant "remember I'm 20" got a
+        # cheerful "got it" and stored nothing Ted would actually recall, since
+        # only the facts table is injected into every prompt. Both holes fixed here.
+        _REMEMBER_VERB = (r'(?:remember|remeber|rember|remmember)(?: that| this| it)?'
+                          r'|add to (?:your )?knowledge|note (?:this|that)|save this'
+                          r'|don\'?t forget|do not forget|teach you(?:rself)?')
+        # Leading form:  "remember that I'm 20"
+        km = re.search(rf'\b(?:{_REMEMBER_VERB})\s*[:\-,]?\s*(.+)', text, re.I)
+        body = km.group(1).strip().rstrip(".") if km else ""
+        # When the verb ENDS the sentence ("...remember that"), the regex
+        # backtracks and hands back the bare filler word as the body. Treat that
+        # as no body at all so the trailing form below gets its turn.
+        if body.lower().strip(".,!? ") in ("that", "this", "it", "", "them", "those"):
+            body = ""
+        if not body:
+            # Trailing form: "I'm 20 years old, remember that" — people state the
+            # fact first and tack the instruction on the end. The leading pattern
+            # finds nothing after the verb, so look for the statement BEFORE it.
+            tm = re.search(rf'^(.+?)[\s,.]*\b(?:{_REMEMBER_VERB})[\s.!?]*$', text, re.I)
+            if tm:
+                km = tm
+                body = tm.group(1).strip().rstrip(".,")
         if km:
-            body = km.group(1).strip()
-            if body and features.HAS_KNOWLEDGE:
+            if not body:
+                return "What should I remember?"
+
+            # Personal statement? Then it belongs in the facts table, which is
+            # what gets fed into the prompt on every single turn.
+            personal = re.search(r"\b(i|i'?m|im|my|mine|me|we|our)\b", body, re.I)
+            if personal:
+                try:
+                    saved = llm.extract_and_save_facts(body, "")
+                except Exception as e:
+                    error_log.error(f"[memory] explicit remember failed: {e}")
+                    saved = 0
+                if saved:
+                    # Mirror into the knowledge base too so it's searchable later.
+                    if features.HAS_KNOWLEDGE:
+                        try:
+                            features.knowledge.add_text(body, source="voice")
+                        except Exception:
+                            pass
+                    return "Got it — I'll remember that."
+                # Extraction produced nothing usable. Say so rather than
+                # claiming to remember something that was never stored.
+                if features.HAS_KNOWLEDGE and features.knowledge.add_text(body, source="voice"):
+                    return "Saved it to my notes, though I couldn't pin it down as a fact about you."
+                return "I couldn't store that one — say it as a plain statement, like 'remember I'm twenty.'"
+
+            if features.HAS_KNOWLEDGE:
                 n = features.knowledge.add_text(body, source="voice")
                 return "Got it, saved." if n else "Couldn't save that — knowledge base unavailable."
-            return "What should I remember?"
+            return "Couldn't save that — knowledge base unavailable."
+
+        # ── "what do you know about me" / "forget what you know about me" ──
+        if re.search(r"\bwhat do you (?:know|remember) about me\b", text, re.I):
+            facts = list_facts(OWNER_NAME)
+            if not facts:
+                return "Nothing stored about you yet. Say 'remember I'm...' and I'll start keeping track."
+            readable = ", ".join(f"{r.replace('_', ' ').lower()} {o}" for r, o in facts[:8])
+            return f"Here's what I have: you {readable}."
+
+        if re.search(r"\bforget (?:everything |what )?(?:you know )?about me\b", text, re.I):
+            n = forget_fact(OWNER_NAME)
+            return f"Cleared {n} fact{'s' if n != 1 else ''} about you." if n else "I didn't have anything stored about you."
 
         # ── knowledge query: "what do you know about X" ──
         kq = re.search(r'\bwhat do you know about\s+(.+)', text, re.I)

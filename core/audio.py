@@ -8,8 +8,11 @@ whole time in BOTH modes, so you can always talk over Ted.
 Two modes, chosen automatically at start():
 
   • "aec"      — the native Swift engine (native/ted_audio) is built AND starts.
-                 Gives hardware echo cancellation, so you can barge in over
-                 SPEAKERS without Ted hearing himself. Best mode.
+                 (Historical name — the binary no longer does echo cancellation;
+                 Voice Processing ducked Spotify so it was removed. The mic
+                 streams continuously, including while Ted speaks, and the
+                 energy threshold below tells the user's voice apart from Ted's
+                 own speaker leak. Works unless speakers blast into the mic.)
 
   • "fallback" — pure Python (sounddevice). Still full-duplex / always-listening,
                  so barge-in works great on HEADPHONES. On speakers Ted's own
@@ -30,6 +33,17 @@ import collections
 
 import numpy as np
 
+# Voice activity detection for barge-in: distinguishes speech from claps, door
+# slams, and other loud transients so only a VOICE interrupts Ted. Optional —
+# without it barge-in falls back to energy-only detection.
+try:
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")        # webrtcvad emits a pkg_resources deprecation warning
+        import webrtcvad as _webrtcvad
+except ImportError:
+    _webrtcvad = None
+
 HOME = os.path.expanduser("~/ted-ai")
 BINARY = os.path.join(HOME, "native", "ted_audio")  # Swift AEC binary path
 
@@ -47,10 +61,53 @@ START_TIMEOUT = 30.0    # give up waiting for speech onset after this many secon
 PREROLL       = 12      # frames to keep before speech onset so we don't clip the first word
 
 # ---- Barge-In Tuning ----
-# Voice must exceed the ambient threshold by BARGE_MARGIN for BARGE_FRAMES consecutive frames
-# to count as intentional speech rather than noise — prevents a single loud click from interrupting.
-BARGE_MARGIN  = 3.0     # voice energy must be this multiple of threshold
-BARGE_FRAMES  = 6       # ...for this many consecutive frames (~120 ms)
+# To interrupt Ted, the last BARGE_WINDOW frames (~300 ms) must contain:
+#   • BARGE_FRAMES frames that are LOUD (energy above the ambient threshold by
+#     BARGE_MARGIN) and pass webrtcvad's speech classifier, AND
+#   • BARGE_PITCH_FRAMES of those with detectable vocal PITCH (autocorrelation
+#     peak ≥ PITCH_MIN in the 70–320 Hz range).
+# Each layer covers the others' blind spots: the energy gate rejects ambient
+# noise; the frame-count floor rejects short transients (a clap is only ~4 loud
+# frames); the pitch gate rejects sustained broadband noise — webrtcvad alone
+# can't, because telephony fricatives ARE broadband noise, so it happily calls
+# claps "speech". Measured pitch strength: real speech 0.4–0.8, claps/noise
+# ≤ ~0.15. Trigger latency is roughly 250–400 ms of sustained speech.
+# Margin history: 3.0 when energy was the ONLY discriminator; now that VAD +
+# pitch + the frame-count floor reject non-speech, the energy gate only needs
+# to clear ambient noise. At 3.0 the bar sat at ~0.018, which normal-volume
+# speech from across a desk barely reaches during playback (VP shaves the
+# near-end voice slightly in double-talk) — barge-in worked only when leaning
+# in or speaking up.
+BARGE_MARGIN       = 2.0    # voice energy must be this multiple of threshold
+# Absolute floor on the barge bar. VP's echo-cancelled channel carries ≤ ~0.006
+# residual of Ted's own voice, so anything above 0.012 during playback is real
+# near-end sound; a noisy calibration must not raise the bar past the quiet
+# bursts VP lets through in double-talk.
+BARGE_BAR_MIN      = 0.012
+BARGE_FRAMES       = 10     # loud+VAD frames needed within the window (~200 ms of speech)
+BARGE_WINDOW       = 15     # sliding window length in frames (~300 ms)
+BARGE_PITCH_FRAMES = 4      # window frames that must carry vocal pitch
+PITCH_MIN          = 0.5    # normalized autocorrelation floor for "has pitch"
+_PITCH_LAGS        = (50, 229)  # autocorr lag range: 320 Hz down to 70 Hz at 16 kHz
+# Absolute ceiling on the barge bar. calibrate() caps the ambient threshold at
+# 0.025, so threshold * BARGE_MARGIN could demand 0.075 RMS — a shout. Normal
+# speech is ~0.03–0.10, so 0.030 keeps interruption possible in a noisy room.
+BARGE_THRESHOLD_MAX = 0.030
+
+# Run with TED_DEBUG_BARGE=1 to print barge-in candidate frames (RMS vs. the
+# effective bar) while Ted is speaking — the only way to see why a barge did
+# or didn't trigger. Lines also append to data/barge_debug.log for post-mortem.
+DEBUG_BARGE = os.environ.get("TED_DEBUG_BARGE", "") not in ("", "0")
+_DEBUG_LOG_PATH = os.path.join(HOME, "data", "barge_debug.log")
+
+
+def _barge_debug(line):
+    print(line, file=sys.stderr)
+    try:
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {line}\n")
+    except OSError:
+        pass
 
 DEFAULT_THRESHOLD = 0.012  # fallback VAD threshold before calibration
 
@@ -88,8 +145,19 @@ class AudioEngine:
         self._preroll = collections.deque(maxlen=PREROLL)  # ring buffer of recent frames before speech
         self._last_rms = 0.0
         self._playing = False                   # True while Ted is speaking
+        # True for the span of a whole multi-sentence reply, including the
+        # synth gaps BETWEEN sentences where _playing is False. Barge-in
+        # listens on (_playing or _in_reply) so a user who interrupts at a
+        # sentence pause — the most natural moment — is still heard.
+        self._in_reply = False
         self.barge_in = False                   # set True when user speaks over Ted
-        self._barge_run = 0                     # consecutive frames above barge threshold
+        # Sliding windows of per-frame verdicts (see barge tuning above):
+        # _barge_hits = "loud AND passes VAD", _barge_pitch = "loud AND has vocal pitch".
+        self._barge_hits = collections.deque(maxlen=BARGE_WINDOW)
+        self._barge_pitch = collections.deque(maxlen=BARGE_WINDOW)
+        # VAD mode 2: middle aggressiveness — stricter modes drop too many real
+        # speech frames, looser ones let noise through.
+        self._vad = _webrtcvad.Vad(2) if _webrtcvad is not None else None
         self._first_frame = threading.Event()   # signals that the mic has delivered at least one frame
         self._mic_muted = False                 # True while the mic is physically off
         self._closing = False                   # True once close() runs — stops the restart watchdog
@@ -168,17 +236,39 @@ class AudioEngine:
         with self._lock:
             self._preroll.append(frame)
             self._last_rms = rms
-            if self._playing and (self.mode == "aec" or self._fallback_bargein):
-                # Only check for barge-in while Ted is speaking.
+            if (self._playing or self._in_reply) and (self.mode == "aec" or self._fallback_bargein):
+                # Check for barge-in while Ted is speaking OR between the
+                # sentences of a streamed reply (_in_reply) — the synth gap is
+                # where a human naturally interrupts, and Ted isn't emitting
+                # sound there so even fallback mode can't self-trigger.
                 # AEC mode: Ted's voice is cancelled so only the user's voice remains.
                 # Fallback on speakers: Ted's voice leaks here and can false-trigger,
                 # so this is gated behind _fallback_bargein (off → no self-interruption).
-                if rms > self._threshold * BARGE_MARGIN:
-                    self._barge_run += 1
-                    if self._barge_run >= BARGE_FRAMES:
-                        self.barge_in = True    # conversation loop polls this flag to stop playback
-                else:
-                    self._barge_run = 0         # reset run on any quiet frame so it can't accumulate slowly
+                bar = max(BARGE_BAR_MIN,
+                          min(self._threshold * BARGE_MARGIN, BARGE_THRESHOLD_MAX))
+                loud = rms > bar
+                voiced = loud and self._is_voice(frame)
+                pitched = loud and self._pitch_strength(frame) >= PITCH_MIN
+                self._barge_hits.append(voiced)
+                self._barge_pitch.append(pitched)
+                hits, pitch_n = sum(self._barge_hits), sum(self._barge_pitch)
+                # The pitch gate only applies in the synth gaps between sentences,
+                # where mic audio arrives clean (claps ring with false periodicity
+                # there, and real voice keeps its pitch). While audio is actually
+                # PLAYING, macOS voice processing garbles what little near-end
+                # signal it lets through — genuine voice bursts arrive unpitched —
+                # and VP has already removed the echo and crushed non-speech, so
+                # hits alone are trustworthy evidence.
+                trigger = hits >= BARGE_FRAMES and (
+                    (self._playing and self.mode == "aec")
+                    or pitch_n >= BARGE_PITCH_FRAMES)
+                if DEBUG_BARGE and loud:
+                    _barge_debug(f"[barge] rms={rms:.4f} > bar={bar:.4f} voiced={voiced} "
+                                 f"pitched={pitched} hits={hits}/{BARGE_FRAMES} "
+                                 f"pitch={pitch_n}/{BARGE_PITCH_FRAMES}"
+                                 f"{'  → BARGE' if trigger else ''}")
+                if trigger:
+                    self.barge_in = True        # conversation loop polls this flag to stop playback
         try:
             self._q.put_nowait(frame)
         except queue.Full:
@@ -191,6 +281,31 @@ class AudioEngine:
                 self._q.put_nowait(frame)
             except queue.Full:
                 pass
+
+    def _is_voice(self, frame):
+        """True when webrtcvad classifies this 20 ms frame as speech.
+        Permissive on any failure (no VAD installed, odd frame length) so
+        barge-in degrades to energy-only rather than going dead."""
+        if self._vad is None or len(frame) != FRAME:
+            return True
+        try:
+            pcm = (np.clip(frame, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+            return self._vad.is_speech(pcm, SAMPLE_RATE)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _pitch_strength(frame):
+        """Normalized autocorrelation peak in the human pitch range [0, 1].
+        Voiced speech (vowels) scores 0.4–0.8; claps, hiss and other broadband
+        noise stay near 0.1 — periodicity is the one thing a transient can't fake."""
+        x = frame - frame.mean()
+        if np.max(np.abs(x)) < 1e-6:
+            return 0.0
+        r = np.fft.irfft(np.abs(np.fft.rfft(x, 1024)) ** 2)
+        if r[0] <= 0:
+            return 0.0
+        return float(np.max(r[_PITCH_LAGS[0]:_PITCH_LAGS[1]]) / r[0])
 
     def _restart_aec(self):
         """Restart the Swift binary after a crash. Waits 1 s for CoreAudio to settle."""
@@ -383,8 +498,12 @@ class AudioEngine:
 
         CH = 1024                               # ~64 ms per chunk — small enough for responsive barge-in
         finished = True
+        # NOTE: barge state is deliberately NOT reset here. speak_streaming calls
+        # play_samples once per sentence; resetting per call would both discard a
+        # barge detected in the synth gap between sentences and zero the frame
+        # counter at every boundary. Callers reset once per utterance instead
+        # (speak / speak_streaming / play_chime).
         self._set_playing(True)
-        self.reset_barge_in()
         try:
             for i in range(0, len(pcm), CH):
                 if (should_stop and should_stop()) or self.barge_in:
@@ -435,11 +554,21 @@ class AudioEngine:
             pass                                # binary exited — ignore silently
 
     def _set_playing(self, val):
-        """Set the _playing flag and reset the barge-in counter when starting playback."""
+        """Set the _playing flag. Does NOT touch barge state — a barge run in
+        progress must survive the sentence boundaries of a streamed reply."""
         with self._lock:
             self._playing = val
-            if val:
-                self._barge_run = 0             # always start a fresh barge-in count
+
+    def set_in_reply(self, val):
+        """Mark the span of a whole (possibly multi-sentence) reply so barge-in
+        detection stays live through the synth gaps between sentences.
+        Clearing it leaves barge_in untouched — the caller reads that flag
+        after the reply to report barged_by_voice."""
+        with self._lock:
+            self._in_reply = val
+            if not val:
+                self._barge_hits.clear()        # don't carry partial evidence past the reply
+                self._barge_pitch.clear()
 
     def mute_mic(self):
         """Turn the mic PHYSICALLY off. AEC mode: send 'M' to the Swift binary,
@@ -479,10 +608,11 @@ class AudioEngine:
                 print(f"[audio] mic reopen failed: {e}", file=sys.stderr)
 
     def reset_barge_in(self):
-        """Clear the barge-in flag and run counter before starting a new playback."""
+        """Clear the barge-in flag and detection window before starting a new playback."""
         with self._lock:
             self.barge_in = False
-            self._barge_run = 0
+            self._barge_hits.clear()
+            self._barge_pitch.clear()
 
     @staticmethod
     def _to_int16(samples, src_sr, target_sr=SAMPLE_RATE):

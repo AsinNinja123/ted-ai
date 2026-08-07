@@ -62,6 +62,18 @@ The first launch after building asks for **microphone permission** — allow it.
 - **Knowledge base:** drop PDFs/text into `inbox/` and say "index my documents" to
   make them searchable (ChromaDB + local embeddings).
 
+**Telling Ted to remember something.** Say it either way round — "remember I'm
+twenty" or "I'm twenty, remember that". Personal statements (anything with
+*I / my / we*) go into the **facts** table, which is injected into every single
+prompt, so Ted always knows them. Anything impersonal goes to the knowledge base,
+which is searched on demand. Ask "what do you know about me" to see the list, or
+"forget everything about me" to clear it.
+
+Facts supersede rather than pile up: for one-answer things (where you live, where
+you work, your age) a new value replaces the old one, so Ted can't end up holding
+two contradictory answers. When two versions differ only in detail — "Spirit Lake"
+vs "Spirit Lake, Iowa" — the more specific one wins.
+
 ## Optional integrations
 
 - **Email (Outlook IMAP):** run `python setup_email.py` once, then "check my email".
