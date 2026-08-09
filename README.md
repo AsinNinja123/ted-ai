@@ -21,6 +21,23 @@ The Ted window opens, calibrates the mic for a second, greets you, and starts
 listening. Just talk — no clicking, no wake word required (though "Hey Ted" works).
 Typing in the box also works.
 
+## Launching without a terminal
+
+```bash
+bash tools/make_app.sh
+```
+
+Builds `~/ted-ai/Ted.app` — double-click it, or find it with Spotlight, or drag it
+to the Dock. It activates the venv and runs `hud.py` for you. Re-run the script any
+time to rebuild.
+
+- First launch asks for **Microphone** access — allow it. Calendar/Notes/Messages
+  control will each prompt once too, the first time Ted uses them.
+- There's no terminal, so everything Ted prints goes to `data/ted_launch.log`.
+  If Ted starts and immediately quits, that file says why (and you'll get a dialog
+  with the last few lines).
+- Launching twice is a no-op — two Teds would fight over the microphone.
+
 ## Talk-over (echo cancellation)
 
 Barging in over **speakers** needs hardware echo cancellation from a small native
@@ -74,6 +91,22 @@ you work, your age) a new value replaces the old one, so Ted can't end up holdin
 two contradictory answers. When two versions differ only in detail — "Spirit Lake"
 vs "Spirit Lake, Iowa" — the more specific one wins.
 
+**Session memories.** When a conversation is worth remembering, Ted writes himself a
+short memory of it and can bring it up later — "yesterday you were stuck on that
+double-firing webhook". Recent memories are injected into every reply, so callbacks
+happen naturally mid-conversation, not just in the greeting.
+
+Most sessions produce **no memory at all**, on purpose. Testing, timers, music and
+one-off questions are filtered out twice — first by a cheap word/turn check, then by
+the model itself, which is told that declining is the right answer most of the time.
+A memory list full of "Charlie set a two minute timer" makes callbacks worse than
+having none. Seeing `[memory] shutdown: nothing worth remembering this session` in
+the log is the system working.
+
+A memory gets written when you've been quiet for 10 minutes, every 12 exchanges
+(so a crash can't lose the session), and on exit — window close, Ctrl-C, or SIGTERM.
+All three paths update the *same* row, so one conversation leaves one memory.
+
 ## Optional integrations
 
 - **Email (Outlook IMAP):** run `python setup_email.py` once, then "check my email".
@@ -125,6 +158,7 @@ ted-ai/
 │   ├── assistant.py       # reminders, timers, lists, duration/time parsing, weather, location
 │   ├── memory.py          # SQLite long-term memory: exchanges, facts, habits, patterns
 │   ├── knowledge.py       # ChromaDB knowledge base + inbox/PDF indexing
+│   ├── speaker.py         # voice lock: enroll/verify the owner's voice (opt-in)
 │   ├── calendar_app.py    # read/write Calendar.app via AppleScript
 │   ├── notes.py           # read/write Apple Notes via AppleScript
 │   ├── email.py           # Outlook email via IMAP/SMTP
@@ -137,11 +171,25 @@ ted-ai/
 ├── native/
 │   ├── ted_audio.swift    # echo-cancelling audio engine
 │   └── build.sh           # builds it
-├── tests/test_intents.py  # use-case tests for command parsing (run with venv python)
-├── ui/ted_hud.html        # the HUD window (particle sphere)
-├── ui/ted_interface_v2.html  # previous HUD, kept as fallback
-└── data/                  # Kokoro voice model, scratch audio, local DBs
+├── tools/
+│   └── make_app.sh        # builds Ted.app (double-clickable launcher + icon)
+├── tests/                 # use-case tests — run each with the venv python
+│   ├── test_intents.py    # command parsing
+│   ├── test_barge.py      # barge-in behaviour
+│   ├── test_capture_gates.py
+│   ├── test_memory.py
+│   ├── test_session_memory.py  # what's worth remembering
+│   └── test_pipeline.py
+├── ui/
+│   ├── ted_hud.html       # the live HUD window (particle sphere) — loaded by paths.py
+│   └── ted_hud_legacy.html   # older HUD, kept as a fallback; nothing imports it
+├── docs/                  # design notes and debugging handoffs
+└── data/                  # Kokoro voice model, local DBs (gitignored, ~340 MB)
 ```
+
+Everything in `data/` and `venv/` is generated or downloaded — neither is committed,
+and both can be rebuilt from scratch. `venv/` alone is ~1.7 GB, so the folder looks
+much bigger on disk than the actual project is.
 
 ## HUD sphere colors
 

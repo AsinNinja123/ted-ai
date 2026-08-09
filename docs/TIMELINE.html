@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ted — Build Timeline</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --txt:#e7e9ee; --dim:#9aa3b2;
+    --done:#3ecf8e; --kill:#e0555f; --open:#f0b429; --info:#5aa9f7; --purple:#a982f0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;padding:40px 24px 80px}
+  .wrap{max-width:940px;margin:0 auto}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:28px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:34px;font-size:13px;color:var(--dim)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .phase{margin:0 0 10px;font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);
+         border-top:1px solid var(--line);padding-top:22px;margin-top:34px}
+  .phase:first-of-type{border-top:none;margin-top:0;padding-top:0}
+  .rail{position:relative;padding-left:30px}
+  .rail:before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .ev{position:relative;margin-bottom:16px}
+  .ev:before{content:"";position:absolute;left:-29px;top:7px;width:12px;height:12px;border-radius:50%;
+             background:var(--bg);border:2px solid var(--done)}
+  .ev.kill:before{border-color:var(--kill)}
+  .ev.open:before{border-color:var(--open)}
+  .ev.info:before{border-color:var(--info)}
+  .ev.pur:before{border-color:var(--purple)}
+  .ts{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim)}
+  .ttl{font-weight:600;margin:1px 0 2px}
+  .why{color:var(--dim);font-size:13.5px}
+  .why code{background:#20242d;padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-top:34px}
+  .card h2{font-size:15px;margin:0 0 12px;letter-spacing:.03em}
+  ul{margin:0;padding-left:18px}
+  li{margin-bottom:7px;color:var(--dim);font-size:14px}
+  li b{color:var(--txt);font-weight:600}
+  .tag{font:11px ui-monospace,Menlo,monospace;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:1px}
+  .t-open{background:rgba(240,180,41,.15);color:var(--open)}
+  .t-now{background:rgba(90,169,247,.15);color:var(--info)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Ted — build timeline</h1>
+  <div class="sub">Reconstructed from git history, file timestamps, and 10 prior sessions · compiled Aug 8, 2026</div>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--done)"></i>shipped</span>
+    <span><i class="dot" style="background:var(--kill)"></i>abandoned / removed</span>
+    <span><i class="dot" style="background:var(--open)"></i>still open</span>
+    <span><i class="dot" style="background:var(--info)"></i>architecture swap</span>
+    <span><i class="dot" style="background:var(--purple)"></i>milestone</span>
+  </div>
+
+  <div class="phase">Phase 0 · Windows era — through late May 2026</div>
+  <div class="rail">
+    <div class="ev pur"><div class="ts">spring 2026</div><div class="ttl">"jarvis-ai" on the Windows PC</div>
+      <div class="why">LLaMA 3.2 3B via Ollama · Whisper · ElevenLabs "Daniel" · OpenWakeWord <code>"hey jarvis"</code> · Streamlit · DuckDuckGo. RX 6600 XT, 48 GB.</div></div>
+    <div class="ev kill"><div class="ts">—</div><div class="ttl">Fine-tuning for personality — abandoned</div>
+      <div class="why">Unsloth + LoRA, 143 examples, trained in Colab (AMD GPU couldn't run the libraries). Loss too high. <b>A system prompt on the base model beat it</b> — that call still holds.</div></div>
+    <div class="ev kill"><div class="ts">—</div><div class="ttl">Voice cloning — abandoned</div><div class="why">Audio quality too poor.</div></div>
+    <div class="ev info"><div class="ts">—</div><div class="ttl">ChromaDB → Neo4j for memory</div><div class="why">Graph memory. Last Windows-era build, late May.</div></div>
+  </div>
+
+  <div class="phase">Phase 1 · Mac migration + feature sprawl — June 2026</div>
+  <div class="rail">
+    <div class="ev info"><div class="ts">June 2026</div><div class="ttl">Always-listening rewrite → <code>hud.py</code> (pywebview)</div>
+      <div class="why">Killed the wake word and the Streamlit 5-second record button. Listens until you stop talking (~1.8 s silence, 2-min cap), answers, listens again. Calibrates to room noise at startup.</div></div>
+    <div class="ev"><div class="ts">June 2026</div><div class="ttl">Native Swift audio engine — <code>native/ted_audio.swift</code></div>
+      <div class="why">Apple Voice Processing for echo cancellation → real barge-in over speakers. Debug chain: CLI-binary mic permission, CoreAudio <code>-10875</code>, 9-channel input downmix, unbuffered-pipe short reads, sticky barge flag.</div></div>
+    <div class="ev"><div class="ts">June 2026</div><div class="ttl">Whisper hallucination defenses</div>
+      <div class="why">Ted heard "Thank you" in a silent room — Whisper invents the phrase that follows silence in its training data. Added an energy gate, a no-speech confidence gate, and an exact-match phantom blocklist.</div></div>
+    <div class="ev"><div class="ts">Jun 22, 21:28</div><div class="ttl">Spotify Web API — <code>authorize_spotify.py</code>, spotipy</div>
+      <div class="why">Transport stays local and instant; only playlist/song selection hits the API. Song-by-name needs explicit phrasing so conversation can't launch music.</div></div>
+    <div class="ev"><div class="ts">Jun 26, 20:07</div><div class="ttl">Outlook email over IMAP — <code>setup_email.py</code></div>
+      <div class="why">outlook.office365.com:993, credentials to <code>~/.ted_email_config.json</code>.</div></div>
+    <div class="ev open"><div class="ts">June 2026</div><div class="ttl">Azure / Microsoft Graph attempt — never landed<span class="tag t-open">open</span></div>
+      <div class="why">App registered in the Northwestern tenant, "Allow public client flows" on. Stalled on an MSAL error: <code>offline_access</code> is reserved and must not be passed in scopes. Email still runs on IMAP.</div></div>
+    <div class="ev kill"><div class="ts">June 2026</div><div class="ttl">Inventory / Sortly feature — built, then deleted Jul 2</div>
+      <div class="why">Firework store. Key call: <b>low-stock math ran in Python, not the LLM</b>, so numbers couldn't be hallucinated. Sortly CSV importer, folders → categories, Min Level → reorder point, mock 5-folder catalog.</div></div>
+  </div>
+
+  <div class="phase">Phase 2 · Ted v4 — 11 commits in 14 hours, Jul 1–2, 2026</div>
+  <div class="rail">
+    <div class="ev pur"><div class="ts">Jul 1, 22:38:49 · 69ced76</div><div class="ttl">Baseline: Ted v4 after modular refactor</div><div class="why">First commit. Git initialized.</div></div>
+    <div class="ev info"><div class="ts">Jul 1, 22:41:27 · 33ce5bf</div><div class="ttl">Neo4j → SQLite (<code>data/memory.db</code>)</div>
+      <div class="why">Neo4j needed Neo4j Desktop running and it usually wasn't. SQLite is a file — it just always works.</div></div>
+    <div class="ev"><div class="ts">Jul 1, 22:47:17 · 1ca945e</div><div class="ttl">Attention mode + HUD extras</div>
+      <div class="why"><code>ATTENTION_WINDOW = 90</code> — after 90 s idle Ted drops to standby, "Hey Ted" re-engages, so room conversation isn't answered.</div></div>
+    <div class="ev"><div class="ts">Jul 1, 22:49:40 · c3b4ead</div><div class="ttl">Retry malformed tool calls; "actually make it X" corrections</div><div class="why"></div></div>
+    <div class="ev"><div class="ts">Jul 1, 22:52:55 · 904c6ee</div><div class="ttl">Remote GET+token, proactive triggers, daily briefing</div>
+      <div class="why">Flask endpoint on :5150 — the piece that makes the iOS Shortcut work.</div></div>
+    <div class="ev"><div class="ts">Jul 1, 22:56:27 · 1a0deb3</div><div class="ttl">Optional voice lock — "Ted, learn my voice"</div><div class="why">resemblyzer, threshold 0.68, so kids and the TV get ignored.</div></div>
+    <div class="ev"><div class="ts">Jul 1, 23:16:33 · 125d899</div><div class="ttl">Fix "Ted can't hear me"</div><div class="why">Robust wake matching, <code>recalibrate</code> command, post-reminder attention.</div></div>
+    <div class="ev"><div class="ts">Jul 1, 23:50:44 · b16a90b</div><div class="ttl">Alexa-grade live info</div>
+      <div class="why">Real questions route to <code>groq/compound-mini</code>, which web-searches before answering. DuckDuckGo fallback when rate-limited.</div></div>
+    <div class="ev info"><div class="ts">Jul 2, 10:51:58 · 38eb55e</div><div class="ttl">Brain swap → <code>openai/gpt-oss-120b</code></div><div class="why">Automatic fallback to <code>llama-3.3-70b-versatile</code> on rate limit.</div></div>
+    <div class="ev kill"><div class="ts">Jul 2, 12:10:11 · 3dd744c</div><div class="ttl">Remove all fireworks-store features</div>
+      <div class="why">Sales tally, goals, countdown, store mode — the whole inventory branch. Left a dead <code>goals</code> table behind.</div></div>
+  </div>
+
+  <div class="phase">Phase 3 · The silent-bug month — Jul 2 → Aug 5</div>
+  <div class="rail">
+    <div class="ev kill"><div class="ts">~Jul 1 → Aug 5</div><div class="ttl">Fact extraction silently dead for five weeks</div>
+      <div class="why">Asked an 8B model for JSON, got prose, <code>json.loads</code> threw, and the exception died inside a <code>print</code>. The facts table had 1–2 rows. Ted said he'd remember and didn't.</div></div>
+    <div class="ev"><div class="ts">Aug 5, 20:42</div><div class="ttl">Fixed — Groq JSON mode + salvage parser</div><div class="why">Real failures now go to <code>ted_errors.log</code> instead of vanishing.</div></div>
+    <div class="ev"><div class="ts">Aug 5, 20:45</div><div class="ttl">Facts supersede instead of stacking</div>
+      <div class="why">Both <code>LIVES_IN Spirit Lake</code> and <code>LIVES_IN Spirit Lake, Iowa</code> were in every prompt. One-answer facts now replace; the more specific version wins.</div></div>
+    <div class="ev"><div class="ts">Aug 5</div><div class="ttl">"remember that" finally works — and junk fragments blocked</div>
+      <div class="why">The remember command only matched "remember <i>this</i>" and wrote to the wrong store. Separately, coughs transcribed as "Tep." / "Start." were clearing every audio filter and <b>executing as commands</b>.</div></div>
+    <div class="ev info"><div class="ts">Aug 5, 21:03</div><div class="ttl">BARGE_IN_HANDOFF.md → handed to Claude Code</div>
+      <div class="why">Diagnosis by reading: Ted was <b>deaf at every sentence boundary</b> — detection was gated on <code>_playing</code>, which went false between sentences, exactly where a human interrupts. Cowork can't run CoreAudio, so the fix went to the tool that can.</div></div>
+    <div class="ev"><div class="ts">Aug 5, 21:44 → 22:37</div><div class="ttl">Barge-in overhaul shipped</div>
+      <div class="why"><code>_in_reply</code> keeps detection alive across the whole reply · webrtcvad + an autocorrelation <b>pitch gate</b> (claps are broadband noise, which VAD alone calls speech) · sliding 300 ms window · margin 3.0 → 2.0 with a hard floor and ceiling · <code>TED_DEBUG_BARGE=1</code> to make it observable.</div></div>
+    <div class="ev kill"><div class="ts">Aug 5, 22:36</div><div class="ttl">Echo cancellation removed from the Swift binary</div>
+      <div class="why">Apple's Voice Processing ducked Spotify. The <code>"aec"</code> mode name is now historical — separation rests entirely on energy + VAD + pitch.</div></div>
+  </div>
+
+  <div class="phase">Phase 4–5 · Commit, migration, housekeeping — Aug 6–8</div>
+  <div class="rail">
+    <div class="ev open"><div class="ts">Aug 6, 21:33:30</div><div class="ttl">Last time Ted was actually run<span class="tag t-open">unverified</span></div>
+      <div class="why">Four minutes <i>before</i> the commit containing the barge-in fix — so the fix has never been tested in the field.</div></div>
+    <div class="ev"><div class="ts">Aug 6, 21:37:47 · e07be84</div><div class="ttl">Barge-in overhaul + memory/fact fixes (pre-migration baseline)</div><div class="why"></div></div>
+    <div class="ev pur"><div class="ts">Aug 6, 21:44:30 · 9fa57bc</div><div class="ttl">Migration stage 1: characterization tests<span class="tag t-now">in flight</span></div>
+      <div class="why"><code>tests/test_pipeline.py</code> pins current <i>observable</i> behavior before code moves — quirks included, deliberately. Stubs <code>core.voice</code> so importing doesn't load Kokoro or open the mic.</div></div>
+    <div class="ev"><div class="ts">Aug 8, 22:04</div><div class="ttl">README rewritten; repo debris cleared</div>
+      <div class="why">Handoff doc moved to <code>docs/</code>, legacy HUD renamed, <code>.gitignore</code> tightened.</div></div>
+  </div>
+
+  <div class="card">
+    <h2>WHAT'S ACTUALLY OPEN</h2>
+    <ul>
+      <li><b>Migration stage 2+</b> — break up <code>core/app.py</code>: 110 KB, ~2,300 lines, one ~750-line <code>_assistant_command</code>. Seam: move each dispatch branch into the module it already delegates to. Nothing has moved yet.</li>
+      <li><b>Verify barge-in for real</b> — interrupt mid-sentence <i>and</i> at a sentence pause; confirm Ted doesn't interrupt himself on speakers now that AEC is gone.</li>
+      <li><b>Session summaries never write</b> — 0 rows. Both paths need 30 min idle or a clean pywebview shutdown; normal close fires neither. Ted starts blank every time.</li>
+      <li><b>Email password in cleartext</b> — the Azure OAuth path is ~90% done and stalled on a one-line scope fix. Check admin consent on the school tenant first.</li>
+      <li><b>Stale project memory</b> — your saved Claude notes still describe the Ollama/Neo4j/Streamlit build and list "swap to Groq" as the <i>next</i> step.</li>
+      <li><b>Cruft</b> — dead <code>goals</code> table; a Neo4j password in <code>config.py</code> for a backend that no longer exists.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
