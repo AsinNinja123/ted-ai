@@ -81,6 +81,56 @@ memory.save_session_summary("Talked about weekend plans.")
 check("fresh summary hidden until gap passes", memory.get_last_session_summary(4.0) == "")
 check("summary visible with zero gap", "weekend" in memory.get_last_session_summary(0.0))
 
+print("\n— session memories: upsert, recall, search —")
+rid = memory.save_session_summary(
+    "Charlie was debugging a webhook that fired twice on his dispatch board.",
+    topics="crew dispatch, webhooks", exchanges=9)
+check("insert returns a row id", isinstance(rid, int) and rid > 0)
+
+same = memory.save_session_summary(
+    "Charlie fixed the double-firing webhook by debouncing it.",
+    topics="crew dispatch, webhooks", exchanges=14, row_id=rid)
+check("upsert reuses the same row", same == rid)
+
+mems = memory.get_recent_memories(limit=10)
+texts = [m["text"] for m in mems]
+check("upsert replaced rather than duplicated",
+      sum("webhook" in t for t in texts) == 1)
+check("upsert kept the newer wording", any("debouncing" in t for t in texts))
+check("exchange count persisted",
+      any(m["exchanges"] == 14 for m in mems))
+check("recent memories carry a human date",
+      all(m["when"] for m in mems))
+
+check("search finds by topic keyword",
+      any("debouncing" in m["text"] for m in memory.search_memories("dispatch")))
+check("search finds by body keyword",
+      any("debouncing" in m["text"] for m in memory.search_memories("webhook")))
+check("search misses cleanly", memory.search_memories("xylophone") == [])
+check("search with only stop-words returns nothing",
+      memory.search_memories("what is the") == [])
+
+check("prompt format is dated and joined",
+      ":" in memory.format_memories_for_prompt() and
+      "debouncing" in memory.format_memories_for_prompt())
+
+check("empty text is not stored",
+      memory.save_session_summary("   ") is None)
+before = len(memory.get_recent_memories(limit=50))
+memory.save_session_summary("")
+check("blank write left the table alone",
+      len(memory.get_recent_memories(limit=50)) == before)
+
+check("stale memories fall out of the window",
+      memory.get_recent_memories(limit=10, max_age_days=0) == [])
+
+print("\n— migration is idempotent —")
+memory.close()
+memory._conn = None
+check("reopening an existing db still works",
+      memory._get_driver() is not None and
+      len(memory.get_recent_memories(limit=50)) == before)
+
 memory.close()
 print(f"\n{'='*50}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

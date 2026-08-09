@@ -108,6 +108,7 @@ def _get_driver():
                 _has_fts = True
             except sqlite3.OperationalError:
                 _has_fts = False    # this Python's sqlite lacks FTS5 — LIKE fallback
+            _migrate(conn)
             conn.commit()
             _conn = conn
             print(f"[memory] SQLite ready ({DB_PATH})"
@@ -116,6 +117,34 @@ def _get_driver():
             print(f"[memory] SQLite unavailable — in-session memory only. ({e})")
             return None
     return _conn
+
+
+def _migrate(conn):
+    """Add columns introduced after the original schema shipped.
+
+    SQLite has no `ADD COLUMN IF NOT EXISTS`, so read the existing columns and
+    only add what's missing. Safe to run on every open; never destructive.
+    """
+    wanted = {
+        "session_summaries": [
+            ("topics",    "TEXT NOT NULL DEFAULT ''"),   # comma-separated, for search
+            ("started",   "TEXT NOT NULL DEFAULT ''"),   # ISO time the session began
+            ("exchanges", "INTEGER NOT NULL DEFAULT 0"),  # how many turns it covered
+        ],
+    }
+    for table, columns in wanted.items():
+        try:
+            have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        except Exception:
+            continue
+        if not have:
+            continue                      # table doesn't exist yet — schema will make it
+        for name, decl in columns:
+            if name not in have:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                except Exception as e:
+                    print(f"[memory] migration skipped ({table}.{name}): {e}")
 
 
 def _exec(sql, params=()):
@@ -329,19 +358,116 @@ def get_frequent_patterns(min_count=3):
     return [{"topic": t, "hour": h, "count": c} for t, h, c in rows]
 
 
-# ---- Session summaries (cross-session recall) ----
+# ---- Session memories (cross-session recall) ----
+#
+# One row per *session worth remembering*. Ted deliberately does NOT store a row
+# for every launch — most sessions are testing and small talk, and a memory list
+# full of "Charlie set a one minute timer" makes callbacks worse, not better.
+# The filtering lives in llm.generate_session_summary(); this layer just stores
+# what survives it.
+#
+# Rows are upserted by id so a long session gets ONE memory that keeps getting
+# refined, rather than five near-duplicates from periodic flushes.
 
-def save_session_summary(summary_text):
-    _exec("INSERT INTO session_summaries (text, created) VALUES (?,?)",
-          (summary_text, _now()))
+MAX_MEMORIES_IN_PROMPT = 6
+
+
+def save_session_summary(summary_text, topics="", started="", exchanges=0, row_id=None):
+    """Insert or update a session memory. Returns the row id, or None if the DB
+    is unavailable.
+
+    Pass the id returned by a previous call to update that same memory in place
+    (used by the periodic flush so a crash can't lose the session, and the final
+    write can't duplicate it).
+    """
+    if not (summary_text or "").strip():
+        return row_id
+    now = _now()
+    if row_id:
+        cur = _exec("UPDATE session_summaries SET text=?, topics=?, exchanges=?, created=? "
+                    "WHERE id=?",
+                    (summary_text, topics, exchanges, now, row_id))
+        if cur is not None and cur.rowcount:
+            return row_id
+        # Row vanished (db reset mid-session) — fall through and insert a fresh one.
+    cur = _exec("INSERT INTO session_summaries (text, topics, started, exchanges, created) "
+                "VALUES (?,?,?,?,?)",
+                (summary_text, topics, started or now, exchanges, now))
+    return cur.lastrowid if cur is not None else None
 
 
 def get_last_session_summary(min_gap_hours=4.0):
-    """Return the most recent summary written at least min_gap_hours ago, or ''."""
+    """Return the most recent summary written at least min_gap_hours ago, or ''.
+
+    Kept for the startup recap line and the existing tests.
+    """
     cutoff = (datetime.now() - timedelta(hours=min_gap_hours)).isoformat()
     rows = _query("SELECT text FROM session_summaries WHERE created <= ? "
                   "ORDER BY created DESC LIMIT 1", (cutoff,))
     return rows[0][0] if rows else ""
+
+
+def _humanize_date(iso_ts):
+    """'2026-08-09T21:14:02' → 'today' / 'yesterday' / 'last Tuesday' / 'Jul 12'."""
+    try:
+        when = datetime.fromisoformat(iso_ts)
+    except Exception:
+        return ""
+    days = (_date_cls.today() - when.date()).days
+    if days <= 0:
+        return "earlier today"
+    if days == 1:
+        return "yesterday"
+    if days < 7:
+        return f"last {when.strftime('%A')}"
+    if days < 365:
+        return when.strftime("%b %-d") if os.name != "nt" else when.strftime("%b %d")
+    return when.strftime("%b %Y")
+
+
+def get_recent_memories(limit=MAX_MEMORIES_IN_PROMPT, max_age_days=60):
+    """Return recent session memories, newest first.
+
+    Each item: {"id", "text", "topics", "when", "created", "exchanges"}
+    """
+    cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
+    rows = _query("SELECT id, text, topics, created, exchanges FROM session_summaries "
+                  "WHERE created >= ? ORDER BY created DESC LIMIT ?", (cutoff, limit))
+    return [{"id": r[0], "text": r[1], "topics": r[2] or "",
+             "created": r[3], "when": _humanize_date(r[3]), "exchanges": r[4] or 0}
+            for r in rows]
+
+
+def search_memories(query, limit=3):
+    """Keyword search across past session memories. Returns the same shape as
+    get_recent_memories(). Used when the user asks about an earlier conversation."""
+    terms = _keywords(query)[:4]
+    if not terms:
+        return []
+    where = " OR ".join(["text LIKE ? OR topics LIKE ?"] * len(terms))
+    params = []
+    for t in terms:
+        params.extend([f"%{t}%", f"%{t}%"])
+    params.append(limit)
+    rows = _query(f"SELECT id, text, topics, created, exchanges FROM session_summaries "
+                  f"WHERE {where} ORDER BY created DESC LIMIT ?", tuple(params))
+    return [{"id": r[0], "text": r[1], "topics": r[2] or "",
+             "created": r[3], "when": _humanize_date(r[3]), "exchanges": r[4] or 0}
+            for r in rows]
+
+
+def format_memories_for_prompt(limit=MAX_MEMORIES_IN_PROMPT):
+    """Dated one-liners for injection into the per-turn context block, e.g.
+
+        yesterday: Charlie was debugging why I kept talking over him…
+        last Tuesday: We went through his Spotify setup…
+
+    Returns '' when there's nothing worth injecting.
+    """
+    mems = get_recent_memories(limit=limit)
+    if not mems:
+        return ""
+    return " | ".join(f"{m['when']}: {m['text']}" for m in mems)
 
 
 # ---- Habit tracking (daily streaks) ----

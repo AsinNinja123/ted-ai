@@ -35,6 +35,7 @@ from core.intents import (
 from core.logs import error_log
 from core.memory import (log_pattern, get_frequent_patterns,
                          save_session_summary, get_last_session_summary,
+                         get_recent_memories, search_memories,
                          log_habit, get_habit_streak, get_all_habits,
                          list_facts, forget_fact)
 from core.paths import SHORTCUTS_PATH
@@ -145,6 +146,13 @@ class TedApi:
 
         # ── Background thread bookkeeping ──────────────────────────────────────
         self._session_summary_last_written = 0.0  # epoch; prevents re-writing an unchanged session
+        # Session memory state. One memory row per session, upserted — so the
+        # periodic flush, the idle watcher and the shutdown hook all refine the
+        # SAME row instead of leaving three near-duplicates behind.
+        self._session_row_id     = None
+        self._session_started_at = _dt_cls.now().isoformat()
+        self._session_exchanges  = 0
+        self._memory_lock        = threading.Lock()
         self._pattern_check_done = False           # proactive offer fires at most once per startup
         self._last_wake_time     = 0.0             # epoch; for wake-word cooldown (echo prevention)
         self._last_fired_timer   = None            # last timer that fired — for snooze
@@ -1904,14 +1912,20 @@ class TedApi:
         self._touch_attention()   # seed the HUD with the initial attention deadline
         time.sleep(SETTLE_AFTER_TALK)
 
-        # ── Session recap: mention last session if gap > 4 hours ──
+        # ── Session recap: mention the last real conversation, if there was one ──
+        # Only fires when at least 4 hours have passed, and only for sessions
+        # that produced an actual memory — restarting Ted after a test run
+        # shouldn't make him recap the test run.
         try:
-            prev = get_last_session_summary(min_gap_hours=4.0)
-            if prev:
-                recap = f"Last time we talked — {prev}"
-                add_message(w, "ted", recap)
-                speak(w, recap, self)
-                time.sleep(SETTLE_AFTER_TALK)
+            if get_last_session_summary(min_gap_hours=4.0):
+                mems = get_recent_memories(limit=1)
+                if mems:
+                    m = mems[0]
+                    when = m["when"] if m["when"] not in ("", "earlier today") else "earlier"
+                    recap = f"{when.capitalize()} — {m['text']}"
+                    add_message(w, "ted", recap)
+                    speak(w, recap, self)
+                    time.sleep(SETTLE_AFTER_TALK)
         except Exception:
             pass
 
@@ -2156,6 +2170,7 @@ class TedApi:
             # ── frustration tracking ────────────────────────────────────────
             self._track_frustration(text)
             self.last_exchange_time = time.time()
+            self._session_exchanges += 1
 
             # ── log topic + hour for pattern recognition ──────────────────────
             try:
@@ -2170,20 +2185,77 @@ class TedApi:
                 continue
             time.sleep(SETTLE_AFTER_TALK)
 
-    def session_summary_watch(self, check_interval=300, idle_threshold=1800):
-        """Background thread: after 30 min of silence, write a session summary
-        to Neo4j so the next startup can recap what was discussed.
+    # ── Session memory ─────────────────────────────────────────────────────────
+    #
+    # Three things can trigger a write: a periodic flush (crash insurance), the
+    # idle watcher (you wandered off), and shutdown (window closed / Ctrl-C /
+    # SIGTERM). All three call write_session_memory(), which upserts ONE row per
+    # session, so whichever fires first just gets refined by the ones after it.
+    #
+    # Most sessions produce nothing at all — llm.generate_session_summary()
+    # returns None for testing, commands and small talk, which is the intended
+    # behaviour, not a failure. `end_session=True` starts a fresh memory row
+    # afterwards so a long gap doesn't keep folding into yesterday's memory.
+
+    def write_session_memory(self, reason="flush", end_session=False):
+        """Generate and store a memory of the current session. Returns True if a
+        memory was written. Never raises — memory is never worth crashing over."""
+        with self._memory_lock:
+            try:
+                if self.last_exchange_time <= 0:
+                    return False                      # nothing happened this session
+                if self.last_exchange_time <= self._session_summary_last_written:
+                    return False                      # nothing new since the last write
+
+                mem = llm.generate_session_summary(self.active_conversation)
+                self._session_summary_last_written = time.time()
+
+                if not mem:
+                    print(f"[memory] {reason}: nothing worth remembering this session")
+                else:
+                    self._session_row_id = save_session_summary(
+                        mem["text"],
+                        topics=mem.get("topics", ""),
+                        started=self._session_started_at,
+                        exchanges=self._session_exchanges,
+                        row_id=self._session_row_id,
+                    )
+                    print(f"[memory] {reason}: remembered — {mem['text'][:90]}")
+
+                if end_session:
+                    self._session_row_id     = None
+                    self._session_started_at = _dt_cls.now().isoformat()
+                    self._session_exchanges  = 0
+                return bool(mem)
+            except Exception as e:
+                error_log.error(f"[memory] session memory write failed ({reason}): {e}")
+                return False
+
+    def session_summary_watch(self, check_interval=120, idle_threshold=600,
+                              flush_every=12):
+        """Background thread. Writes a session memory when either:
+
+          • you've been quiet for `idle_threshold` seconds (default 10 min —
+            down from 30, which was long enough that closing the laptop usually
+            beat it), or
+          • `flush_every` exchanges have happened since the last write, so a
+            crash or force-quit mid-session can't lose it.
         """
+        last_flush_count = 0
         while True:
             time.sleep(check_interval)
-            if (self.last_exchange_time > 0
-                    and self.last_exchange_time > self._session_summary_last_written
-                    and time.time() - self.last_exchange_time >= idle_threshold):
-                summary = llm.generate_session_summary(self.active_conversation)
-                if summary:
-                    save_session_summary(summary)
-                    self._session_summary_last_written = time.time()
-                    print(f"[session] summary written ({len(summary)} chars)")
+            try:
+                if self.last_exchange_time <= 0:
+                    continue
+                idle = time.time() - self.last_exchange_time
+                if idle >= idle_threshold:
+                    if self.write_session_memory(reason="idle", end_session=True):
+                        last_flush_count = 0
+                elif self._session_exchanges - last_flush_count >= flush_every:
+                    self.write_session_memory(reason="flush")
+                    last_flush_count = self._session_exchanges
+            except Exception as e:
+                error_log.error(f"session_summary_watch: {e}")
 
     def apps_watch(self, interval=5):
         """Poll running apps + connection health every 5 s and push both to the HUD.
@@ -2325,6 +2397,10 @@ class TedApi:
                 self._busy.acquire()     # blocking fallback if spin-wait timed out
             try:
                 self._respond(text, echo_user=False)  # echo_user=False: we already show the typed text
+                # Typed turns count toward session memory too — otherwise a
+                # whole conversation held in the text box is never remembered.
+                self.last_exchange_time  = time.time()
+                self._session_exchanges += 1
             except Exception as e:
                 print("Ted error:", e)
                 set_state(self.window, "idle")

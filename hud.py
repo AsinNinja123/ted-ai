@@ -16,7 +16,9 @@ The runtime lives in core/:
 
 import os
 import sys
+import atexit
 import signal
+import threading
 
 # Make `from core.xxx import …` work from any cwd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,29 +34,41 @@ import webview
 
 from core.paths import UI_HTML
 from core.voice import engine
-from core import llm
 from core.app import TedApi
-from core.memory import save_session_summary
 
 print("Ted is ready.")
 
 api = TedApi()
 
+# Shutdown runs from several places that can race each other (window close fires
+# the pywebview hook AND then atexit; Ctrl-C fires a signal AND then atexit).
+# Guard so the session memory is only generated once.
+_shutdown_lock = threading.Lock()
+_shutdown_done = False
 
-def _shutdown(signum, frame):
-    """Clean shutdown: stop audio, write session summary, close Neo4j, exit."""
-    print(f"\n[shutdown] signal {signum} — saving state and exiting cleanly")
+
+def _teardown(reason):
+    """Write the session memory and release audio/DB. Idempotent.
+
+    This is why session_summaries sat empty for months: the only write paths were
+    a 30-minute idle timer and a signal handler, and closing the window fires
+    neither — pywebview just returns from start() and the process exits normally.
+    Now every exit route lands here.
+    """
+    global _shutdown_done
+    with _shutdown_lock:
+        if _shutdown_done:
+            return
+        _shutdown_done = True
+    print(f"[shutdown] {reason} — saving state")
     try:
         engine.stop_playback()
     except Exception:
         pass
     try:
-        summary = llm.generate_session_summary(api.active_conversation)
-        if summary:
-            save_session_summary(summary)
-            print(f"[shutdown] session summary written ({len(summary)} chars)")
+        api.write_session_memory(reason="shutdown", end_session=True)
     except Exception as e:
-        print(f"[shutdown] summary write skipped: {e}")
+        print(f"[shutdown] session memory skipped: {e}")
     try:
         from core.memory import close as _mem_close
         _mem_close()
@@ -64,11 +78,16 @@ def _shutdown(signum, frame):
         engine.close()
     except Exception:
         pass
+
+
+def _shutdown(signum, frame):
+    _teardown(f"signal {signum}")
     sys.exit(0)
 
 
 signal.signal(signal.SIGINT,  _shutdown)
 signal.signal(signal.SIGTERM, _shutdown)
+atexit.register(_teardown, "process exit")   # catches a normal window close
 
 # ---- Entry point ------------------------------------------------------------
 if __name__ == "__main__":
@@ -82,4 +101,14 @@ if __name__ == "__main__":
         background_color="#0A0E14",
     )
     api.window = window
+
+    # Preferred path: fires while the interpreter is still healthy, so the Groq
+    # call that writes the memory can actually complete. atexit is the backstop
+    # for exits this doesn't catch.
+    try:
+        window.events.closing += lambda: _teardown("window closed")
+    except Exception:
+        pass   # older pywebview without the events API — atexit still covers us
+
     webview.start(api.start)  # api.start() is called once the window is ready
+    _teardown("webview stopped")

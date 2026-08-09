@@ -16,7 +16,8 @@ from core import features, intents
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
-from core.memory import save_memory, get_memory, save_fact, get_facts_about
+from core.memory import (save_memory, get_memory, save_fact, get_facts_about,
+                         format_memories_for_prompt)
 
 from config import GROQ_API_KEY  # required — app won't start without this
 try:
@@ -461,19 +462,21 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     # --- memory retrieval (run concurrently — independent network/DB round-trips,
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
-    _ctx = {"mem": "", "facts": "", "know": ""}
+    _ctx = {"mem": "", "facts": "", "know": "", "sessions": ""}
     def _load_mem():   _ctx["mem"]   = get_memory(user_input)
     def _load_facts(): _ctx["facts"] = get_facts_about(OWNER_NAME)
+    def _load_sessions(): _ctx["sessions"] = format_memories_for_prompt()
     def _load_know():
         if features.HAS_KNOWLEDGE:
             _ctx["know"] = features.knowledge.search(user_input, k=3)
     _lk_threads = [threading.Thread(target=f, daemon=True)
-                   for f in (_load_mem, _load_facts, _load_know)]
+                   for f in (_load_mem, _load_facts, _load_know, _load_sessions)]
     for _t in _lk_threads: _t.start()
     for _t in _lk_threads: _t.join(timeout=4.0)
     past_memory   = _ctx["mem"]
     known_facts   = _ctx["facts"]
     knowledge_ctx = _ctx["know"]
+    past_sessions = _ctx["sessions"]
 
     # The user turn is appended to `conversation` only after a successful reply
     # (see the streaming finally below) so failed calls don't leave a dangling
@@ -487,6 +490,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     context_parts.append(f"Known facts about {OWNER_NAME}: {known_facts or 'none'}.")
     context_parts.append(f"Relevant past exchanges: {past_memory or 'none'}.")
     context_parts.append(f"Personal knowledge base: {knowledge_ctx or 'none'}.")
+
+    # Memories of previous sessions — this is what lets Ted say "last time you
+    # were stuck on X". Only injected when there are any; most days there won't be.
+    if past_sessions:
+        context_parts.append(f"Things you remember from earlier conversations: {past_sessions}.")
+        context_parts.append(
+            "Those are your own memories of past conversations. Refer back to them the way a "
+            "friend would — only when it actually fits what's being said, at most once, and "
+            "without listing them. Never recite a memory that isn't relevant, and never say "
+            "you have no memory of something when one of these covers it."
+        )
 
     # Memory continuity nudge
     context_parts.append(
@@ -665,33 +679,131 @@ def summarize_email_body(body, contact_name):
         return body[:300]
 
 
+# ── Session memories ──────────────────────────────────────────────────────────
+#
+# Most sessions are Charlie testing something: "set a timer", "play Spotify",
+# "what can you do". Writing a memory for every one of those buries the handful
+# of real conversations and makes callbacks worse than having none — Ted opening
+# with "last time you set a two minute timer" is worse than saying nothing.
+#
+# So there are two filters. A cheap Python one kills the obviously-empty
+# sessions without spending a token, and the model itself decides whether what's
+# left is worth remembering, with permission to say no.
+
+# Minimum bar before a session is even sent to the model. The word count is
+# measured over SUBSTANTIVE turns only — counting "pause" and "play" toward the
+# total meant a session with one real question buried in commands got dropped.
+MIN_MEMORY_USER_TURNS       = 3
+MIN_MEMORY_SUBSTANTIVE_WORDS = 15
+
+# Single-purpose command openers. A session made of nothing but these is Ted
+# being operated, not a conversation, no matter how many turns it ran.
+_ROUTINE_OPENERS = (
+    "play", "pause", "resume", "skip", "next song", "previous", "stop",
+    "set a timer", "set timer", "cancel", "mute", "unmute", "volume",
+    "open ", "close ", "quit ", "launch ", "what time", "what's the time",
+    "remind me", "shuffle", "turn it up", "turn it down", "louder", "quieter",
+    "hey ted", "ted", "thanks", "thank you", "never mind", "nevermind",
+)
+
+
+def _looks_routine(text):
+    t = (text or "").strip().lower().rstrip(".!?")
+    if not t:
+        return True
+    if len(t.split()) <= 2:
+        return True
+    return any(t.startswith(op) for op in _ROUTINE_OPENERS) and len(t.split()) < 8
+
+
+def session_has_substance(conversation):
+    """Cheap pre-filter: is this session even worth asking the model about?
+
+    Pure function over the message list — unit-tested in tests/test_memory.py.
+    """
+    turns = [m for m in conversation[1:] if m.get("role") == "user"]
+    if len(turns) < MIN_MEMORY_USER_TURNS:
+        return False
+    # Only turns that aren't bare commands or acknowledgements count as content.
+    real = [(m.get("content") or "") for m in turns if not _looks_routine(m.get("content"))]
+    if not real:
+        return False
+    return sum(len(t.split()) for t in real) >= MIN_MEMORY_SUBSTANTIVE_WORDS
+
+
+_MEMORY_SYSTEM = """You are Ted's memory. You decide what Ted remembers about a conversation with Charlie.
+
+Write a memory ONLY if this conversation contains something Ted would plausibly want to bring up later: a project or problem worked on, a decision made, plans, something going on in Charlie's life, an opinion or preference he expressed, or a real back-and-forth about a topic.
+
+Do NOT write a memory for: testing and debugging Ted himself, timers/reminders/music/app commands, one-off factual questions, greetings, or small talk. These are the majority. Saying no is the correct answer most of the time.
+
+Reply with JSON only:
+{"worth_remembering": true/false, "memory": "...", "topics": "..."}
+
+If worth_remembering is false, leave memory and topics empty.
+
+The memory must be written from Ted's point of view, in past tense, as something he could naturally say out loud later. Two sentences maximum. Be specific — name the actual thing, not the category.
+
+Good:  "Charlie was trying to get his crew dispatch board to update from Airtable and kept hitting a webhook that fired twice. He was going to try debouncing it."
+Good:  "Charlie mentioned he's starting fall semester in a few weeks and is worried about keeping up with Ted on top of coursework."
+Bad:   "Charlie and I discussed various topics including technology." (vague)
+Bad:   "Charlie asked me to set a timer and play music." (routine)
+
+topics: 2-5 lowercase comma-separated keywords for later search, e.g. "crew dispatch, airtable, webhooks"."""
+
+
 def generate_session_summary(conversation):
-    """Use the fast LLM to write a 2-3 sentence summary of the current session.
-    Returns the summary string, or None on failure."""
-    conv = conversation[1:]               # skip system prompt
-    if len(conv) < 4:                     # need at least 2 exchanges
+    """Decide whether this session is worth remembering, and if so write the memory.
+
+    Returns {"text": str, "topics": str} — or None when the session isn't worth
+    storing (which is the common, intended case) or generation failed.
+    """
+    if not session_has_substance(conversation):
         return None
-    recent = conv[-14:]
+
+    recent = conversation[1:][-30:]
     transcript = "\n".join(
-        f"{'User' if m['role']=='user' else 'Ted'}: {m['content'][:200]}"
+        f"{'Charlie' if m.get('role') == 'user' else 'Ted'}: {(m.get('content') or '')[:240]}"
         for m in recent
+        if m.get("role") in ("user", "assistant")
     )
+    if not transcript.strip():
+        return None
+
     try:
         resp = groq_client.chat.completions.create(
             model=FAST_MODEL,
             messages=[
-                {"role": "system", "content": (
-                    "Write a 2-3 sentence plain-text summary of this conversation. "
-                    "State what topics were discussed. No bullet points, no headers. "
-                    "Start with what was talked about, not 'The conversation was about'."
-                )},
+                {"role": "system", "content": _MEMORY_SYSTEM},
                 {"role": "user", "content": transcript},
             ],
-            max_tokens=150,
-            temperature=0.3,
-            timeout=10.0,
+            response_format={"type": "json_object"},
+            max_tokens=220,
+            temperature=0.2,
+            timeout=12.0,
         )
-        return (resp.choices[0].message.content or "").strip() or None
+        raw = (resp.choices[0].message.content or "").strip()
     except Exception as e:
-        print(f"[session] summary generation failed: {e}")
+        error_log.error(f"[memory] session summary generation failed: {e}")
         return None
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        # Salvage a JSON object out of a chatty reply, same as the fact extractor.
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end <= start:
+            error_log.error(f"[memory] session summary returned non-JSON: {raw[:200]!r}")
+            return None
+        try:
+            data = json.loads(raw[start:end + 1])
+        except Exception:
+            error_log.error(f"[memory] session summary unparseable: {raw[:200]!r}")
+            return None
+
+    if not isinstance(data, dict) or not data.get("worth_remembering"):
+        return None
+    text = (data.get("memory") or "").strip()
+    if len(text) < 20:                     # empty or a stub — treat as "not worth it"
+        return None
+    return {"text": text, "topics": (data.get("topics") or "").strip().lower()[:120]}
