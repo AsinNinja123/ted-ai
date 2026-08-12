@@ -23,7 +23,7 @@ except Exception:
 ACTION_TOOLS = frozenset({
     "open_app", "close_app", "browse_to", "play_music", "play_playlist",
     "spotify_control", "send_message", "set_reminder", "set_timer",
-    "list_add", "calendar_add", "notes_add", "clipboard_write",
+    "calendar_add", "notes_add", "clipboard_write",
     "system_volume", "system_brightness", "type_text", "log_habit",
     "email_action", "send_email",
 })
@@ -113,10 +113,17 @@ def tool_spotify_control(action):
     return result
 
 
-def tool_browse_to(site):
-    """Open a website in Chrome, resolving known service names to canonical URLs.
-    Verifies the AppleScript actually succeeded; falls back to the default
-    browser before admitting defeat."""
+_BROWSERS = {
+    "brave": "Brave Browser", "chrome": "Google Chrome", "google chrome": "Google Chrome",
+    "safari": "Safari", "firefox": "Firefox", "edge": "Microsoft Edge",
+    "arc": "Arc", "opera": "Opera",
+}
+
+
+def tool_browse_to(site, browser=None):
+    """Open a website, optionally in a SPECIFIC browser ('youtube in Brave').
+    Without a browser it uses the old Chrome-then-default path. Verifies the
+    open actually succeeded before claiming it did."""
     from core.actions import SITE_URLS
     key = site.strip().lower().rstrip("/")
     if key in SITE_URLS:
@@ -130,6 +137,19 @@ def tool_browse_to(site):
                 domain += ".com"
             url = f"https://{domain}"
         label = url.replace("https://", "").replace("http://", "").split("/")[0]
+    # Specific browser requested — 'open -a' handles any installed browser.
+    if browser:
+        app_name = _BROWSERS.get(browser.strip().lower(), browser.strip())
+        try:
+            r = subprocess.run(["open", "-a", app_name, url],
+                               capture_output=True, timeout=8)
+            if r.returncode == 0:
+                return f"Opening {label} in {app_name}."
+            return (f"I couldn't find {app_name} on this Mac — "
+                    f"want it in the default browser instead?")
+        except Exception:
+            return f"I couldn't open {label} in {app_name}."
+
     safe = url.replace('"', '\\"')
     script = (
         'tell application "Google Chrome"\n'

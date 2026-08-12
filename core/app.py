@@ -37,7 +37,7 @@ from core.memory import (log_pattern, get_frequent_patterns,
                          save_session_summary, get_last_session_summary,
                          get_recent_memories, search_memories,
                          log_habit, get_habit_streak, get_all_habits,
-                         list_facts, forget_fact)
+                         list_facts, forget_fact, get_facts_about)
 from core.paths import SHORTCUTS_PATH
 from core.tools import TOOL_SCHEMAS
 from core.voice import speak, speak_streaming, capture, engine
@@ -118,7 +118,9 @@ class TedApi:
         self.window           = None              # set by main() after webview creates window
         self._busy            = threading.Lock()  # held during every listen→reply turn
         self._loop_started    = False             # prevents starting the loop twice
-        self.muted            = False             # ears off when True
+        self.muted            = True              # ears off when True — Ted starts
+                                                  # silent (chat-first); the mic
+                                                  # button turns voice mode on
         self.interrupt_speech = False             # set True to cut off current playback
         self.last_reply       = ""               # stored so 'repeat that' works
         self._last_cmd        = ("", 0.0)        # (normalized_text, timestamp) for dedup
@@ -418,7 +420,8 @@ class TedApi:
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
-                                window=w)
+                                window=w,
+                                voice_mode=not self.muted)
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -674,10 +677,7 @@ class TedApi:
                                  "label": None, "ts": time.time()}
             return f"Reminder added: {task}."
 
-        # ── named lists (reorder list, to-do, etc.) ──
-        li = _parse_list_cmd(text)
-        if li is not None:
-            return li
+        # (named-list intent removed 2026-08 — feature retired)
 
         # ── remember: personal facts → facts table, everything else → knowledge base ──
         # "remember this" used to be the only phrasing that matched, and it only
@@ -1192,17 +1192,40 @@ class TedApi:
     def _try_tools(self, text):
         """Agentic tool loop — up to 3 rounds of LLM → execute → feed back.
         When the LLM stops calling tools it synthesizes a final spoken reply.
-        Returns that reply string, or None to fall through to the streaming LLM."""
-        if not th.likely_command(text):
-            return None
+        Returns that reply string, or None to fall through to the streaming LLM.
 
+        The old likely_command() keyword gate is gone: it only let the model
+        reason about turns containing a hardcoded verb, which meant any novel
+        phrasing was locked out of every tool. Now EVERY turn gets a cheap
+        round-1 look; if the model doesn't reach for a tool we return None
+        immediately and the streaming path answers with full chat quality —
+        so conversation costs one fast extra call, and nothing is gated."""
         MAX_ROUNDS = 3
-        history = [m for m in self.active_conversation if m["role"] != "system"][-8:]
+        # stable_window (not [-8:]) so the probe's prompt prefix stays
+        # cacheable — see llm.stable_window for why this matters for speed.
+        history = llm.stable_window(
+            [m for m in self.active_conversation if m["role"] != "system"], 8)
+        # The tool loop used to run blind to what Ted knows about the user, so
+        # "open YouTube in Brave from now on" was stored as a fact and then
+        # ignored at the moment it mattered. Facts are cached in-process and
+        # change rarely, so they sit in the stable prefix.
+        try:
+            _facts = get_facts_about(OWNER_NAME)
+        except Exception:
+            _facts = ""
         messages = [
             {"role": "system", "content": (
-                llm.SYSTEM_PROMPT +
-                " The user's input may contain speech recognition errors or unusual "
-                "phrasing — interpret intent over literal words when choosing tools."
+                # Deliberately NOT the full persona: the tool loop only needs to
+                # pick a tool, and every token here is re-read on the probe that
+                # runs before EVERY reply. The short version keeps that fast.
+                f"You are Ted, {OWNER_NAME}'s assistant, choosing tools. "
+                "Input may contain speech-recognition errors or unusual phrasing — "
+                "interpret intent over literal words. "
+                "Honour the user's stated preferences below: if they've said they "
+                "want a site opened in a particular browser, pass that browser. "
+                "If a detail a tool needs is missing, pick the reasonable default "
+                "and proceed. Never stall. If no tool fits, don't force one."
+                + (f"\nKnown preferences: {_facts}" if _facts else "")
             )},
             *history,
             {"role": "user", "content": text},
@@ -1213,15 +1236,32 @@ class TedApi:
         round_num = 0
         while round_num < MAX_ROUNDS:
             round_num += 1
+            # Round 1 is a cheap PROBE: we only need to know whether a tool
+            # fires. Without the escape hatch below, conversational turns made
+            # the model compose a full (discarded) answer here before the real
+            # streaming reply — which doubled response time for plain chat.
+            probe = (round_num == 1)
+            call_messages = messages if not probe else messages + [{
+                "role": "system",
+                "content": ("If this turn needs no tool, reply with exactly "
+                            "the single word CHAT and nothing else."),
+            }]
             try:
+                _t_probe = time.time()
                 resp = llm.chat_create(
-                    messages=messages,
+                    messages=call_messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
-                    max_tokens=300,
+                    # 120 covers any tool call's JSON arguments while keeping
+                    # a stray conversational answer cheap to throw away.
+                    max_tokens=120 if probe else 300,
                     temperature=0.1,
-                    timeout=12.0,
+                    # A slow probe delays EVERY reply — fail fast and let the
+                    # streaming path answer instead of making the user wait.
+                    timeout=6.0 if probe else 12.0,
                 )
+                if probe:
+                    print(f"[timing] tool probe {int((time.time() - _t_probe) * 1000)}ms")
             except _groq_mod.RateLimitError:
                 print("[tools] rate limited — skipping tool path")
                 return None
@@ -1241,6 +1281,12 @@ class TedApi:
 
             # No tool calls → LLM has synthesized the final answer
             if not msg.tool_calls:
+                # Round 1 with no tool call = this turn is conversation, not a
+                # command. Fall through so the streaming path answers it with
+                # proper mode-aware length/formatting instead of this loop's
+                # clipped 300-token non-streamed reply.
+                if round_num == 1:
+                    return None
                 final = (msg.content or "").strip()
                 if not final:
                     return None  # fall through to streaming LLM
@@ -1327,12 +1373,14 @@ class TedApi:
         Returns a spoken-style result string; on any error returns an honest
         failure message (never None-→-"Done.")."""
         try:
+            # Surface tool use in the HUD's connected-apps panel (best-effort)
+            js(self.window, f"tedHud.noteAppUse({json.dumps(name)})")
             if name == "open_app":
                 return th.tool_open_app(args.get("name", ""))
             if name == "close_app":
                 return close_app(args.get("name", ""))
             if name == "browse_to":
-                return th.tool_browse_to(args.get("site", ""))
+                return th.tool_browse_to(args.get("site", ""), args.get("browser"))
             if name == "play_music":
                 return features.spotify_web.play_track(args.get("query", ""), args.get("artist"))
             if name == "play_playlist":
@@ -1351,10 +1399,10 @@ class TedApi:
                 return th.tool_set_timer(args.get("duration", ""))
             if name == "get_reminders":
                 return th.tool_get_reminders()
-            if name == "list_add":
-                return th.tool_list_add(args.get("list_name", ""), args.get("item", ""))
-            if name == "list_get":
-                return th.tool_list_get(args.get("list_name", ""))
+            if name == "toggle_clock":
+                _mode = args.get("mode", "toggle")
+                js(self.window, f"tedHud.toggleClock({json.dumps(_mode)})")
+                return {"on": "Clock is up.", "off": "Clock hidden."}.get(_mode, "Toggled the clock.")
             if name == "get_weather":
                 return th.tool_get_weather()
             if name == "get_emails":
@@ -1904,7 +1952,9 @@ class TedApi:
         w = self.window
         time.sleep(0.5)   # let the webview finish rendering before speaking
         try:
-            speak(w, _startup_greeting(), self)
+            _greet = _startup_greeting()
+            add_message(w, "ted", _greet)     # always show in chat
+            speak(w, _greet, self)            # no-op while muted (chat-first start)
         except Exception:
             pass
         # Update the HUD Voice readout to reflect the actual TTS engine in use
@@ -2368,6 +2418,14 @@ class TedApi:
         engine.stop_playback()
         set_state(self.window, "idle")
         return True
+
+    def close_app_direct(self, name):
+        """HUD apps panel: close an application by name (the ✕ button).
+        Returns the result string; never raises into the webview."""
+        try:
+            return close_app(name)
+        except Exception as e:
+            return f"Couldn't close {name}: {e}"
 
     def toggle_mute(self):
         """Mute button: mic on/off only. Releases the macOS orange indicator when

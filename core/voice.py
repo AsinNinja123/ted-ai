@@ -378,7 +378,10 @@ _MIN_SYNTH_WORDS = 8   # lower = faster first audio
 
 # ---------- speaking ----------
 def speak(window, text, api):
-    """Speak a fixed string."""
+    """Speak a fixed string. Silent no-op while muted (chat-first mode) —
+    callers display their own text via add_message, so nothing is lost."""
+    if getattr(api, "muted", False):
+        return
     set_state(window, "speaking")
     samples, sr = synth(text)
     engine.reset_barge_in()   # play_samples no longer resets — arm fresh per utterance
@@ -402,6 +405,27 @@ def speak_streaming(window, text_gen, api, speed=None, volume=None):
     inter-turn pause so their follow-up is captured immediately.
     """
     import json as _json
+
+    # Muted = pure chat mode: stream the text to the HUD with no synthesis.
+    # Same return contract as the spoken path so callers don't care.
+    if getattr(api, "muted", False):
+        set_state(window, "thinking")
+        full, pend = "", ""
+        for chunk in text_gen:
+            if api.interrupt_speech:
+                break
+            full += chunk
+            pend += chunk
+            if len(pend) >= 24:      # batch tokens — one JS call per ~2 dozen chars
+                js(window, f"tedHud.streamTedText({_json.dumps(pend)})")
+                pend = ""
+        if pend:
+            js(window, f"tedHud.streamTedText({_json.dumps(pend)})")
+        js(window, "tedHud.endTedReply()")
+        api.interrupt_speech = False
+        set_state(window, "idle")
+        return full, False
+
     set_state(window, "speaking")
     amp  = amp_cb(window)
     stop = lambda: api.interrupt_speech

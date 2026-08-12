@@ -77,6 +77,24 @@ def chat_create(**kwargs):
 MAX_HISTORY = 20        # messages sent to LLM per turn
 MAX_CONV_MESSAGES = 40  # hard cap on stored conversation length (keeps system msg at [0])
 
+
+def stable_window(items, min_keep, chunk=8):
+    """Return a recent-suffix of `items` whose START only moves once every
+    `chunk` appends (window length ranges min_keep .. min_keep+chunk-1).
+
+    Why not a plain [-min_keep:]? A sliding window shifts by one every turn,
+    which changes the prompt prefix every call and kills the provider's
+    prefix cache — every turn reprocesses the whole prompt (system, tool
+    schemas, history) from scratch. This was the 'fast for four replies,
+    then slow' cliff: the tool probe's 8-message window filled after four
+    exchanges and started sliding. Chunked trimming keeps the prefix
+    byte-identical for whole stretches, so cached turns stay fast."""
+    n = len(items)
+    if n <= min_keep:
+        return items
+    start = ((n - min_keep) // chunk) * chunk
+    return items[start:]
+
 # Tracks Groq reachability for the HUD health dot (flipped inside ask_streaming).
 _GROQ_OK = True
 
@@ -85,14 +103,15 @@ def groq_ok():
 
 # ---------- persona ----------
 SYSTEM_PROMPT = (
-    f"You are Ted, {OWNER_NAME}'s AI. Think Jarvis from Iron Man — not a chatbot, "
-    "a capable system that happens to have a personality. "
+    f"You are Ted, {OWNER_NAME}'s personal AI chatbot — his primary AI, the one "
+    "he talks to all day in a chat window. You know him, remember him, and are "
+    "proactively involved in his daily life: classes, schedule, to-dos, ideas. "
 
-    # Brevity — the most important rule
-    "Default to 1-2 sentences. That's it. If the answer fits in one sentence, use one. "
-    "Only go longer when the question genuinely requires it — detailed how-tos, "
-    "multi-part answers, or when asked to elaborate. "
-    "Never pad. Never recap what was just said. Never summarise your own answer. "
+    # Brevity — still the most important rule
+    "Default to short and direct: a sentence or two for simple things. "
+    "Go longer when the question deserves it — explanations, how-tos, working "
+    "through a problem — but never pad. Never recap what was just said. "
+    "Never summarise your own answer. "
 
     # Openers — hard ban
     "Never open with: 'Got it', 'Sure', 'Of course', 'Certainly', 'Absolutely', "
@@ -116,18 +135,23 @@ SYSTEM_PROMPT = (
     # Name use
     f"Use {OWNER_NAME}'s name sparingly — once every several exchanges at most. "
 
-    # Voice format
-    "Everything is spoken aloud: no markdown, no bullet points, no lists, no emojis. "
-    "Numbers and amounts spoken as words. Short sentences over long ones. "
+    # Chat format
+    "Replies appear in a chat window. Write naturally: plain sentences and short "
+    "paragraphs. Light formatting (a short list, `code`) only when it truly helps. "
+    "ALWAYS wrap code in fenced blocks with the language name, like "
+    "```python ... ``` — never paste code as plain text. "
+    "No emojis. If voice mode is on your words are also spoken aloud, so keep "
+    "sentences readable out loud. "
 
     # Memory
     "You remember this conversation and facts about the user. Reference them naturally "
     "when relevant — never announce it with phrases like 'according to my memory'. "
 
     # Capabilities
-    "You can set timers and reminders, keep named lists, give a morning briefing, "
-    "control Spotify, and relay hard questions to Claude. Nudge toward clear phrasing "
-    "if needed — 'set a timer for ten minutes', 'remind me to call back in an hour'. "
+    "You can set timers and reminders, give a morning briefing, read and add "
+    "calendar events, control Spotify, and relay hard questions to Claude. Nudge "
+    "toward clear phrasing if needed — 'set a timer for ten minutes', 'remind me "
+    "to call back in an hour'. "
 
     # Honesty about actions — the one rule you never break
     "You can ONLY perform actions through your tools. Never claim to have opened, "
@@ -139,8 +163,29 @@ SYSTEM_PROMPT = (
     # Intent over literal words
     "The user speaks naturally — sometimes with filler words, imperfect phrasing, or "
     "speech recognition artifacts (e.g. 'klose' means 'close', 'spotify' misspelled). "
-    "Always interpret intent rather than requiring exact or perfect wording."
+    "Always interpret intent rather than requiring exact or perfect wording. "
+
+    # Handling gaps — never be confused, always have a move
+    "When a request is ambiguous or missing a detail, you have exactly two moves: "
+    "(1) make the most reasonable assumption, act on it, and say which assumption "
+    "you made — 'Assuming you meant tomorrow's 9am class…'; or (2) if the choice "
+    "genuinely changes the outcome, ask ONE short question. Never say you're "
+    "confused, never list every interpretation, never freeze. A wrong-but-stated "
+    "assumption beats a stalled conversation — the user will just correct you. "
+
+    # Knowing your limits
+    "If a question needs deeper reasoning than you can give — hard math, tricky "
+    "code, multi-step analysis — give your best take and be honest about how "
+    "confident you are, rather than bluffing."
 )
+
+# The 'offer to ask Claude' line only exists when a relay target actually does —
+# otherwise Ted offers a phone that isn't plugged in.
+if ANTHROPIC_API_KEY:
+    SYSTEM_PROMPT += (
+        " For those genuinely hard questions you can also offer: 'Want me to ask "
+        "Claude?' (the user says 'ask Claude …' to relay it)."
+    )
 
 THINKING_CONTEXT = (
     "THINKING PARTNER MODE: Do NOT give advice, solutions, or recommendations. "
@@ -205,14 +250,19 @@ def extract_and_save_facts(user_input, ted_reply):
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": (
-                    f"Extract factual statements about the user ({OWNER_NAME}) from this exchange. "
-                    "Only extract clear, explicit facts — not guesses or implications. "
+                    f"Extract facts about the user ({OWNER_NAME})'s OWN LIFE from this exchange: "
+                    "things about him, his family, friends, pets, school, work, preferences, "
+                    "possessions, plans. Only clear, explicit facts — not guesses. "
                     'Respond with a JSON object of the form {"facts": [...]} where each element '
                     "has the keys: subject, relationship, object. "
                     "Use short uppercase relationship names like WORKS_AT, LIKES, OWNS, STUDIES, "
                     "LIVES_IN, PREFERS, IS_AGE, HAS_PET, DISLIKES. "
                     f'Example: {{"facts": [{{"subject": "{OWNER_NAME}", "relationship": "LIKES", "object": "jazz"}}]}}. '
-                    'If there are no clear facts about the user, return {"facts": []}. '
+                    "HARD RULES — return {\"facts\": []} rather than break these: "
+                    "NEVER extract general knowledge, trivia, or facts about the world, even if "
+                    "they appear in Ted's reply (e.g. 'bananas are berries' is trivia, NOT a fact "
+                    "about the user — do not save it). Ted's reply is context for understanding "
+                    "the user only; facts must come from what the USER revealed about himself. "
                     "Never include Ted's statements about himself. Never include questions as facts."
                 )},
                 {"role": "user", "content": f"User said: {user_input}\nTed replied: {ted_reply}"}
@@ -226,12 +276,28 @@ def extract_and_save_facts(user_input, ted_reply):
             # Nothing parsed out of a non-empty reply — that's a real failure,
             # not "no facts here". Surface it instead of losing it to a print.
             error_log.error(f"[memory] fact extraction returned unparseable output: {raw[:200]!r}")
+        # Hard gate, because the prompt alone doesn't stop the fast model from
+        # harvesting trivia out of Ted's own replies ("bananas ARE berries"):
+        # a real fact about the user has a subject the USER brought up. If the
+        # subject never appears in what the user said and isn't the user
+        # himself, it's world knowledge — drop it.
+        _ui_low = f" {user_input.lower()} "
         saved = 0
         for f in facts:
             if isinstance(f, dict) and all(k in f for k in ("subject", "relationship", "object")):
-                save_fact(f["subject"], f["relationship"], f["object"])
+                subj = str(f["subject"]).strip()
+                subj_low = subj.lower()
+                mentioned = (OWNER_NAME.lower() in subj_low
+                             or subj_low in _ui_low
+                             or any(len(w) > 2 and w in _ui_low
+                                    for w in subj_low.split()))
+                if not mentioned:
+                    print(f"[memory] fact rejected (subject not from user): "
+                          f"{subj} → {f['relationship']} → {f['object']}")
+                    continue
+                save_fact(subj, f["relationship"], f["object"])
                 saved += 1
-                print(f"[memory] fact saved: {f['subject']} → {f['relationship']} → {f['object']}")
+                print(f"[memory] fact saved: {subj} → {f['relationship']} → {f['object']}")
         return saved
     except Exception as e:
         print(f"[memory] fact extraction skipped: {e}")
@@ -302,7 +368,7 @@ def _web_messages(user_input, conversation=None):
     today = date.today().strftime("%A, %B %d, %Y")
     loc = _get_web_location()
     sys_prompt = (
-        f"You are Ted, {OWNER_NAME}'s voice assistant. Today is {today}."
+        f"You are Ted, {OWNER_NAME}'s AI assistant. Today is {today}."
         + (f" The user is in {loc}." if loc else "")
         + " Use your web search to answer with CURRENT information. "
         "Your reply is spoken aloud: two to three short sentences, no markdown, "
@@ -359,7 +425,7 @@ def web_answer(question):
         r = chat_create(
             messages=[{"role": "user", "content":
                        f"Today is {today}. Using ONLY these web search snippets, answer "
-                       f"the question for a voice assistant in one or two short spoken "
+                       f"the question for a chat assistant in one or two short "
                        f"sentences. If they don't fully answer it, give the closest "
                        f"useful information they contain — never mention searching, "
                        f"snippets, or being unable.\n\nQuestion: {question}\n\n"
@@ -419,11 +485,14 @@ def ask_claude(prompt):
         return "I couldn't reach Claude just now."
 
 # ---------- streaming conversation ----------
-def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False, window=None):
+def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
+                  window=None, voice_mode=False):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
     thinking_mode   — True → inject Socratic partner instructions (no advice).
+    voice_mode      — True → reply is spoken aloud: short, no formatting.
+                      False → text chat: fuller answers, markdown/code allowed.
 
     Mutates `conversation` in-place so the history accumulates.
     Saves the final reply to Neo4j memory and logs facts, both on background threads.
@@ -485,16 +554,27 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # Build the context string injected as a system message just before recent history.
     # Keeping it as a single message (rather than modifying the system prompt) means
     # per-turn data (today's date, web results) stays out of the prompt cache.
+    # Hard caps on retrieved context. Without these the block grows with the
+    # database — more facts, longer recalled exchanges — and every turn pays
+    # to reprocess it, which is the slow creep that shows up after a database
+    # has been in use for a while. Truncation is cheap insurance.
+    def _cap(s, n):
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
+
     context_parts = [f"Today is {today}."]
-    context_parts.append(f"Relevant web results: {search_results or 'none'}.")
-    context_parts.append(f"Known facts about {OWNER_NAME}: {known_facts or 'none'}.")
-    context_parts.append(f"Relevant past exchanges: {past_memory or 'none'}.")
-    context_parts.append(f"Personal knowledge base: {knowledge_ctx or 'none'}.")
+    if search_results:
+        context_parts.append(f"Relevant web results: {_cap(search_results, 2000)}.")
+    context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200) or 'none'}.")
+    context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200) or 'none'}.")
+    if knowledge_ctx:
+        context_parts.append(f"Personal knowledge base: {_cap(knowledge_ctx, 1500)}.")
 
     # Memories of previous sessions — this is what lets Ted say "last time you
     # were stuck on X". Only injected when there are any; most days there won't be.
     if past_sessions:
-        context_parts.append(f"Things you remember from earlier conversations: {past_sessions}.")
+        context_parts.append(
+            f"Things you remember from earlier conversations: {_cap(past_sessions, 1200)}.")
         context_parts.append(
             "Those are your own memories of past conversations. Refer back to them the way a "
             "friend would — only when it actually fits what's being said, at most once, and "
@@ -520,23 +600,55 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     if thinking_mode:
         context_parts.append(THINKING_CONTEXT)
 
+    # Mode: Ted should know whether he's talking or typing, and act like it.
+    # NOTE: this line is regenerated fresh every turn and is the ONLY truth
+    # about the current mode — the model must not trust earlier turns, because
+    # the user flips modes mid-conversation and old claims go stale.
+    if voice_mode:
+        context_parts.append(
+            "CURRENT MODE: VOICE (right now, this exact reply is spoken aloud). "
+            "If asked which mode you're in, the answer is VOICE — anything said "
+            "about modes earlier in this conversation is outdated; trust only "
+            "this line. One or two short sentences. No markdown, no lists, no "
+            "code blocks; numbers as words. If the real answer needs code or "
+            "lots of detail, give the one-sentence version and offer to put "
+            "the rest in chat."
+        )
+    else:
+        context_parts.append(
+            "CURRENT MODE: CHAT (right now, this reply appears as text in the "
+            "chat window; the mic is off). If asked which mode you're in, the "
+            "answer is CHAT — anything said about modes earlier in this "
+            "conversation is outdated; trust only this line. Answer properly "
+            "and completely like a modern AI chat assistant: full explanations "
+            "when the question deserves them, fenced code blocks for any code, "
+            "short paragraphs. Still no padding or filler."
+        )
+
     context = "(Context: " + " ".join(context_parts) + ")"
 
     # Trim conversation to MAX_HISTORY recent turns; always keep [0] (system prompt).
-    # The per-turn context block is inserted at position [1] so Groq sees:
-    #   [system_prompt, context, ...recent turns...]
-    recent   = conversation[1:][-MAX_HISTORY:]
-    messages = ([conversation[0], {"role": "system", "content": context}]
-                + recent + [{"role": "user", "content": user_input}])
+    # ORDER MATTERS FOR SPEED: the per-turn context block changes every turn,
+    # so it goes LAST — [static system, ...history, context, user]. With the
+    # static prefix byte-identical across calls, Groq's automatic prefix
+    # caching skips reprocessing it, which directly cuts time-to-first-token.
+    # (Putting instructions closest to the user message also makes the model
+    # follow them more reliably — recency wins in attention.)
+    recent   = stable_window(conversation[1:], MAX_HISTORY)
+    messages = ([conversation[0]] + recent
+                + [{"role": "system", "content": context},
+                   {"role": "user", "content": user_input}])
 
     def _do_groq_call():
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the gpt-oss → llama fallback internally."""
         return chat_create(
             messages=messages,
-            max_tokens=250,
+            # Voice keeps the old tight cap; chat gets room for real answers —
+            # 250 was silently truncating anything longer than a short paragraph.
+            max_tokens=250 if voice_mode else 1200,
             stream=True,
-            timeout=12.0,
+            timeout=12.0 if voice_mode else 30.0,
         )
 
     # Auto-retry on rate limits (up to 3×) and transient timeouts (up to 2×).
@@ -583,10 +695,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     _GROQ_OK = True   # we have a response object — Groq is reachable
     full_reply = ""
+    _t_stream = time.time()
     try:
         for chunk in resp:
             delta = chunk.choices[0].delta.content or ""
             if delta:                # skip empty keep-alive chunks
+                if not full_reply:   # one timing line per turn, for diagnosing lag
+                    print(f"[timing] first token {int((time.time() - _t_stream) * 1000)}ms")
                 full_reply += delta
                 yield delta
     except Exception as e:

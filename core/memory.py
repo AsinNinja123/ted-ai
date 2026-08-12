@@ -94,6 +94,9 @@ def _get_driver():
             os.makedirs(DATA, exist_ok=True)
             conn = sqlite3.connect(DB_PATH, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
+            # Wait out brief write locks (dashboard edits, chat recording)
+            # instead of instantly dropping the write with 'database is locked'.
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.executescript(_SCHEMA)
             try:
                 conn.execute(
@@ -439,8 +442,13 @@ def get_recent_memories(limit=MAX_MEMORIES_IN_PROMPT, max_age_days=60):
 
 
 def search_memories(query, limit=3):
-    """Keyword search across past session memories. Returns the same shape as
-    get_recent_memories(). Used when the user asks about an earlier conversation."""
+    """Keyword search across past session memories AND chat-thread summaries.
+    Returns the same shape as get_recent_memories(). Used when the user asks
+    about an earlier conversation.
+
+    Chat threads (the HUD sidebar) are recorded by the dashboard server into
+    chat_sessions in this same database; searching their titles/summaries here
+    is what lets 'when did I ask about rain?' find a different chat thread."""
     terms = _keywords(query)[:4]
     if not terms:
         return []
@@ -451,9 +459,26 @@ def search_memories(query, limit=3):
     params.append(limit)
     rows = _query(f"SELECT id, text, topics, created, exchanges FROM session_summaries "
                   f"WHERE {where} ORDER BY created DESC LIMIT ?", tuple(params))
-    return [{"id": r[0], "text": r[1], "topics": r[2] or "",
-             "created": r[3], "when": _humanize_date(r[3]), "exchanges": r[4] or 0}
-            for r in rows]
+    out = [{"id": r[0], "text": r[1], "topics": r[2] or "",
+            "created": r[3], "when": _humanize_date(r[3]), "exchanges": r[4] or 0}
+           for r in rows]
+
+    # Chat-thread summaries (table exists once the dashboard/HUD has run)
+    cwhere = " OR ".join(["title LIKE ? OR summary LIKE ?"] * len(terms))
+    cparams = []
+    for t in terms:
+        cparams.extend([f"%{t}%", f"%{t}%"])
+    cparams.append(limit)
+    crows = _query(f"SELECT id, title, summary, updated FROM chat_sessions "
+                   f"WHERE {cwhere} ORDER BY updated DESC LIMIT ?", tuple(cparams))
+    for r in crows:
+        text = (r[2] or r[1] or "").strip()
+        if text:
+            out.append({"id": f"chat-{r[0]}", "text": f"(chat: {r[1]}) {r[2] or ''}".strip(),
+                        "topics": "", "created": r[3],
+                        "when": _humanize_date(r[3]), "exchanges": 0})
+    out.sort(key=lambda m: m["created"], reverse=True)
+    return out[:limit]
 
 
 def format_memories_for_prompt(limit=MAX_MEMORIES_IN_PROMPT):

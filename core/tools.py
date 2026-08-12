@@ -46,13 +46,16 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "browse_to",
             "description": (
-                "Open a website in Chrome. Use for 'go to X', 'open X website', 'browse to X', "
-                "'pull up X.com'. Pass the site name or URL — Ted will convert it to a proper URL."
+                "Open a website. Use for 'go to X', 'open X website', 'browse to X', "
+                "'pull up X.com'. Pass the site name or URL. If the user wants a "
+                "specific browser (or is known to prefer one for this site), pass it "
+                "in 'browser' — e.g. open YouTube in Brave."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "site": {"type": "string", "description": "Website name or URL, e.g. 'amazon', 'youtube.com', 'https://google.com'"}
+                    "site": {"type": "string", "description": "Website name or URL, e.g. 'amazon', 'youtube.com', 'https://google.com'"},
+                    "browser": {"type": "string", "description": "Optional: specific browser to open it in, e.g. 'Brave', 'Safari', 'Chrome'"}
                 },
                 "required": ["site"]
             }
@@ -178,33 +181,25 @@ TOOL_SCHEMAS = [
         }
     },
 
-    # ── Lists ─────────────────────────────────────────────────────────────────
+    # (named-list / to-do tools removed 2026-08 — feature retired)
+
+    # ── HUD widgets ───────────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
-            "name": "list_add",
-            "description": "Add an item to a named list (shopping, groceries, to-do, etc.).",
+            "name": "toggle_clock",
+            "description": (
+                "Show or hide the clock/date/weather widget in the chat window. "
+                "Use when the user asks to show, hide, or toggle the clock, the "
+                "time display, or the weather widget."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "list_name": {"type": "string", "description": "Name of the list"},
-                    "item": {"type": "string", "description": "Item to add"}
+                    "mode": {"type": "string", "enum": ["on", "off", "toggle"],
+                             "description": "'on' shows it, 'off' hides it, 'toggle' flips it"}
                 },
-                "required": ["list_name", "item"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_get",
-            "description": "Read back everything on a named list.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "list_name": {"type": "string", "description": "Name of the list to read"}
-                },
-                "required": ["list_name"]
+                "required": []
             }
         }
     },
