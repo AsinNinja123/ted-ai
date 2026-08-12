@@ -34,10 +34,6 @@ VOICE_LOCK_THRESHOLD = 0.68
 # / headphones to interrupt instead). Has no effect when the AEC engine is active.
 FALLBACK_VOICE_BARGEIN = True
 
-# ── "Ask Claude" second brain (optional) ─────────────────────────────────────
-ANTHROPIC_API_KEY = ""              # enables "ask Claude…" relay for hard questions
-CLAUDE_MODEL = "claude-sonnet-5"
-
 # ── Personal settings ────────────────────────────────────────────────────────
 OWNER_NAME = "Charlie"     # used in greetings: "Good morning, [name]"
 WEATHER_LOCATION = ""      # e.g. "Boise, ID" — for weather; auto-detected via IP if blank

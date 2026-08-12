@@ -1,5 +1,5 @@
 """core/llm.py — Ted's brain: Groq client, prompts, streaming replies,
-web search, the 'ask Claude' relay, and the small composition/summarisation
+web search, and the small composition/summarisation
 helpers used by messaging and email.
 """
 
@@ -21,26 +21,28 @@ from core.memory import (save_memory, get_memory, save_fact, get_facts_about,
 
 from config import GROQ_API_KEY  # required — app won't start without this
 try:
-    from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
-except Exception:
-    ANTHROPIC_API_KEY, CLAUDE_MODEL = "", "claude-sonnet-5"
-try:
     from config import OWNER_NAME
 except Exception:
     OWNER_NAME = "Charlie"
 
-# Groq model line-up: big model for replies + tool calling, fast model for
-# JSON extraction and summaries, compound for live-web questions (it runs a
-# real web search server-side before answering — no extra API keys needed).
+# ONE reasoning model. Everything that thinks — replies, tool calls, fact
+# extraction, session summaries, summarising a web result — goes through
+# chat_create() and lands on CHAT_MODEL.
+#
+# CHAT_FALLBACK_MODEL is not a second brain; it is an availability twin that
+# only runs when the primary is rate-limited or down, and it says so in the log
+# when it does. Aug 2026: three other models were removed. llama-3.1-8b-instant
+# was running fact extraction and session memory — an 8B doing judgment work,
+# and the source of both the five-week silent JSON failure and the "bananas are
+# berries" facts. groq/compound-mini was answering anything matching a keyword
+# list, unstreamed, with a 14s timeout and a retry, deciding before the model
+# ever saw the message. claude-sonnet-5 was a relay that never had a key.
 #
 # gpt-oss-120b benchmarked 5-9x faster than llama-3.3-70b with better tool
 # calling (it handled the misheard-verb cases that made llama emit malformed
-# tool calls). It shares a rate-limit pool with groq/compound, so every chat
-# call goes through chat_create(), which falls back to llama automatically.
+# tool calls).
 CHAT_MODEL          = "openai/gpt-oss-120b"
 CHAT_FALLBACK_MODEL = "llama-3.3-70b-versatile"
-FAST_MODEL          = "llama-3.1-8b-instant"
-WEB_MODEL           = "groq/compound-mini"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -179,14 +181,6 @@ SYSTEM_PROMPT = (
     "confident you are, rather than bluffing."
 )
 
-# The 'offer to ask Claude' line only exists when a relay target actually does —
-# otherwise Ted offers a phone that isn't plugged in.
-if ANTHROPIC_API_KEY:
-    SYSTEM_PROMPT += (
-        " For those genuinely hard questions you can also offer: 'Want me to ask "
-        "Claude?' (the user says 'ask Claude …' to relay it)."
-    )
-
 THINKING_CONTEXT = (
     "THINKING PARTNER MODE: Do NOT give advice, solutions, or recommendations. "
     "Instead, briefly reflect back what the user just said (one sentence), "
@@ -243,8 +237,7 @@ def extract_and_save_facts(user_input, ted_reply):
     facts from the exchange and persist them. Never raises — it runs on a daemon
     thread and must not be able to take the conversation loop down with it."""
     try:
-        resp = groq_client.chat.completions.create(
-            model=FAST_MODEL,   # fast model is plenty for JSON extraction
+        resp = chat_create(
             # JSON mode: the model is constrained to emit a parseable object, so
             # it can't prepend "Sure! Here's the JSON:" and break the parse.
             response_format={"type": "json_object"},
@@ -316,9 +309,10 @@ def _newsy(query):
 
 def search_web(query):
     """Search the web via DuckDuckGo. Returns a sentinel string on failure —
-    never blocks > 8s. This is the FALLBACK path; groq/compound (below) is the
-    primary source for live answers. News-ish queries use the news vertical
-    (dated, fresh results) instead of generic web text."""
+    never blocks > 8s. This is now the ONLY source of live web data: the
+    snippets go into the reply's context block and the one reasoning model
+    answers from them, streaming like any other turn. News-ish queries use the
+    news vertical (dated, fresh results) instead of generic web text."""
     try:
         try:
             from ddgs import DDGS          # newer package name
@@ -344,7 +338,7 @@ def search_web(query):
         return "__SEARCH_ERROR__"
 
 
-# ---------- live web answers via groq/compound ----------
+# ---------- live web answers ----------
 _web_location = None   # cached "City, Region" for the web prompt
 
 def _get_web_location():
@@ -361,62 +355,10 @@ def _get_web_location():
     return _web_location
 
 
-def _web_messages(user_input, conversation=None):
-    """Small message set for the compound model: short voice-style system
-    prompt + up to 2 recent exchanges (for follow-ups like 'what about
-    tomorrow?'). Kept lean — compound requests carry search results too."""
-    today = date.today().strftime("%A, %B %d, %Y")
-    loc = _get_web_location()
-    sys_prompt = (
-        f"You are Ted, {OWNER_NAME}'s AI assistant. Today is {today}."
-        + (f" The user is in {loc}." if loc else "")
-        + " Use your web search to answer with CURRENT information. "
-        "Your reply is spoken aloud: two to three short sentences, no markdown, "
-        "no lists, no URLs, no citations. Just the facts, conversational."
-    )
-    msgs = [{"role": "system", "content": sys_prompt}]
-    if conversation:
-        for m in conversation[-2:]:
-            if m["role"] in ("user", "assistant"):
-                msgs.append({"role": m["role"], "content": m["content"][:200]})
-    msgs.append({"role": "user", "content": user_input})
-    return msgs
-
-
-def _compound_answer(user_input, conversation=None, timeout=14.0):
-    """One-shot compound answer, or None on ANY failure so the caller falls
-    back to DuckDuckGo. Deliberately NOT streamed: on the free tier compound
-    can abort mid-stream (413 when its search results blow the request cap),
-    and a non-streaming call either fully succeeds or cleanly fails.
-    Kept small (short history, modest max_tokens) to stay under tier limits.
-    413s (request_too_large) depend on what compound's own search fetched, so
-    one retry often succeeds where the first attempt blew the cap."""
-    for attempt in (0, 1):
-        try:
-            r = groq_client.chat.completions.create(
-                model=WEB_MODEL,
-                messages=_web_messages(user_input, conversation),
-                max_tokens=220,
-                timeout=timeout,
-            )
-            out = (r.choices[0].message.content or "").strip()
-            return out or None
-        except Exception as e:
-            msg = str(e)
-            if "request_too_large" in msg and attempt == 0:
-                print("[web] compound 413 (its search results too big) — one retry")
-                continue
-            print(f"[web] compound failed ({msg[:100]}) — DuckDuckGo fallback")
-            return None
-    return None
-
-
 def web_answer(question):
-    """Live-web answer for explicit 'look up X' commands.
-    compound first, DuckDuckGo+summarise fallback, honest failure last."""
-    out = _compound_answer(question)
-    if out:
-        return out
+    """Live-web answer for explicit 'look up X' commands: DuckDuckGo for the
+    facts, the one reasoning model to turn them into a sentence, honest
+    failure if the search comes back empty."""
     raw = search_web(question)
     if raw in ("__NO_RESULTS__", "__SEARCH_ERROR__"):
         return "I couldn't find anything solid on that right now."
@@ -452,37 +394,6 @@ def _remember_exchange(user_input, full_reply, conversation):
     if intents._worth_extracting(user_input):
         threading.Thread(target=extract_and_save_facts,
                          args=(user_input, full_reply), daemon=True).start()
-
-# ---------- ask Claude (second brain) ----------
-def ask_claude(prompt):
-    """Relay a hard question to Claude via the Anthropic API. No SDK needed —
-    plain HTTPS. Returns a spoken-style answer or a friendly fallback."""
-    if not ANTHROPIC_API_KEY:
-        return "I'd need an Anthropic API key set in the config before I can ask Claude."
-    import urllib.request
-    body = json.dumps({
-        "model": CLAUDE_MODEL,
-        "max_tokens": 400,
-        "system": ("You are Claude, answering a question relayed by Ted, a voice "
-                   "assistant, so your reply will be read aloud. Be conversational and "
-                   "concise — usually one to four sentences, no markdown or lists."),
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body,
-        headers={"content-type": "application/json",
-                 "x-api-key": ANTHROPIC_API_KEY,
-                 "anthropic-version": "2023-06-01"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        text = " ".join(b.get("text", "") for b in data.get("content", [])
-                        if b.get("type") == "text").strip()
-        return text or "Claude didn't have anything to add."
-    except Exception as e:
-        print("Claude error:", e)
-        return "I couldn't reach Claude just now."
 
 # ---------- tool runtime ----------
 class ToolRuntime:
@@ -618,18 +529,18 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     today = date.today().strftime("%B %d, %Y")
 
-    # --- live-web questions: groq/compound answers with a real web search ---
+    # --- live-web questions: search, then let the one model answer from it ---
+    # This used to hop to groq/compound-mini, which answered by itself, was not
+    # streamed, and had a 14s timeout plus a retry — so a message containing
+    # "news" could sit silent for half a minute and then arrive all at once.
+    # Now the snippets go into the context block and the normal streamed reply
+    # uses them, which means live-web answers stream like everything else.
     search_results = ""
     _web_error_msg = None
     if intents._needs_web(user_input):
-        ans = _compound_answer(user_input, conversation)
-        if ans:
-            yield ans
-            _remember_exchange(user_input, ans, conversation)
-            return
-
-        # compound unavailable (rate limit etc.) — fall back to DuckDuckGo
+        _t_web = time.time()
         raw = search_web(user_input)
+        print(f"[timing] web search {int((time.time() - _t_web) * 1000)}ms")
         if raw == "__NO_RESULTS__":
             _web_error_msg = "I couldn't find anything on that."
         elif raw == "__SEARCH_ERROR__":
@@ -969,8 +880,7 @@ def summarize_email_body(body, contact_name):
     if len(body.split()) < 40:
         return body
     try:
-        resp = groq_client.chat.completions.create(
-            model=FAST_MODEL,
+        resp = chat_create(
             messages=[{
                 "role": "user",
                 "content": f"Summarize this email from {contact_name} in 2 sentences max, spoken aloud style:\n\n{body[:2000]}"
@@ -1074,8 +984,7 @@ def generate_session_summary(conversation):
         return None
 
     try:
-        resp = groq_client.chat.completions.create(
-            model=FAST_MODEL,
+        resp = chat_create(
             messages=[
                 {"role": "system", "content": _MEMORY_SYSTEM},
                 {"role": "user", "content": transcript},

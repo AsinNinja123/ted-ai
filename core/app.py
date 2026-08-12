@@ -27,7 +27,7 @@ from core.intents import (
     _BRIEF_PHRASES, _HOLD_PHRASES, _RECALL_PHRASES, _THINK_ENTER, _THINK_EXIT,
     _chat_command, _reminders_command,
     _parse_open_apps, _parse_close_apps, _resolve_context_app,
-    _parse_message_cmd, _parse_ask_claude, _parse_reminder, _parse_list_cmd,
+    _parse_message_cmd, _parse_reminder, _parse_list_cmd,
     _parse_calc, _parse_cancel_scheduled, _is_timer_request,
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
@@ -610,14 +610,6 @@ class TedApi:
         if msg_cmd:
             contact, instruction = msg_cmd
             return self._send_message_to_contact(contact, instruction)
-
-        # ── ask Claude (second brain) ──
-        acq = _parse_ask_claude(text)
-        if acq is not None:
-            if not acq:
-                return "Ask Claude what?"
-            set_state(self.window, "thinking")
-            return llm.ask_claude(acq)
 
         # ── explicit web lookup: "look up X" / "search for X" / "google X" ──
         from core.intents import _parse_lookup

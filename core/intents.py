@@ -306,13 +306,6 @@ def _parse_song(text):
 
     return None
 
-def _parse_ask_claude(text):
-    """Return the question after 'ask Claude', '' if none given, or None if not a Claude request."""
-    m = re.search(r"\bask claude\b(?:\s+(?:about|regarding|to))?\s*(.*)", text, re.I)
-    if not m:
-        return None
-    return m.group(1).strip(" ,.?!")
-
 # ---------- named lists ----------
 def _parse_list_cmd(text):
     """Add/remove/clear/read a named list. Returns spoken text or None."""
