@@ -484,18 +484,131 @@ def ask_claude(prompt):
         print("Claude error:", e)
         return "I couldn't reach Claude just now."
 
+# ---------- tool runtime ----------
+class ToolRuntime:
+    """Everything ask_streaming needs to run a tool, without llm.py importing
+    the tool layer (which would be a circular import).
+
+    schemas       — the tool menu handed to the model
+    dispatch      — dispatch(name, args) -> result string
+    action_tools  — names whose result IS the reply and is spoken verbatim
+    on_failure    — called with a failed action's message, for the HUD
+    """
+    __slots__ = ("schemas", "dispatch", "action_tools", "on_failure")
+
+    def __init__(self, schemas, dispatch, action_tools=(), on_failure=None):
+        self.schemas = schemas
+        self.dispatch = dispatch
+        self.action_tools = frozenset(action_tools)
+        self.on_failure = on_failure or (lambda _m: None)
+
+
+# Tool-selection instructions. These live in the STATIC system message
+# (appended to the persona once, identically every turn) rather than in the
+# per-turn context block, so they stay inside the cacheable prefix.
+TOOL_GUIDANCE = (
+    "\n\nYou have tools. Use one when the user wants something done rather than "
+    "discussed, and answer directly when they don't — most turns are conversation "
+    "and need no tool at all. Never call a tool to look busy, and never call one "
+    "to look up something you already know. Input may contain speech-recognition "
+    "errors or unusual phrasing — read intent over literal words. If a detail a "
+    "tool needs is missing, pick the reasonable default and proceed rather than "
+    "stalling. Honour stated preferences: if the user has said they want a site "
+    "opened in a particular browser, pass that browser."
+)
+
+MAX_TOOL_ROUNDS = 3
+
+# How much text to hold back before committing to "this turn is a text reply".
+# See _stream_turn for why this buffer exists.
+_TOOL_DECIDE_CHARS = 40
+
+
+def _stream_turn(resp, calls):
+    """Consume ONE streamed completion. Yields text deltas to the caller and
+    fills `calls` (index -> {id, name, args}) with any tool calls the model
+    emitted. Returns the text it yielded.
+
+    Content is held back for the first few tokens on purpose. If the model is
+    calling a tool its tool-call deltas arrive first, but it sometimes emits a
+    preamble alongside them ("Sure, opening that for you!"). That preamble must
+    never reach the user, because the tool result is the ground truth and it
+    might be a failure. Streaming the preamble and then appending "Spotify
+    isn't open" is exactly the cheerful lie the honesty rule exists to stop.
+    So: buffer, and if tool calls show up, throw the buffer away.
+
+    The cost is holding ~40 characters, which at streaming speed is a few tens
+    of milliseconds — far less than the round trip this replaces.
+    """
+    buf = ""
+    out = ""
+    committed = False
+    t0 = time.time()
+    try:
+        for chunk in resp:
+            delta_obj = chunk.choices[0].delta
+            tcs = getattr(delta_obj, "tool_calls", None)
+            if tcs:
+                for t in tcs:
+                    idx = getattr(t, "index", 0) or 0
+                    slot = calls.setdefault(idx, {"id": "", "name": "", "args": ""})
+                    if getattr(t, "id", None):
+                        slot["id"] = t.id
+                    fn = getattr(t, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            slot["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            slot["args"] += fn.arguments
+                buf = ""          # discard any preamble — the tool owns this turn
+            delta = getattr(delta_obj, "content", None) or ""
+            if not delta or calls:
+                continue
+            if committed:
+                out += delta
+                yield delta
+                continue
+            buf += delta
+            if len(buf) >= _TOOL_DECIDE_CHARS:
+                committed = True
+                print(f"[timing] first token {int((time.time() - t0) * 1000)}ms")
+                out += buf
+                yield buf
+                buf = ""
+        if buf and not calls:
+            if not committed:
+                print(f"[timing] first token {int((time.time() - t0) * 1000)}ms")
+            out += buf
+            yield buf
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return out
+
+
 # ---------- streaming conversation ----------
 def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
-                  window=None, voice_mode=False):
+                  window=None, voice_mode=False, tool_runtime=None):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
     thinking_mode   — True → inject Socratic partner instructions (no advice).
     voice_mode      — True → reply is spoken aloud: short, no formatting.
                       False → text chat: fuller answers, markdown/code allowed.
+    tool_runtime    — a ToolRuntime, or None for a pure-conversation call.
+
+    With tool_runtime set this is the ONLY model call a turn needs. The request
+    carries the tool schemas and is streamed, so the model either answers in
+    text (streamed straight through — one round trip) or calls a tool (executed
+    here, then narrated). The old design made a separate non-streamed "probe"
+    call first, told it to reply CHAT when no tool was needed, threw that answer
+    away, and then made the real streaming call — two round trips on every
+    message, when the overwhelming majority of messages are conversation.
 
     Mutates `conversation` in-place so the history accumulates.
-    Saves the final reply to Neo4j memory and logs facts, both on background threads.
+    Saves the final reply to memory and logs facts, both on background threads.
     """
     global _GROQ_OK
     action = detect_action(user_input)
@@ -634,21 +747,34 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # caching skips reprocessing it, which directly cuts time-to-first-token.
     # (Putting instructions closest to the user message also makes the model
     # follow them more reliably — recency wins in attention.)
-    recent   = stable_window(conversation[1:], MAX_HISTORY)
-    messages = ([conversation[0]] + recent
+    recent = stable_window(conversation[1:], MAX_HISTORY)
+    # Tool guidance is concatenated onto the persona rather than sent as its own
+    # message: it is byte-identical every turn, so it stays in the cached prefix.
+    _system = conversation[0]
+    if tool_runtime is not None:
+        _system = {"role": "system",
+                   "content": conversation[0]["content"] + TOOL_GUIDANCE}
+    messages = ([_system] + recent
                 + [{"role": "system", "content": context},
                    {"role": "user", "content": user_input}])
 
-    def _do_groq_call():
+    # The schemas are part of the static request shape, so prefix caching covers
+    # them — attaching them to every turn costs close to nothing, and it is what
+    # lets one call do the job the probe + streaming pair used to do.
+    _tools_kw = ({"tools": tool_runtime.schemas, "tool_choice": "auto"}
+                 if tool_runtime is not None else {})
+
+    def _do_groq_call(msgs=None):
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the gpt-oss → llama fallback internally."""
         return chat_create(
-            messages=messages,
+            messages=messages if msgs is None else msgs,
             # Voice keeps the old tight cap; chat gets room for real answers —
             # 250 was silently truncating anything longer than a short paragraph.
             max_tokens=250 if voice_mode else 1200,
             stream=True,
             timeout=12.0 if voice_mode else 30.0,
+            **_tools_kw,
         )
 
     # Auto-retry on rate limits (up to 3×) and transient timeouts (up to 2×).
@@ -695,27 +821,89 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     _GROQ_OK = True   # we have a response object — Groq is reachable
     full_reply = ""
-    _t_stream = time.time()
     try:
-        for chunk in resp:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:                # skip empty keep-alive chunks
-                if not full_reply:   # one timing line per turn, for diagnosing lag
-                    print(f"[timing] first token {int((time.time() - _t_stream) * 1000)}ms")
-                full_reply += delta
-                yield delta
+        msgs = messages
+        rounds = 0
+        while True:
+            rounds += 1
+            calls = {}
+            full_reply += yield from _stream_turn(resp, calls)
+
+            # Plain conversation: the answer already streamed. One round trip.
+            if not calls or tool_runtime is None:
+                break
+
+            ordered = [calls[i] for i in sorted(calls)]
+            msgs = msgs + [{
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": c["id"] or f"call_{n}",
+                                "type": "function",
+                                "function": {"name": c["name"],
+                                             "arguments": c["args"] or "{}"}}
+                               for n, c in enumerate(ordered)],
+            }]
+
+            results = []
+            all_actions = True
+            for n, c in enumerate(ordered):
+                if not c["name"]:
+                    continue
+                try:
+                    args = json.loads(c["args"] or "{}")
+                except Exception:
+                    args = {}
+                result = tool_runtime.dispatch(c["name"], args)
+                if result is None:
+                    # None means the handler crashed or the tool is unknown.
+                    # Never turn that into a cheerful "Done." — report the truth.
+                    result = "That didn't go through — something failed on my end."
+                print(f"[tools] {c['name']}({args}) → {str(result)[:80]}")
+                results.append(result)
+                if c["name"] not in tool_runtime.action_tools:
+                    all_actions = False
+                else:
+                    # The hook decides whether this reads as a failure worth
+                    # surfacing on the HUD — that check lives in the tool layer.
+                    tool_runtime.on_failure(result)
+                msgs.append({"role": "tool",
+                             "tool_call_id": c["id"] or f"call_{n}",
+                             "content": str(result)})
+
+            # ACTION tools report ground truth. Their result IS the reply — say it
+            # verbatim and STOP. Never let the model take another round to
+            # re-narrate; that is where "Spotify isn't open" becomes a cheerful
+            # fake "Playing your music!".
+            if all_actions and results:
+                final = " ".join(str(r) for r in results)
+                full_reply += final
+                yield final
+                break
+
+            if rounds >= MAX_TOOL_ROUNDS:
+                # Out of rounds — speak the tool results rather than nothing.
+                if results and not full_reply.strip():
+                    final = " ".join(str(r) for r in results)
+                    full_reply += final
+                    yield final
+                break
+
+            try:
+                resp = _do_groq_call(msgs)
+            except Exception as e:
+                print(f"[groq] follow-up call failed: {e}")
+                if results and not full_reply.strip():
+                    final = " ".join(str(r) for r in results)
+                    full_reply += final
+                    yield final
+                break
     except Exception as e:
         print(f"[groq] stream error mid-response: {e}")
-        if full_reply.strip():
-            pass   # already yielded some content — let finally save what we have
-        else:
+        error_log.error(f"Groq stream error: {e}\n{traceback.format_exc()}")
+        if not full_reply.strip():
             yield "Something cut out — ask me again."
     finally:
         _remember_exchange(user_input, full_reply, conversation)
-        try:
-            resp.close()
-        except Exception:
-            pass
 
 # ---------- composition helpers (messages / email) ----------
 def generate_message_text(instruction, contact):

@@ -12,3 +12,4 @@ INPUT_FILE = os.path.join(DATA, "input.wav")          # scratch capture file for
 UI_HTML = os.path.join(HOME, "ui", "ted_hud.html")    # the HUD window
 LOG_PATH = os.path.join(HOME, "ted_errors.log")
 SHORTCUTS_PATH = os.path.join(HOME, "shortcuts.json")
+GATE5_LOG = os.path.join(DATA, "gate5_usage.jsonl")   # which regex branches actually fire

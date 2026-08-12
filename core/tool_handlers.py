@@ -300,3 +300,64 @@ def tool_send_email_composed(to, subject, instruction, style):
     from core.llm import generate_email_body
     body = generate_email_body(instruction, to, subject, style)
     return send_email(to, subject, body)
+
+
+# ---------- arithmetic ----------
+# Standing principle on this project: math in Python, words in the model. The
+# model decides WHEN to compute and how to say the answer; it never does the
+# computing. This replaces the hand-written math regexes in _assistant_command,
+# which only fired on the phrasings someone thought to write down.
+import ast as _ast
+import operator as _op
+
+_MATH_OPS = {
+    _ast.Add: _op.add, _ast.Sub: _op.sub, _ast.Mult: _op.mul,
+    _ast.Div: _op.truediv, _ast.FloorDiv: _op.floordiv, _ast.Mod: _op.mod,
+    _ast.Pow: _op.pow, _ast.USub: _op.neg, _ast.UAdd: _op.pos,
+}
+_MATH_MAX_POW = 1e6      # keep 9**9**9 from hanging the process
+
+
+def _eval_math(node):
+    """Walk a parsed expression with an explicit operator whitelist. Not eval()
+    — eval on a string from a model is a remote code execution hole."""
+    if isinstance(node, _ast.Expression):
+        return _eval_math(node.body)
+    if isinstance(node, _ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            raise ValueError("only numbers")
+        return node.value
+    if isinstance(node, _ast.UnaryOp) and type(node.op) in _MATH_OPS:
+        return _MATH_OPS[type(node.op)](_eval_math(node.operand))
+    if isinstance(node, _ast.BinOp) and type(node.op) in _MATH_OPS:
+        left, right = _eval_math(node.left), _eval_math(node.right)
+        if isinstance(node.op, _ast.Pow) and (abs(right) > 64 or abs(left) > _MATH_MAX_POW):
+            raise ValueError("exponent too large")
+        return _MATH_OPS[type(node.op)](left, right)
+    raise ValueError("unsupported expression")
+
+
+def _format_number(n):
+    """Round float noise away (0.1+0.2), keep integers integral, group thousands."""
+    if isinstance(n, float):
+        r = round(n, 10)
+        n = int(r) if r == int(r) else round(r, 4)
+    return f"{n:,}" if isinstance(n, int) else f"{n:,}".rstrip("0").rstrip(".")
+
+
+def tool_calculate(expression):
+    expr = (expression or "").strip().lstrip("=").replace("^", "**").replace("\u00d7", "*").replace("\u00f7", "/")
+    expr = expr.replace(",", "").replace("$", "").strip()
+    if not expr:
+        return "I didn't catch what to calculate."
+    if len(expr) > 200:
+        return "That expression is too long for me to work through."
+    try:
+        value = _eval_math(_ast.parse(expr, mode="eval"))
+    except ZeroDivisionError:
+        return "That's a divide by zero — no answer to give."
+    except Exception:
+        return f"I couldn't parse '{expression}' as a calculation."
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return "That doesn't come out to a real number."
+    return _format_number(value)

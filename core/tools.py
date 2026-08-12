@@ -571,4 +571,36 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": (
+                "Evaluate an arithmetic expression exactly. Use this for ANY "
+                "arithmetic the user asks for — totals, percentages, splits, "
+                "unit maths, tips, running costs — instead of working it out "
+                "yourself. Language models are unreliable at arithmetic and "
+                "this is not; the answer it returns is the correct one. "
+                "Handles 'total on 3 at 45', '8 percent of 250', "
+                "'what's 1200 divided by 7', 'add 15% to 89.50'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": (
+                            "The calculation as a plain arithmetic expression using "
+                            "digits and + - * / % ** ( ). Translate the words "
+                            "yourself: '8 percent of 250' becomes '0.08 * 250', "
+                            "'total on 3 at 45' becomes '3 * 45', 'add 15% to 89.50' "
+                            "becomes '89.50 * 1.15'. No words, no units, no currency "
+                            "symbols, no equals sign."
+                        ),
+                    }
+                },
+                "required": ["expression"]
+            }
+        }
+    },
 ]

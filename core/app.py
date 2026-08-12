@@ -7,6 +7,7 @@ to the JS side.
 """
 
 import json
+import os
 import random
 import re
 import threading
@@ -38,9 +39,35 @@ from core.memory import (log_pattern, get_frequent_patterns,
                          get_recent_memories, search_memories,
                          log_habit, get_habit_streak, get_all_habits,
                          list_facts, forget_fact, get_facts_about)
-from core.paths import SHORTCUTS_PATH
+from core.paths import SHORTCUTS_PATH, GATE5_LOG
 from core.tools import TOOL_SCHEMAS
 from core.voice import speak, speak_streaming, capture, engine
+
+# Escape hatch for the single-call migration. The old path made two model calls
+# per message (a throwaway "does this need a tool?" probe, then the real
+# streaming reply); the new one does it in a single streamed call that can emit
+# text or a tool call. Set TED_LEGACY_LADDER=1 to fall back if the new path
+# misbehaves on real hardware. Temporary — delete once it has proven itself.
+LEGACY_LADDER = os.environ.get("TED_LEGACY_LADDER") == "1"
+
+# Gate-5 usage logging. See TedApi._assistant_command for why this exists.
+_GATE5_TRACE = os.environ.get("TED_GATE5_TRACE") == "1"
+
+
+def _log_gate5(text, result, line=None):
+    """Append one JSON line per deterministic-command hit. Best-effort and
+    never allowed to break a reply — a logger that can take Ted down is worse
+    than no logger."""
+    try:
+        rec = {"t": _dt_cls.now().isoformat(timespec="seconds"),
+               "text": (text or "")[:200],
+               "result": (str(result) or "")[:200]}
+        if line is not None:
+            rec["line"] = line
+        with open(GATE5_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 try:
     from config import OWNER_NAME
@@ -212,23 +239,41 @@ class TedApi:
         # (Voice mute is intercepted in conversation_loop; while muted there is
         # no voice path at all — the mic is physically off — so typing is how
         # 'unmute' arrives.)
+        # Both directions are handled here regardless of current state. Ted now
+        # BOOTS MUTED (chat-first), so "mute yourself" arrives while already
+        # muted far more often than it used to — and the old `not self.muted`
+        # guard let it fall all the way through to the model, which then
+        # cheerfully discussed muting instead of answering. Answer the intent.
         _tn_mute = _normalize_cmd(text)
-        if self.muted and (_tn_mute.startswith("unmute") or _tn_mute in
-                           ("listen", "start listening", "wake up", "turn on mic",
-                            "turn on microphone", "mic on")):
-            self.toggle_mute()
+        _wants_unmute = (_tn_mute.startswith("unmute") or _tn_mute in
+                         ("listen", "start listening", "wake up", "turn on mic",
+                          "turn on microphone", "mic on"))
+        _wants_mute = (_matches(text, _MUTE_PHRASES)
+                       and not any(x in _tn_mute.split()
+                                   for x in ("spotify", "music", "song", "audio")))
+        if _wants_unmute:
             if echo_user:
                 add_message(w, "user", text)
-            reply = "I'm back — listening."
+            if self.muted:
+                self.toggle_mute()
+                reply = "I'm back — listening."
+            else:
+                reply = "Mic's already on."
             self.last_reply = reply
             add_message(w, "ted", reply)
             speak(w, reply, self)
             return False
-        if (not self.muted and _matches(text, _MUTE_PHRASES)
-                and not any(x in _tn_mute.split() for x in ("spotify", "music", "song", "audio"))):
+        if _wants_mute:
             if echo_user:
                 add_message(w, "user", text)
-            self.toggle_mute()
+            if not self.muted:
+                # Muting is silent on purpose — speaking here would be the last
+                # thing you hear after asking for quiet.
+                self.toggle_mute()
+            else:
+                reply = "Mic's already off."
+                self.last_reply = reply
+                add_message(w, "ted", reply)
             return False
 
         # ── stop command: cut Ted off, and also pause Spotify if Ted isn't speaking ──
@@ -401,15 +446,18 @@ class TedApi:
             speak(w, asst_result, self)
             return False
 
-        # ── tool calling: LLM picks the right action from natural language ──
-        tool_result = self._try_tools(text)
-        if tool_result is not None:
-            self.last_reply = tool_result
-            add_message(w, "ted", tool_result)
-            speak(w, tool_result, self)
-            return False
+        # ── LEGACY LADDER (TED_LEGACY_LADDER=1): the old two-call path ──
+        # Kept as a one-env-var escape hatch while the single-call path proves
+        # itself on real hardware. Delete this branch once it has.
+        if LEGACY_LADDER:
+            tool_result = self._try_tools(text)
+            if tool_result is not None:
+                self.last_reply = tool_result
+                add_message(w, "ted", tool_result)
+                speak(w, tool_result, self)
+                return False
 
-        # ── no tool matched: streaming LLM for general conversation ──
+        # ── one streamed call that either answers or reaches for a tool ──
         # Give immediate audio feedback before a slow web lookup so Ted doesn't freeze.
         if _needs_web(text):
             speak(w, "Looking that up.", self)
@@ -417,11 +465,25 @@ class TedApi:
             self.interrupt_speech = False
         else:
             time.sleep(0.15)
+
+        def _note_action_result(result):
+            """Surface a failed action on the HUD. Ground truth either way —
+            the result string itself is what gets spoken, unchanged."""
+            if th.looks_like_failure(result):
+                show_issue(w, result)
+
+        _runtime = None if LEGACY_LADDER else llm.ToolRuntime(
+            schemas=TOOL_SCHEMAS,
+            dispatch=self._dispatch_tool,
+            action_tools=th.ACTION_TOOLS,
+            on_failure=_note_action_result,
+        )
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
                                 window=w,
-                                voice_mode=not self.muted)
+                                voice_mode=not self.muted,
+                                tool_runtime=_runtime)
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -443,6 +505,59 @@ class TedApi:
         return barged
 
     def _assistant_command(self, text):
+        """Instrumented wrapper around the deterministic-command dispatch.
+
+        WHY THIS EXISTS: _assistant_command_impl is ~750 lines, ~300 branches
+        and ~50 regexes, and it runs BEFORE the model gets a say — so any
+        phrasing it catches is decided without intelligence, and a regex
+        written for one intent can swallow a message meant for another. The
+        plan is to delete most of it. But deleting 300 branches from memory is
+        guesswork, and guesswork here breaks a daily driver.
+
+        So: log every branch that fires, with the text that triggered it, and
+        decide from a week of real usage instead. `python tools/gate5_report.py`
+        ranks what actually fired. Anything that never fires is dead weight and
+        can go; anything that does gets read individually, and mostly deleted
+        too, because a tool already covers it.
+
+        Set TED_GATE5_TRACE=1 for exact line-number attribution (line tracing,
+        slightly slower — off by default so the hot path stays hot).
+
+        This wrapper is temporary. It comes out with the branches.
+        """
+        result = None
+        line = None
+        if _GATE5_TRACE:
+            result, line = self._assistant_command_traced(text)
+        else:
+            result = self._assistant_command_impl(text)
+        if result is not None:
+            _log_gate5(text, result, line)
+        return result
+
+    def _assistant_command_traced(self, text):
+        """Run the dispatch under a line tracer to capture which return fired."""
+        import sys as _sys
+        seen = {"line": None}
+
+        def _local(frame, event, arg):
+            if event == "line":
+                seen["line"] = frame.f_lineno
+            return _local
+
+        def _global(frame, event, arg):
+            if event == "call" and frame.f_code.co_name == "_assistant_command_impl":
+                return _local
+            return None
+
+        old = _sys.gettrace()
+        _sys.settrace(_global)
+        try:
+            return self._assistant_command_impl(text), seen["line"]
+        finally:
+            _sys.settrace(old)
+
+    def _assistant_command_impl(self, text):
         """Personal-assistant commands. Returns a spoken reply string if this was a
         command (possibly ""), or None to fall through to the LLM."""
         if not features.HAS_ASSISTANT:
@@ -1190,7 +1305,14 @@ class TedApi:
         return None
 
     def _try_tools(self, text):
-        """Agentic tool loop — up to 3 rounds of LLM → execute → feed back.
+        """LEGACY (TED_LEGACY_LADDER=1 only). The two-call tool path.
+
+        Superseded by the single streamed call in llm.ask_streaming, which
+        carries the tool schemas itself. Kept only as a revert switch; delete
+        this method once the single-call path has run on real hardware for a
+        while. Nothing but the legacy branch in _respond calls it.
+
+        Agentic tool loop — up to 3 rounds of LLM → execute → feed back.
         When the LLM stops calling tools it synthesizes a final spoken reply.
         Returns that reply string, or None to fall through to the streaming LLM.
 
@@ -1583,6 +1705,8 @@ class TedApi:
                     return f"Tracked {habit_name}. {streak}-day streak."
                 return f"{habit_name.capitalize()} already logged today. {streak}-day streak."
 
+            if name == "calculate":
+                return th.tool_calculate(args.get("expression", ""))
             if name == "get_habit_streak":
                 habit_name = args.get("name", "").lower()
                 info = get_habit_streak(habit_name)
