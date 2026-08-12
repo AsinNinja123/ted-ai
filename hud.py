@@ -40,6 +40,40 @@ print("Ted is ready.")
 
 api = TedApi()
 
+# ---- Memory dashboard (HUD "Memory" panel) ----------------------------------
+# Same Flask app as `python -m dashboard`, served from a daemon thread so the
+# HUD's Memory button always has something to load. If port 5175 is already
+# taken (dashboard running standalone), we just use that one.
+def _start_memory_dashboard():
+    try:
+        from dashboard.app import app as _dash_app
+        from dashboard import db as _dash_db
+        _dash_db.get_conn()          # ensure audit schema/triggers exist
+        _dash_app.run(host="127.0.0.1", port=5175, threaded=True, use_reloader=False)
+    except OSError:
+        # Port taken. If it's a CURRENT dashboard that's fine — but an old
+        # process (pre-chat-API) silently breaks the HUD sidebar, so check.
+        try:
+            import json as _json
+            from urllib.request import urlopen
+            v = _json.load(urlopen("http://127.0.0.1:5175/api/version", timeout=2))
+            if v.get("chats"):
+                print("[dashboard] port 5175 already serving a current dashboard — using it")
+            else:
+                raise ValueError("no chat api")
+        except Exception:
+            print("=" * 70)
+            print("[dashboard] WARNING: something OLD is holding port 5175 —")
+            print("            chat history will NOT save. Quit the other dashboard")
+            print("            (or run: lsof -ti :5175 | xargs kill) and restart Ted.")
+            print("=" * 70)
+    except Exception as e:
+        print(f"[dashboard] memory dashboard not started: {e}")
+
+
+threading.Thread(target=_start_memory_dashboard, daemon=True,
+                 name="memory-dashboard").start()
+
 # Shutdown runs from several places that can race each other (window close fires
 # the pywebview hook AND then atexit; Ctrl-C fires a signal AND then atexit).
 # Guard so the session memory is only generated once.
@@ -98,7 +132,8 @@ if __name__ == "__main__":
         width=1100,
         height=720,
         min_size=(760, 560),
-        background_color="#0A0E14",
+        background_color="#171614",
+        text_select=True,       # allow selecting/copying chat text
     )
     api.window = window
 
