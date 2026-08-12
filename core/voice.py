@@ -71,7 +71,7 @@ WHISPER_RMS_THRESHOLD = 0.018   # RMS below this = user is speaking quietly
 # short or too quiet to be speech, then reject low-confidence results, then drop
 # the handful of phrases Whisper famously hallucinates. Loosen these if Ted ever
 # ignores real (quiet) speech.
-MIN_CAPTURE_SEC = 0.35     # ignore clips shorter than this
+MIN_CAPTURE_SEC = 0.25     # ignore clips shorter than this
 MIN_CAPTURE_RMS = 0.011    # ignore clips quieter than this
 NO_SPEECH_MAX   = 0.6      # reject if Whisper is this sure it's not speech
 LOGPROB_MIN     = -1.0     # reject very low-confidence transcriptions

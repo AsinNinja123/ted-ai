@@ -245,6 +245,39 @@ out, _ = run("hello", runtime(lambda n, a: "x"))
 check("a stream that dies before any text says so honestly",
       out == "Something cut out — ask me again.")
 
+print("\n— never end a turn silent —")
+
+# Regression: "what's on my screen" ran the vision tool, the model then wrote
+# nothing, and _respond turned the empty stream into a rotated "didn't quite
+# catch that" — blaming the user for a tool that had actually run.
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="screen_describe", args="{}")]),
+    FakeStream([]),                       # model returns nothing at all
+)
+out, _ = run("what's on my screen", runtime(lambda n, a: "Your editor is open.",
+                                            action_tools=set()))
+check("a silent model still says what the tool found", out == "Your editor is open.")
+
+llm.chat_create = scripted(FakeStream([]))
+out, _ = run("hello", runtime(lambda n, a: "x"))
+check("nothing at all is admitted honestly, not silently",
+      out == "Something cut out — ask me again.")
+
+# Regression: gpt-oss re-calls a tool after seeing its result. For a slow tool
+# (screenshot + vision call) three rounds of that is a minute of dead air and
+# two wasted screenshots.
+SHOTS = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="screen_describe", args="{}")]),
+    FakeStream([tool_chunk(0, id="c2", name="screen_describe", args="{}")]),
+    FakeStream([text_chunk("never reached")]),
+)
+out, _ = run("what's on my screen", runtime(
+    lambda n, a: (SHOTS.append(n), "Your editor is open.")[1], action_tools=set()))
+check("a repeated identical tool call is refused, not re-run", len(SHOTS) == 1)
+check("…and the turn still answers from the first result",
+      out == "Your editor is open.")
+
 llm.chat_create = _orig_chat_create
 
 print("\n" + "=" * 50)

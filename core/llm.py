@@ -722,6 +722,19 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 if window: show_issue(window, "Ted can't reach Groq (timeout) — check your connection.")
                 yield "I can't reach my brain right now — try again in a moment."
                 return
+        elif "tool_use_failed" in str(e):
+            # The model emitted a syntactically broken call, or invented a tool
+            # name that isn't in the menu. One clean retry usually produces a
+            # valid call instead of losing the turn.
+            print(f"[groq] malformed tool call from model — retrying once: {str(e)[:120]}")
+            try:
+                resp = _do_groq_call()
+            except Exception as e2:
+                print(f"[groq] malformed-call retry failed: {e2}")
+                error_log.error(f"Groq tool_use_failed twice: {e2}")
+                _GROQ_OK = False
+                yield "I tried to use a tool for that and it didn't take — say it again?"
+                return
         else:
             print(f"[groq] API error: {e}")
             error_log.error(f"Groq API error: {e}\n{traceback.format_exc()}")
@@ -732,6 +745,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     _GROQ_OK = True   # we have a response object — Groq is reachable
     full_reply = ""
+    # Results from the most recent round that produced any. If the loop ends
+    # without the model writing a sentence, these are said instead of nothing.
+    # Ending silent is the worst outcome: _respond turns an empty stream into a
+    # rotated "didn't quite catch that", which blames the user for a tool that
+    # actually ran.
+    last_results = []
+    # (name, arguments) already executed this turn. gpt-oss will happily call
+    # the same tool again after seeing its result, and for a slow tool like
+    # screen_describe — screenshot plus a vision call — three rounds of that is
+    # a minute of silence with two wasted screenshots.
+    seen_calls = set()
     try:
         msgs = messages
         rounds = 0
@@ -745,6 +769,14 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 break
 
             ordered = [calls[i] for i in sorted(calls)]
+            fresh = [c for c in ordered
+                     if (c["name"], c["args"] or "{}") not in seen_calls]
+            if not fresh:
+                print("[tools] model repeated a call it already made — stopping")
+                break
+            for c in fresh:
+                seen_calls.add((c["name"], c["args"] or "{}"))
+            ordered = fresh
             msgs = msgs + [{
                 "role": "assistant",
                 "content": "",
@@ -781,6 +813,9 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                              "tool_call_id": c["id"] or f"call_{n}",
                              "content": str(result)})
 
+            if results:
+                last_results = results
+
             # ACTION tools report ground truth. Their result IS the reply — say it
             # verbatim and STOP. Never let the model take another round to
             # re-narrate; that is where "Spotify isn't open" becomes a cheerful
@@ -792,28 +827,28 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 break
 
             if rounds >= MAX_TOOL_ROUNDS:
-                # Out of rounds — speak the tool results rather than nothing.
-                if results and not full_reply.strip():
-                    final = " ".join(str(r) for r in results)
-                    full_reply += final
-                    yield final
+                print(f"[tools] hit MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS})")
                 break
 
             try:
                 resp = _do_groq_call(msgs)
             except Exception as e:
                 print(f"[groq] follow-up call failed: {e}")
-                if results and not full_reply.strip():
-                    final = " ".join(str(r) for r in results)
-                    full_reply += final
-                    yield final
                 break
     except Exception as e:
         print(f"[groq] stream error mid-response: {e}")
         error_log.error(f"Groq stream error: {e}\n{traceback.format_exc()}")
-        if not full_reply.strip():
-            yield "Something cut out — ask me again."
     finally:
+        # One exit for every path above. A turn that ran tools but produced no
+        # sentence says what the tools returned; a turn that produced nothing at
+        # all says so honestly. Never silence.
+        if not full_reply.strip():
+            if last_results:
+                final = " ".join(str(r) for r in last_results)
+                full_reply = final
+                yield final
+            else:
+                yield "Something cut out — ask me again."
         _remember_exchange(user_input, full_reply, conversation)
 
 # ---------- composition helpers (messages / email) ----------
