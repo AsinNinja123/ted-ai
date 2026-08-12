@@ -121,11 +121,14 @@ WEATHER_REPLY = "Sixty five and clear."
 th.tool_get_weather = lambda: WEATHER_REPLY
 
 LLM_STREAM_CALLS = []
+LLM_STREAM_RUNTIMES = []      # the ToolRuntime handed to each streaming call
 LLM_STREAM_REPLY = ["LLM reply."]
 
 
-def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=False, window=None):
+def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=False,
+                        window=None, voice_mode=False, tool_runtime=None):
     LLM_STREAM_CALLS.append(text)
+    LLM_STREAM_RUNTIMES.append(tool_runtime)
     for piece in LLM_STREAM_REPLY:
         yield piece
 
@@ -172,7 +175,11 @@ def make_api():
     fake_engine._playing = False
     fake_engine.barge_in = False
     LLM_STREAM_CALLS.clear()
+    LLM_STREAM_RUNTIMES.clear()
     api = app_mod.TedApi()
+    # Ted boots muted since the chat-first pivot. Most cases below describe a
+    # live voice session, so start unmuted and let the mute cases opt in.
+    api.muted = False
     api.window = FakeWindow()
     return api
 
@@ -228,6 +235,7 @@ api = make_api()
 SPOTIFY_VOL.clear()
 api._respond("mute yourself")
 check("'mute yourself' mutes the mic", api.muted and "mute_mic" in fake_engine.calls)
+check("muting never reaches the LLM", LLM_STREAM_CALLS == [])
 check("muting restores Spotify to full volume", SPOTIFY_VOL == [100])
 api._respond("unmute")
 check("typed 'unmute' unmutes and confirms aloud",
@@ -328,7 +336,11 @@ check("empty facts table answered honestly", r.startswith("Nothing stored about 
 check("plain conversation is not a command",
       api._assistant_command("what's the meaning of life") is None)
 
-print("\n— _try_tools: the tool-calling loop —")
+# ── LEGACY: _try_tools is the old two-call path, reachable only with
+# TED_LEGACY_LADDER=1. These checks pin it as-is so the escape hatch keeps
+# working; they get deleted along with the method. New behavior belongs in
+# tests/test_single_call.py.
+print("\n— _try_tools: the LEGACY two-call tool loop —")
 
 
 def msg(content=None, tool_calls=None):
@@ -361,9 +373,6 @@ def scripted_chat(script):
 
 
 _orig_chat_create = llm.chat_create
-_orig_likely = th.likely_command
-th.likely_command = lambda text: True
-
 OPENED = []
 th.tool_open_app = lambda name: (OPENED.append(name), "Opening Spotify.")[1]
 
@@ -392,7 +401,8 @@ llm.chat_create = scripted_chat([
     resp(msg(content="Recovered fine.")),
 ])
 r = api._try_tools("open spotify")
-check("malformed tool call retries once and recovers", r == "Recovered fine.")
+check("malformed tool call is retried once", llm.chat_create.calls == 2)
+check("…and a round-1 text answer falls through to streaming", r is None)
 
 api = make_api()
 rate_limited = Exception.__new__(groq_mod.RateLimitError)
@@ -410,7 +420,10 @@ check("empty final content falls through", api._try_tools("open spotify") is Non
 api = make_api()
 api.ted_conversation = ([api.ted_conversation[0]]
                         + [{"role": "user", "content": f"m{i}"} for i in range(44)])
-llm.chat_create = scripted_chat([resp(msg(content="Done."))])
+llm.chat_create = scripted_chat([
+    resp(msg(tool_calls=[tc("get_weather")])),
+    resp(msg(content="Done.")),
+])
 api._try_tools("hello")
 check("tool-path history trim: cap keeps system msg + last 40",
       len(api.ted_conversation) == 41
@@ -418,7 +431,6 @@ check("tool-path history trim: cap keeps system msg + last 40",
       and api.ted_conversation[-1]["content"] == "Done.")
 
 llm.chat_create = _orig_chat_create
-th.likely_command = _orig_likely
 
 print("\n— _dispatch_tool: honest failures, correct routing —")
 api = make_api()
@@ -441,11 +453,9 @@ check("close_app dispatches with its arg",
       api._dispatch_tool("close_app", {"name": "spotify"}) == "Closed it."
       and CLOSED == ["spotify"])
 
-LISTED = []
-th.tool_list_add = lambda ln, item: (LISTED.append((ln, item)), "Added.")[1]
-check("list_add dispatches both args",
-      api._dispatch_tool("list_add", {"list_name": "groceries", "item": "eggs"}) == "Added."
-      and LISTED == [("groceries", "eggs")])
+check("retired list_add is reported honestly, not silently ignored",
+      api._dispatch_tool("list_add", {"list_name": "groceries", "item": "eggs"})
+      == "I don't have a tool called 'list_add'.")
 
 check("get_weather dispatches", api._dispatch_tool("get_weather", {}) == WEATHER_REPLY)
 
