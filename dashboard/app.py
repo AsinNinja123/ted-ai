@@ -22,10 +22,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 @app.after_request
 def _cors(resp):
     """The HUD is a file:// page (origin 'null') fetching this local server —
-    without these headers every chat-sidebar request would be blocked."""
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    without these headers every chat-sidebar request would be blocked. Do not
+    grant arbitrary websites access: these endpoints can edit/delete memory."""
+    origin = request.headers.get("Origin")
+    if origin == "null" or (origin or "").startswith("file://"):
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Vary"] = "Origin"
     return resp
 
 
@@ -214,13 +218,11 @@ def api_chat_summarize(chat_id):
 
     title, summary = None, None
     try:
-        from groq import Groq
-        from config import GROQ_API_KEY
+        from core.llm import chat_create
         transcript = "\n".join(
             f"{'User' if t['role'] == 'user' else 'Ted'}: {t['content'][:400]}"
             for t in chat["turns"][-20:])
-        r = Groq(api_key=GROQ_API_KEY).chat.completions.create(
-            model="llama-3.1-8b-instant",
+        r = chat_create(
             messages=[{"role": "user", "content":
                        "Give this chat a title (3-6 words, no quotes, no period) and a "
                        "one-sentence summary. Reply as exactly two lines:\n"

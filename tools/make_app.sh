@@ -120,7 +120,9 @@ done
 # ── 2. Bundle skeleton ────────────────────────────────────────────────────────
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-/usr/bin/iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Ted.icns"
+if ! /usr/bin/iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Ted.icns"; then
+    echo "  warning: macOS rejected the generated icon; building Ted.app without it"
+fi
 
 # ── 3. Info.plist ─────────────────────────────────────────────────────────────
 # The usage-description strings matter: without NSMicrophoneUsageDescription
@@ -188,7 +190,7 @@ exec >> "$LOG" 2>&1
 echo "=== $(date '+%Y-%m-%d %H:%M:%S') — launching Ted from Ted.app ==="
 
 cd "$PROJECT" || die "Can't open ~/ted-ai"
-"$PY" "$PROJECT/hud.py"
+"$PY" -u "$PROJECT/hud.py"
 status=$?
 
 # A non-zero exit with no window means something broke at import time; surface it.

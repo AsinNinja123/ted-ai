@@ -8,6 +8,8 @@ happen.
 
 import subprocess
 import time
+import re
+import os
 
 from core import features
 from core.actions import APPS, WEB_APPS, open_app, spotify_command
@@ -27,6 +29,11 @@ ACTION_TOOLS = frozenset({
     "system_volume", "system_brightness", "type_text", "log_habit",
     "email_action", "send_email",
 })
+
+# Consequential actions require an explicit user confirmation in a pending
+# follow-up flow. Opening apps, typing locally, reminders, and reversible UI
+# controls remain immediate; communication and destructive email changes do not.
+CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action"})
 
 # Phrases the handlers use when an action did NOT succeed. Lets the HUD surface the
 # real problem (yellow sphere / issue popup) instead of pretending everything's fine.
@@ -92,6 +99,8 @@ def tool_find_app_key(name):
 def tool_open_app(name):
     key = tool_find_app_key(name)
     if key:
+        if key in WEB_APPS:
+            return tool_browse_to(key)
         return open_app(key)
     # Not in APPS — delegate to open_app which tries WEB_APPS then best-effort
     return open_app(name)
@@ -119,6 +128,103 @@ _BROWSERS = {
     "arc": "Arc", "opera": "Opera",
 }
 
+try:
+    from config import SITE_BROWSER_PREFERENCES
+except Exception:
+    # Charlie's explicit default. Keeping it here also makes an existing
+    # config.py pick up the preference without requiring a manual edit.
+    SITE_BROWSER_PREFERENCES = {"youtube": "Brave"}
+
+
+def preferred_browser_for(site):
+    """Return a configured per-site browser preference, if any."""
+    key = (site or "").strip().lower().rstrip("/")
+    return (SITE_BROWSER_PREFERENCES or {}).get(key)
+
+
+def _browser_window_count(app_name):
+    """Count real browser windows, ignoring menu-bar and helper surfaces.
+
+    A browser process is not proof that a page opened: Chromium can remain in
+    ``--no-startup-window`` mode with no usable window. CoreGraphics gives us
+    window ownership and bounds without reading page contents, so this verifies
+    the thing the user can actually see while avoiding fragile frontmost-app
+    checks (Ted may legitimately retain focus while the tool result renders).
+    """
+    try:
+        import Quartz
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        ) or []
+        count = 0
+        for window in windows:
+            if window.get(Quartz.kCGWindowOwnerName) != app_name:
+                continue
+            bounds = window.get(Quartz.kCGWindowBounds) or {}
+            width = float(bounds.get("Width", 0) or 0)
+            height = float(bounds.get("Height", 0) or 0)
+            layer = int(window.get(Quartz.kCGWindowLayer, 0) or 0)
+            alpha = float(window.get(Quartz.kCGWindowAlpha, 1) or 0)
+            if layer == 0 and alpha > 0 and width >= 240 and height >= 120:
+                count += 1
+        return count
+    except Exception:
+        return None
+
+
+def _open_verified_browser(app_name, url):
+    """Send ``url`` to a browser and verify a real browser window exists.
+
+    Brave's AppleScript interface can hang while macOS waits on an Automation
+    permission dialog. Launch Services does not need that permission, so use it
+    to send the URL. Chromium receives ``--new-window`` directly to recover from
+    its common background-only launch mode. Success requires a substantial
+    browser window, never merely a process or a change in keyboard focus.
+    """
+    before = _browser_window_count(app_name)
+    try:
+        # Chromium can sit in a background-only ``--no-startup-window`` process,
+        # in which case Launch Services blocks for a full minute with error
+        # -1712. Sending --new-window to the browser executable recovers that
+        # state without force-quitting or discarding the user's session.
+        executable = f"/Applications/{app_name}.app/Contents/MacOS/{app_name}"
+        if app_name in {"Brave Browser", "Google Chrome", "Microsoft Edge"} \
+                and os.path.exists(executable):
+            subprocess.Popen(
+                [executable, "--new-window", url], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            # Activation is separate from URL delivery. It is best-effort: Ted
+            # may take focus back while showing the result, which is not failure.
+            subprocess.run(
+                ["open", "-a", app_name], capture_output=True, text=True, timeout=8,
+            )
+        else:
+            sent = subprocess.run(
+                ["open", "-a", app_name, url], capture_output=True, text=True, timeout=8,
+            )
+            if sent.returncode != 0:
+                return False, (sent.stderr or "Launch Services rejected the URL").strip()
+            subprocess.run(
+                ["open", "-a", app_name], capture_output=True, text=True, timeout=8,
+            )
+    except Exception as exc:
+        return False, str(exc)
+    for _ in range(20):
+        windows = _browser_window_count(app_name)
+        if windows is not None and windows > 0:
+            # --new-window normally increases the count. Accept an existing
+            # substantial window too: URL delivery may be forwarded to it by a
+            # browser that ignores the flag, and it is still visible ground truth.
+            change = "new window appeared" if before is not None and windows > before else "window is visible"
+            return True, f"{app_name} {change}"
+        time.sleep(0.2)
+    if _browser_window_count(app_name) == 0:
+        return False, (f"{app_name} is running without a browser window; "
+                       "quit and reopen it once")
+    return False, "macOS window verification was unavailable"
+
 
 def tool_browse_to(site, browser=None):
     """Open a website, optionally in a SPECIFIC browser ('youtube in Brave').
@@ -137,18 +243,15 @@ def tool_browse_to(site, browser=None):
                 domain += ".com"
             url = f"https://{domain}"
         label = url.replace("https://", "").replace("http://", "").split("/")[0]
-    # Specific browser requested — 'open -a' handles any installed browser.
+    browser = browser or preferred_browser_for(key)
+    # Send the URL and verify the requested browser actually appears.
     if browser:
         app_name = _BROWSERS.get(browser.strip().lower(), browser.strip())
-        try:
-            r = subprocess.run(["open", "-a", app_name, url],
-                               capture_output=True, timeout=8)
-            if r.returncode == 0:
-                return f"Opening {label} in {app_name}."
-            return (f"I couldn't find {app_name} on this Mac — "
-                    f"want it in the default browser instead?")
-        except Exception:
-            return f"I couldn't open {label} in {app_name}."
+        verified, detail = _open_verified_browser(app_name, url)
+        if verified:
+            return f"Opened {label} in {app_name}."
+        return (f"I couldn't verify that {label} opened in {app_name}; "
+                f"nothing is being claimed as complete. ({detail})")
 
     safe = url.replace('"', '\\"')
     script = (

@@ -8,11 +8,10 @@ whole time in BOTH modes, so you can always talk over Ted.
 Two modes, chosen automatically at start():
 
   • "aec"      — the native Swift engine (native/ted_audio) is built AND starts.
-                 (Historical name — the binary no longer does echo cancellation;
-                 Voice Processing ducked Spotify so it was removed. The mic
-                 streams continuously, including while Ted speaks, and the
-                 energy threshold below tells the user's voice apart from Ted's
-                 own speaker leak. Works unless speakers blast into the mic.)
+                 Apple Voice Processing provides echo cancellation, with
+                 macOS 14+'s other-audio ducking set to minimum. The mic streams
+                 continuously, including while Ted speaks, so the user can
+                 interrupt over speakers.
 
   • "fallback" — pure Python (sounddevice). Still full-duplex / always-listening,
                  so barge-in works great on HEADPHONES. On speakers Ted's own

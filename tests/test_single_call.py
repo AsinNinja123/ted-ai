@@ -102,6 +102,7 @@ llm.get_facts_about = lambda who: ""
 llm.format_memories_for_prompt = lambda: ""
 llm.save_memory = lambda *a, **k: None
 llm.extract_and_save_facts = lambda *a, **k: None
+llm.error_log = SimpleNamespace(error=lambda *a, **k: None)
 llm.intents._needs_web = lambda t: False
 llm.intents._worth_extracting = lambda t: False
 llm.features.HAS_KNOWLEDGE = False
@@ -115,12 +116,33 @@ def run(text, runtime=None, conversation=None):
     return out, conv
 
 
-def runtime(dispatch, action_tools=(), schemas=None, failures=None):
+def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=None):
+    if schemas is None:
+        specs = {
+            "open_app": ({"name": {"type": "string"}}, ["name"]),
+            "close_app": ({"name": {"type": "string"}}, ["name"]),
+            "get_weather": ({}, []),
+            "calculate": ({"expression": {"type": "string"}}, ["expression"]),
+            "set_timer": ({"duration": {"type": "string"}}, ["duration"]),
+            "screen_describe": ({"question": {"type": "string"}}, []),
+            "type_text": ({"text": {"type": "string"}}, ["text"]),
+            "web_search": ({"query": {"type": "string"}}, ["query"]),
+        }
+        schemas = [{
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": name,
+                "parameters": {"type": "object", "properties": props,
+                               "required": required, "additionalProperties": False},
+            },
+        } for name, (props, required) in specs.items()]
     return llm.ToolRuntime(
-        schemas=schemas if schemas is not None else [],
+        schemas=schemas,
         dispatch=dispatch,
         action_tools=action_tools,
         on_failure=(failures.append if failures is not None else None),
+        is_failure=is_failure,
     )
 
 
@@ -129,11 +151,19 @@ _orig_chat_create = llm.chat_create
 # ═════════════════════════════════════════════════════════════════════════════
 print("— conversation: one call, streamed straight through —")
 
+escaped = r'{\n  "facts": [{"subject": "Charlie", "relationship": "LIKES", "object": "golf"}]\n}'
+check("fact parser accepts Groq's escaped-whitespace JSON",
+      llm._parse_fact_payload(escaped) == [{"subject": "Charlie",
+                                            "relationship": "LIKES",
+                                            "object": "golf"}])
+
 llm.chat_create = scripted(FakeStream([text_chunk("Not much, "), text_chunk("you?")]))
 out, conv = run("how are you", runtime(lambda n, a: "unused"))
 check("reply is the streamed text", out == "Not much, you?")
 check("conversation costs exactly one model call", llm.chat_create.calls == 1)
 check("tool schemas rode along on that call", "tools" in llm.chat_create.kwargs[0])
+check("short single-clause turns use low-latency reasoning",
+      llm.chat_create.kwargs[0]["reasoning_effort"] == "none")
 check("exchange stored", conv[-2:] == [{"role": "user", "content": "how are you"},
                                        {"role": "assistant", "content": "Not much, you?"}])
 
@@ -145,6 +175,28 @@ llm.chat_create = scripted(FakeStream([text_chunk("Fine.")]))
 out, _ = run("hey", None)
 check("no runtime → plain conversation still works", out == "Fine.")
 check("…and sends no tools", "tools" not in llm.chat_create.kwargs[0])
+
+llm.chat_create = scripted(FakeStream([text_chunk("A plan.")]))
+out, _ = run("analyze this problem and then plan the safest solution",
+             runtime(lambda n, a: "unused"))
+check("multi-step analytical turns retain full reasoning",
+      out == "A plan." and llm.chat_create.kwargs[0]["reasoning_effort"] == "default")
+
+# Closing an interrupted stream used to yield from ask_streaming's finally
+# block, which raises RuntimeError("generator ignored GeneratorExit").
+stream = FakeStream([text_chunk("x" * 60), text_chunk("never consumed")])
+llm.chat_create = scripted(stream)
+conv = [dict(SYSTEM)]
+gen = llm.ask_streaming("long answer", conv, tool_runtime=runtime(lambda n, a: "unused"))
+next(gen)
+closed_cleanly = True
+try:
+    gen.close()
+except RuntimeError:
+    closed_cleanly = False
+check("interrupting a stream closes the generator cleanly", closed_cleanly)
+check("an interrupted partial reply is not stored as a complete exchange", conv == [SYSTEM])
+check("closing the generator closes the provider stream", stream.closed)
 
 print("\n— action tools: ground truth, spoken verbatim, loop stops —")
 
@@ -186,6 +238,23 @@ out, _ = run("open spotify and close mail", runtime(
 check("parallel action calls are all run, in index order",
       out == "open_app ok. close_app ok.")
 
+CHAINED_ACTIONS = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app", args='{"name":"Notes"}')]),
+    FakeStream([tool_chunk(0, id="c2", name="type_text", args='{"text":"buy milk"}')]),
+    FakeStream([text_chunk("Done.")]),
+)
+out, _ = run("open Notes and then type buy milk", runtime(
+    lambda n, a: (CHAINED_ACTIONS.append((n, a)),
+                  "Notes opened." if n == "open_app" else "Text typed.")[1],
+    action_tools={"open_app", "type_text"},
+))
+check("dependent action tools continue across model rounds",
+      CHAINED_ACTIONS == [("open_app", {"name": "Notes"}),
+                          ("type_text", {"text": "buy milk"})])
+check("dependent action chain reports only verified handler results",
+      out == "Notes opened. Text typed.")
+
 print("\n— non-action tools: one follow-up round narrates the result —")
 
 llm.chat_create = scripted(
@@ -226,13 +295,17 @@ out, _ = run("set a timer", runtime(lambda n, a: None, action_tools={"set_timer"
 check("a handler returning None never becomes 'Done.'",
       out == "That didn't go through — something failed on my end.")
 
-llm.chat_create = scripted(FakeStream([
-    tool_chunk(0, id="c1", name="open_app", args='{"name": nonsense'),
-]))
-out, _ = run("open something", runtime(lambda n, a: f"got {a}",
-                                       action_tools={"open_app"}))
-check("unparseable tool arguments degrade to empty args, not a crash",
-      out == "got {}")
+REPAIRED = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app", args='{"name": nonsense')]),
+    FakeStream([tool_chunk(0, id="c2", name="open_app", args='{"name":"Notes"}')]),
+)
+out, _ = run("open something", runtime(
+    lambda n, a: (REPAIRED.append(a), f"got {a}")[1], action_tools={"open_app"}))
+check("malformed arguments are rejected, fed back, and repaired before execution",
+      out == "got {'name': 'Notes'}" and REPAIRED == [{"name": "Notes"}])
+check("the repair feedback says that the malformed action did not run",
+      "nothing ran" in llm.chat_create.kwargs[1]["messages"][-1]["content"])
 
 
 class Boom(FakeStream):

@@ -4,14 +4,11 @@
 //
 // WHY THIS EXISTS:
 //   Full-duplex capture + playback in one process, with a mic-mute that truly
-//   releases the device (orange dot off). NOTE: despite the binary's "aec"
-//   mode name in core/audio.py, there is NO echo cancellation here — Voice
-//   Processing I/O was removed because it permanently ducks Spotify and other
-//   apps. The mic streams CONTINUOUSLY, including while Ted speaks; telling
-//   the user's voice apart from Ted's own speaker leak is the Python side's
-//   job (energy threshold + margin in core/audio.py). That works when the
-//   speakers aren't blasting straight into the mic; on a loud speaker-next-to-
-//   mic setup Ted may hear himself — use headphones or lower the volume.
+//   releases the device (orange dot off). Apple Voice Processing cancels Ted's
+//   speaker output from the mic; on macOS 14+ its other-audio ducking is set to
+//   minimum so Spotify keeps playing normally. If Voice Processing is
+//   unavailable, capture still works and Python's VAD/pitch gates are the
+//   fallback against self-interruption.
 //
 // PROTOCOL (talks to core/audio.py over stdio):
 //   stdout : continuous raw mic audio — int16 little-endian, mono, 16 kHz,

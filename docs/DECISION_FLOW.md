@@ -1,6 +1,6 @@
 # How Ted Decides What To Do
 
-**Written:** August 11, 2026
+**Updated:** August 13, 2026
 **Scope:** the full path from "user says something" to "Ted answers," which files
 own each step, and where the weak points are.
 
@@ -8,16 +8,13 @@ own each step, and where the weak points are.
 
 ## The one-paragraph version
 
-Every message falls down a **ladder of eight gates**. Each gate asks "is this
-mine?" and either handles the message and stops, or passes it down. The gates
-run cheapest-first: hardcoded string matches, then regex rules, then a fast LLM
-call to pick a tool, and finally the full streaming LLM for real conversation.
-The first gate that claims the message wins — nothing below it ever runs.
-
-That design is why Ted is fast. It's also the source of most of his weird
-behaviour, because **a gate near the top can grab a message that a gate near the
-bottom would have handled better**, and once a gate claims a message there is no
-appeal.
+Every message first passes a few cheap controls that must be immediate: mute,
+stop, UI controls, pending confirmations, and timers/reminders. Ordinary chat
+and computer requests then enter **one streamed reasoning loop** with the entire
+tool menu attached. The model can answer, call independent tools together, use a
+result in a later dependent call, or search the live web. This replaces the old
+keyword ladder and separate tool-probe call that frequently stole requests before
+the reasoning model could understand the whole outcome.
 
 ---
 
@@ -64,53 +61,31 @@ request. **File:** `core/app.py` (`_handle_pending_compose`,
 > a third or fourth flow means more of the same. In the rebuild this should be one
 > generic "awaiting answer" object on the bus, not N bespoke variables.
 
-### Gate 5 — Deterministic assistant commands
-`_assistant_command()` — **746 lines, ~50 regexes, ~64 branches** in
-`core/app.py`. Timers, reminders, habits, "remember that…", calendar phrasing,
-email setup, and more. No LLM: pure pattern matching, so it's instant and
-predictable.
+### Gate 5 — Narrow deterministic controls
+`_assistant_command()` still contains legacy handlers, but `_use_deterministic_command()`
+now allows only local/stateful controls to claim a normal turn: timers, reminders,
+explicit personal-memory edits, Ted's modes/shortcuts, mic setup, and proactive
+trigger management. Requests involving apps, websites, screen, calendar,
+notes, web, clipboard, computer control, habits, weather, music, and calculations
+reach the reasoning model and its tool menu. `TED_LEGACY_LADDER=1` restores the
+old behavior temporarily.
 
-> **This is the single biggest liability in the codebase.** It's the "hardcode
-> every scenario" feeling you described, in literal form. It runs *before* the
-> model gets a say, so any phrasing its regexes catch is decided without
-> intelligence, and any phrasing they miss falls through to a model that may not
-> have the matching tool. Worse, a regex written for one intent can swallow a
-> message meant for another.
->
-> **Improvement:** shrink this gate to only the things that genuinely must be
-> deterministic (stop, mute, timers — where a wrong LLM read is costly), and let
-> the tool loop own the rest. Every regex deleted here makes Ted feel more
-> intelligent, because the model gets to see more of your messages.
+### Gate 6 — One reasoning and tool loop
+The normal path is now one streamed request carrying the full tool menu. It can
+answer directly or emit calls. Calls are schema-validated before dispatch; invalid
+arguments are returned to the model for repair without executing anything. The
+loop supports parallel and dependent calls, is capped at five rounds/ten calls,
+and blocks duplicates. Verified action results remain the user-visible truth.
+Messages and consequential email changes require a pending yes/no confirmation.
 
-### Gate 6 — The tool loop (`_try_tools`)
-This is Ted's actual reasoning step. **File:** `core/app.py`, with the tool menu
-in `core/tools.py` and the implementations in `core/tool_handlers.py`.
-
-1. Build a compact prompt: short Ted identity + **known facts about you** +
-   last ~8 messages + your message.
-2. Send it to Groq with all ~30 tool schemas attached (`tool_choice="auto"`).
-3. **Round 1 is a probe.** If the model doesn't call a tool, it replies `CHAT`
-   and we bail immediately to Gate 8 — this keeps conversation fast.
-4. If it *does* call tools: execute each one via `_dispatch_tool()`, feed the
-   real results back, and loop (max 3 rounds).
-5. Action tools (things that change the world) report ground truth and Ted
-   speaks their result **verbatim** — deliberately, so he can't turn "Spotify
-   isn't open" into a cheerful "Playing your music!"
-
-> **Improvement — the big one:** Gates 6 and 8 are two separate LLM calls for
-> every single message. Real chat assistants (including me) use **one** streamed
-> call that can either emit text *or* emit a tool call. Merging them halves the
-> per-turn latency and eliminates the discarded probe. This is the highest-value
-> change left, and it's a rebuild-era change because it means rewriting
-> `_respond`'s core.
->
-> **Improvement — cheaper:** ~30 tool schemas are re-read on every probe. Tool
-> descriptions are prompt tokens. Trimming verbose ones, or splitting the menu
-> into groups the router picks from, directly cuts time-to-first-token.
+The provider layer tries free Groq Qwen 3.6 first and repeats the same request on
+local Ollama Qwen 3.5 35B-A3B if Groq is unavailable. `_try_tools()` now exists
+only behind the `TED_LEGACY_LADDER=1` escape hatch.
 
 ### Gate 7 — Built-in actions (inside the LLM path)
 `detect_action()` in **`core/actions.py`** runs at the top of `ask_streaming()` —
-date questions, location questions, app launches. Answers without any model call.
+date and location questions only. App launches now use the shared tool loop so
+they can participate in larger plans.
 
 > **Oddity worth fixing:** this is a *fourth* place where "is this a command?" is
 > decided, and it lives inside the LLM module rather than alongside the other
@@ -120,18 +95,19 @@ date questions, location questions, app launches. Answers without any model call
 ### Gate 8 — Streaming conversation (`ask_streaming`)
 **File:** `core/llm.py`. This is Ted-as-chatbot. In order:
 
-1. **Web check** — `_needs_web()`; if live info is needed, Groq's compound model
-   searches, with DuckDuckGo as fallback.
-2. **Parallel memory retrieval** (four threads, so they overlap):
+1. **Parallel memory retrieval** (four threads, so they overlap):
    - recent related exchanges — FTS5 keyword search (`core/memory.py`)
    - known facts about you (`facts` table)
    - personal knowledge base (ChromaDB, `core/knowledge.py`)
    - past session + chat-thread summaries (`core/memory.py`)
-3. **Assemble the prompt:** `[static system prompt] [history] [per-turn context]
+2. **Assemble the prompt:** `[static system prompt] [history] [per-turn context]
    [your message]` — in that order, deliberately, so the static prefix stays
    byte-identical and Groq's prefix cache can skip reprocessing it.
-4. **Mode line** — VOICE (short, spoken, no formatting) or CHAT (full answers,
+3. **Mode line** — VOICE (short, spoken, no formatting) or CHAT (full answers,
    fenced code). Regenerated every turn.
+4. **Reason or use tools** — the brain answers directly or selects tools such as
+   `web_search`; results return into the same bounded loop for synthesis or the
+   next dependent call.
 5. **Stream** tokens to the HUD, sentence-by-sentence to the speaker if voice
    mode is on.
 6. **Afterwards, on background threads:** save the exchange, extract facts
@@ -155,34 +131,27 @@ date questions, location questions, app launches. Answers without any model call
 
 ---
 
-## The three changes worth making, in order
+## What was changed, and what remains
 
-**1. Merge Gates 6 and 8 into one streamed call.**
-Biggest speed and coherence win. One model call that can talk *or* act, instead
-of a probe followed by a second call that redoes the same reading. Requires
-touching `_respond` — do it as part of the rebuild, not as surgery on the
-monolith.
+**Completed:** Gate 5 is narrow, the tool probe and conversation pass are one
+streamed loop, malformed calls are validated and repaired before execution,
+dependent calls can continue for up to five rounds, duplicate calls are blocked,
+and free hosted requests fall back to the same workflow on local Ollama.
 
-**2. Gut Gate 5.**
-Delete every regex that isn't protecting something time-critical or dangerous.
-Each deletion moves a decision from "hardcoded" to "reasoned." This is the direct
-antidote to the problem you described, and unlike #1 it can be done incrementally
-and safely — delete a few regexes, use Ted for a day, see if anything got worse.
+**Next architectural cleanup:** replace the separate pending-compose,
+disambiguation, and confirmation instance variables with one typed pending-flow
+object. This is maintainability work, not a blocker for normal use.
 
-**3. Route by difficulty.**
-Currently every turn goes to the same Groq model. Your original plan called for
-frontier models on hard turns. A cheap classifier ("is this trivial or hard?")
-that sends hard ones to Claude would raise Ted's reasoning ceiling more than any
-prompt tuning. Needs an Anthropic key — the config slot exists and is empty.
+**Future paid reasoning (disabled):** add an explicit, user-approved "deep task"
+provider only when Charlie chooses to fund it. Do not silently route ordinary
+turns to a paid API. The current everyday and offline paths remain free.
 
 ---
 
 ## Two structural notes for the rebuild
 
-- **The ladder is fundamentally sound.** Cheap gates before expensive ones is
-  correct design. The problem isn't the ladder, it's that too many rungs are
-  hardcoded and two rungs do the same LLM work twice.
-- **Four files can each decide "this is a command."** `_respond`,
-  `_assistant_command`, `detect_action`, and `_try_tools`. In the event-bus
-  rebuild this should be exactly one stage emitting one decision event, which is
-  precisely what the `stages/` design in the handoff was for.
+- **Cheap controls before reasoning are still useful.** They now cover Ted's own
+  immediate state rather than trying to understand every possible user request.
+- **There is one normal command decision point.** `_try_tools()` survives only as
+  a temporary environment-flag rollback path; `detect_action()` handles only
+  date/location shortcuts. The model tool loop owns ordinary intent.

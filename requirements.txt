@@ -6,6 +6,7 @@
 
 # LLM
 groq==1.4.0
+httpx                     # local Ollama provider transport
 
 # Web search — ddgs is the current package; hud.py imports it first and falls
 # back to the older duckduckgo_search name only if ddgs isn't installed.
@@ -22,6 +23,7 @@ elevenlabs                 # optional cloud TTS (used when USE_ELEVENLABS=True)
 # Audio I/O (fallback path when the native engine isn't built)
 sounddevice==0.5.5
 soundfile==0.14.0
+webrtcvad==2.0.10          # speech gate for reliable voice barge-in
 
 # Desktop window
 pywebview

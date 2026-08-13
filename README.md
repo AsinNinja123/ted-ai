@@ -1,9 +1,9 @@
 # Ted
 
-A local, always-listening voice assistant for macOS — Jarvis-style. Ted streams
-answers in a chosen voice, lets you talk over him (barge-in), and handles a wide
-range of spoken commands: timers, reminders, lists, calendar, notes, email,
-Spotify, habits, screen vision, and general questions.
+A personalized, chat-first AI assistant for macOS with optional voice. Ted keeps
+editable local memory, reasons about ordinary conversation and computer tasks in
+one loop, can chain tools, and can operate apps, calendar, notes, email, Spotify,
+screen vision, reminders, and other Mac capabilities.
 
 ## Setup
 
@@ -13,7 +13,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-cp config.example.py config.py     # then fill in your keys (at minimum GROQ_API_KEY)
+cp config.example.py config.py     # add a free Groq key for the fast hosted brain
+ollama pull qwen3.5:35b-a3b        # one-time download for the offline fallback
 python hud.py
 ```
 
@@ -57,17 +58,29 @@ The first launch after building asks for **microphone permission** — allow it.
 
 ## Voice & STT/TTS
 
-- **STT:** Groq Whisper (cloud) by default; set `USE_GROQ_STT = False` for local Whisper.
+- **STT:** Groq Whisper on the free tier by default, with automatic local Whisper
+  fallback; set `USE_GROQ_STT = False` to stay local all the time.
 - **TTS:** Kokoro (local, voice `am_michael`) by default; set `USE_ELEVENLABS = True`
   with a key for ElevenLabs cloud TTS.
-- **LLM:** Groq `openai/gpt-oss-120b` for replies + tool calling (auto-falls back
-  to `llama-3.3-70b-versatile` when rate-limited), `llama-3.1-8b-instant` for
-  fact extraction/summaries, Llama-4-Scout for screen vision.
-- **Live info:** questions about today's games, news, prices, schedules, etc. route
-  to `groq/compound-mini`, which runs a real web search before answering — so
-  "what World Cup games are on today" gets today's actual schedule. Falls back
-  to DuckDuckGo + summarisation when compound is rate-limited (free tier limits).
-  "Look up X" / "google X" forces a web answer for anything.
+- **Reasoning brain:** Groq `qwen/qwen3.6-27b` on its free tier. Ted uses Qwen's
+  reasoning and tool calling for chat, actions, facts, summaries, and vision.
+- **Offline/down fallback:** local Ollama `qwen3.5:35b-a3b` (about 24 GB, reasoning,
+  tools, and vision). A missing key, outage, rate limit, or lost internet switches
+  the same request locally.
+- **Live info:** `web_search` is a normal tool. The brain decides when fresh
+  DuckDuckGo results are required instead of relying on a keyword gate.
+- **Tool reliability:** arguments are schema-validated before execution; malformed
+  calls are returned to the model for repair. Chains are bounded to five rounds
+  and ten calls, repeated actions are refused, and action results remain ground truth.
+- **Difficulty-aware latency:** short single-clause turns use Qwen's low-latency
+  reasoning mode; longer, chained, explanatory, and analytical requests keep full
+  reasoning. Both paths expose the same tools and use the model as the intent router.
+- **Model-selected, verified actions:** ordinary requests such as "open YouTube"
+  and "close Spotify" go through the reasoning model and shared tool menu rather
+  than phrase-specific command code. Browser opens require a real browser window;
+  app launches/closes confirm process state before reporting success.
+- **Confirmations:** messages and consequential email changes pause for an explicit
+  yes before execution.
 
 ## Memory
 
@@ -77,7 +90,8 @@ The first launch after building asks for **microphone permission** — allow it.
   always works. (Replaced the old Neo4j backend, which required Neo4j Desktop
   to be running and usually wasn't.)
 - **Knowledge base:** drop PDFs/text into `inbox/` and say "index my documents" to
-  make them searchable (ChromaDB + local embeddings).
+  make them searchable (pypdf + ChromaDB + local BGE embeddings). Document parsing
+  and memory retrieval remain free and local.
 
 **Telling Ted to remember something.** Say it either way round — "remember I'm
 twenty" or "I'm twenty, remember that". Personal statements (anything with
@@ -112,8 +126,8 @@ All three paths update the *same* row, so one conversation leaves one memory.
 - **Email (Outlook IMAP):** run `python setup_email.py` once, then "check my email".
 - **Spotify Web API** (playlists + song search, needs Premium): add credentials to
   `config.py`, then run `python authorize_spotify.py`.
-- **Remote control:** Ted runs a small HTTP server for iOS Shortcuts/curl.
-  Set `REMOTE_TOKEN` in config.py so only you can use it.
+- **Remote control:** set `REMOTE_TOKEN` to enable Ted's authenticated HTTP server
+  for iOS Shortcuts/curl. With no token, the remote server stays disabled.
 
 ## Ask Ted from your iPhone (Siri Shortcut)
 
@@ -179,7 +193,9 @@ ted-ai/
 │   ├── test_capture_gates.py
 │   ├── test_memory.py
 │   ├── test_session_memory.py  # what's worth remembering
-│   └── test_pipeline.py
+│   ├── test_pipeline.py
+│   ├── test_single_call.py     # merged streaming + tool-call behavior
+│   └── test_safety.py          # provider lifecycle + local-network exposure
 ├── ui/
 │   ├── ted_hud.html       # the live HUD window (particle sphere) — loaded by paths.py
 │   └── ted_hud_legacy.html   # older HUD, kept as a fallback; nothing imports it

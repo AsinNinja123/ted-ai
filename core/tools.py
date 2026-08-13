@@ -9,6 +9,27 @@ Adding a new capability = add an entry here + a handler in TedApi._dispatch_tool
 """
 
 TOOL_SCHEMAS = [
+    # ── Live web ──────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Search the live public web. Use whenever information may have changed "
+                "since training (news, prices, schedules, scores, releases, current people "
+                "or rules), when the user says search/look up/verify, or when fresh sources "
+                "are needed. Returns dated snippets and source URLs; base the answer on them."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Focused search query"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+
     # ── Apps ──────────────────────────────────────────────────────────────────
     {
         "type": "function",
@@ -128,7 +149,8 @@ TOOL_SCHEMAS = [
                 "Do NOT invent or assume a message. "
                 "If the user mentioned a style (casual, formal, short, funny), pass it as 'style'. "
                 "Example: 'text Gavin and ask if he wants to golf casually' → instruction='ask if he wants to golf', style='casual'. "
-                "Example: 'send a message to Calvin' → instruction omitted."
+                "Example: 'send a message to Calvin' → instruction omitted. "
+                "This is consequential and Ted will require user confirmation before sending."
             ),
             "parameters": {
                 "type": "object",
@@ -254,7 +276,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "email_action",
-            "description": "Delete, flag/star, mark as read, or reply to an email. Use after get_emails.",
+            "description": "Delete, flag/star, mark as read, or reply to an email. Use after get_emails. Ted requires confirmation before executing.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -276,7 +298,8 @@ TOOL_SCHEMAS = [
             "name": "send_email",
             "description": (
                 "Compose and send a new email via Outlook. Pass what you want to say as 'instruction' "
-                "— Ted generates the full email. If style is specified, include it."
+                "— Ted generates the full email. If style is specified, include it. "
+                "Ted requires confirmation before sending."
             ),
             "parameters": {
                 "type": "object",
@@ -604,3 +627,11 @@ TOOL_SCHEMAS = [
         }
     },
 ]
+
+# Reject invented parameter names before they can reach a Mac action. This is
+# also useful documentation for local models, which tend to be more reliable
+# when the schema explicitly closes the object.
+for _tool in TOOL_SCHEMAS:
+    _params = (_tool.get("function") or {}).get("parameters")
+    if isinstance(_params, dict) and _params.get("type") == "object":
+        _params.setdefault("additionalProperties", False)

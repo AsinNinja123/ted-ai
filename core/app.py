@@ -31,7 +31,7 @@ from core.intents import (
     _parse_calc, _parse_cancel_scheduled, _is_timer_request,
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
-    _fix_command_words, _strip_wake_phrase, _needs_web,
+    _fix_command_words, _strip_wake_phrase,
 )
 from core.logs import error_log
 from core.memory import (log_pattern, get_frequent_patterns,
@@ -104,6 +104,34 @@ try:
 except Exception as _e:
     print(f"[shortcuts] failed to load: {_e}")
 
+
+def _use_deterministic_command(text):
+    """Keep only genuinely local/stateful controls ahead of the reasoning model.
+
+    The old Gate 5 tried to recognize every capability with regexes, so app,
+    screen, calendar, web, notes, and computer requests often never reached the
+    tool-capable brain. Novel phrasing could not recover. These remaining cases
+    are either latency/safety critical or manipulate Ted's own conversation
+    state and therefore should stay deterministic.
+    """
+    if LEGACY_LADDER:
+        return True
+    t = text.strip().lower()
+    if any(_matches(text, phrases) for phrases in
+           (_BRIEF_PHRASES, _HOLD_PHRASES, _RECALL_PHRASES, _THINK_ENTER, _THINK_EXIT)):
+        return True
+    if any(str(phrase).lower() in t for phrase in SHORTCUTS):
+        return True
+    if (_parse_correction(text) or _parse_cancel_scheduled(text)
+            or _is_timer_request(text) or _parse_reminder(text)):
+        return True
+    return bool(re.search(
+        r"\b(?:remember|remeber|rember|remmember|forget .*about me|what do you "
+        r"(?:know|remember) about me|recalibrat|calibrate .*?(?:mic|microphone|ears)|"
+        r"learn my voice|enroll my voice|forget my voice|snooze|every (?:day|monday|"
+        r"tuesday|wednesday|thursday|friday|saturday|sunday|\d+ minutes)|"
+        r"index my documents|scan my inbox|list indexed files)\b", t))
+
 # ---------- time-based startup greetings ----------
 _GREET_MORNING = [
     f"Good morning {OWNER_NAME}. How can I assist you?",
@@ -154,6 +182,7 @@ class TedApi:
         self._pending_msg             = None   # ([(name,addr),...], msg_text, expire_time) awaiting disambiguation
         self._pending_compose         = None   # dict awaiting message/email style/content input
         self._pending_disambig_compose = None  # {instruction, style} saved during contact disambiguation
+        self._pending_tool_confirmation = None  # {name,args,expires} awaiting yes/no
 
         # Augment the base system prompt with the user's auto-detected location so
         # Ted can answer "what's the weather" / "where am I" without config.
@@ -298,6 +327,19 @@ class TedApi:
             engine.stop_playback()
             if echo_user:
                 add_message(w, "user", text)
+            # A cancel while Ted is asking a compose/disambiguation question
+            # must also clear that pending state. Previously "nevermind" went
+            # silent here and the old question remained armed until expiry.
+            if (self._pending_msg is not None or self._pending_compose is not None
+                    or self._pending_tool_confirmation is not None):
+                self._pending_msg = None
+                self._pending_compose = None
+                self._pending_disambig_compose = None
+                self._pending_tool_confirmation = None
+                reply = "Got it, canceling."
+                self.last_reply = reply
+                add_message(w, "ted", reply)
+                speak(w, reply, self)
             set_state(w, "idle")
             return False
 
@@ -379,6 +421,32 @@ class TedApi:
             speak(w, "Speeding up.", self)
             return False
 
+        # ── pending confirmation for a consequential model-selected action ──
+        if self._pending_tool_confirmation is not None:
+            pending = self._pending_tool_confirmation
+            self._pending_tool_confirmation = None
+            if time.time() > pending["expires"]:
+                result = "That confirmation expired, so I didn't do it."
+            elif _normalize_cmd(text) in {
+                    "yes", "yeah", "yep", "confirm", "do it", "send it", "go ahead"}:
+                result = self._dispatch_tool(pending["name"], pending["args"], confirmed=True)
+            else:
+                result = "Canceled — nothing was sent or changed."
+            if echo_user:
+                add_message(w, "user", text)
+            self.last_reply = result
+            add_message(w, "ted", result)
+            speak(w, result, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": result},
+            ])
+            if len(self.active_conversation) > 42:
+                self.active_conversation = (
+                    [self.active_conversation[0]] + self.active_conversation[-40:]
+                )
+            return False
+
         # ── pending compose flow: user answering "what to say / what style?" ──
         if self._pending_compose is not None:
             result = self._handle_pending_compose(text)
@@ -436,7 +504,7 @@ class TedApi:
             return False
 
         # ── fast deterministic commands (no LLM call — regex/rule-based) ──
-        asst_result = self._assistant_command(text)
+        asst_result = self._assistant_command(text) if _use_deterministic_command(text) else None
         if asst_result is not None:
             engine.reset_barge_in()
             self.last_reply = asst_result
@@ -458,13 +526,7 @@ class TedApi:
                 return False
 
         # ── one streamed call that either answers or reaches for a tool ──
-        # Give immediate audio feedback before a slow web lookup so Ted doesn't freeze.
-        if _needs_web(text):
-            speak(w, "Looking that up.", self)
-            engine.reset_barge_in()
-            self.interrupt_speech = False
-        else:
-            time.sleep(0.15)
+        time.sleep(0.15)
 
         def _note_action_result(result):
             """Surface a failed action on the HUD. Ground truth either way —
@@ -477,6 +539,7 @@ class TedApi:
             dispatch=self._dispatch_tool,
             action_tools=th.ACTION_TOOLS,
             on_failure=_note_action_result,
+            is_failure=th.looks_like_failure,
         )
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
@@ -493,10 +556,12 @@ class TedApi:
             self.last_reply = full
             add_message(w, "ted", full)
         else:
-            # LLM returned nothing — rotate a confused-response phrase
-            err = _confused_reply()
+            # An empty stream is a runtime failure, not a failure to understand
+            # the user. Never blame the request with "didn't catch that."
+            err = "That request stopped before I could complete it. Nothing was changed."
             self.last_reply = err
             add_message(w, "ted", err)
+            show_issue(w, err)
             speak(w, err, self)
         # If Groq was unreachable this turn, leave the HUD on the error state
         # (yellow sphere) until the next good turn — speak_streaming reset it to idle.
@@ -1482,13 +1547,32 @@ class TedApi:
             self.active_conversation.append({"role": "assistant", "content": fallback})
         return fallback
 
-    def _dispatch_tool(self, name, args):
+    def _dispatch_tool(self, name, args, confirmed=False):
         """Route a tool call from the LLM to the right Python handler.
         Returns a spoken-style result string; on any error returns an honest
         failure message (never None-→-"Done.")."""
         try:
             # Surface tool use in the HUD's connected-apps panel (best-effort)
             js(self.window, f"tedHud.noteAppUse({json.dumps(name)})")
+            if name in th.CONFIRMATION_TOOLS and not confirmed:
+                self._pending_tool_confirmation = {
+                    "name": name, "args": dict(args), "expires": time.time() + 60,
+                }
+                if name == "send_message":
+                    target = args.get("contact", "that contact")
+                    return f"Ready to message {target}. Say yes to send it, or anything else to cancel."
+                if name == "send_email":
+                    target = args.get("to", "that address")
+                    return f"Ready to email {target}. Say yes to send it, or anything else to cancel."
+                action = args.get("action", "change")
+                return f"Ready to {action.replace('_', ' ')} that email. Say yes to confirm, or anything else to cancel."
+            if name == "web_search":
+                result = llm.search_web(args.get("query", ""))
+                if result == "__NO_RESULTS__":
+                    return "No useful web results were found for that query."
+                if result == "__SEARCH_ERROR__":
+                    return "Live web search is unavailable right now."
+                return result
             if name == "open_app":
                 return th.tool_open_app(args.get("name", ""))
             if name == "close_app":
@@ -1867,9 +1951,11 @@ class TedApi:
 
         # Try ordinals: "first", "second", "the first one", etc.
         if not chosen:
-            ordinals = {"first": 0, "one": 0, "second": 1, "two": 1,
-                        "third": 2, "three": 2, "fourth": 3, "four": 3}
-            for ow, idx in ordinals.items():
+            # Check explicit ordinals before generic number words. Otherwise
+            # "the second one" sees "one" first and selects candidate zero.
+            ordinals = (("first", 0), ("second", 1), ("third", 2), ("fourth", 3),
+                        ("one", 0), ("two", 1), ("three", 2), ("four", 3))
+            for ow, idx in ordinals:
                 if ow in words and idx < len(candidates):
                     chosen = candidates[idx]
                     break
@@ -2130,31 +2216,26 @@ class TedApi:
         # so it skips the VAD pre-roll silence and grabs the follow-up immediately.
         prearmed = False
         _busy_stuck_since = 0.0   # timestamp when the current busy period started
+        _busy_warning_shown = False
         while True:
             if self.busy:
                 _now_b = time.time()
                 if _busy_stuck_since == 0.0:
                     _busy_stuck_since = _now_b
-                elif _now_b - _busy_stuck_since > 30.0:
-                    # Response has held the lock too long. First SIGNAL it to wind
-                    # down (interrupt + stop playback) and give it a moment; only
-                    # force-release if it STILL hasn't let go. This avoids two
-                    # _respond flows touching the engine at once when the original
-                    # thread is merely slow rather than truly hung.
+                elif _now_b - _busy_stuck_since > 30.0 and not _busy_warning_shown:
+                    # Signal a slow response to wind down, but never release a
+                    # lock owned by another thread. Force-releasing allowed a
+                    # second response to enter while the first still touched the
+                    # conversation, HUD, and audio engine.
                     self.interrupt_speech = True
                     engine.stop_playback()
-                    time.sleep(1.0)
-                    if self._busy.locked():
-                        try:
-                            self._busy.release()
-                        except RuntimeError:
-                            pass
-                        print("[watchdog] response stuck >30s — force-released busy lock")
+                    print("[watchdog] response still busy after 30s — requested cancellation")
                     set_state(w, "idle")
-                    _busy_stuck_since = 0.0
+                    _busy_warning_shown = True
                 time.sleep(0.05)
                 continue
             _busy_stuck_since = 0.0  # lock released normally — reset watchdog
+            _busy_warning_shown = False
             if self.muted:
                 # Muted = mic PHYSICALLY off. No listening of any kind — the old
                 # behaviour re-enabled the mic here to catch a voice unmute, which
@@ -2562,13 +2643,17 @@ class TedApi:
         (so the JS call returns immediately and the webview doesn't freeze)."""
         self.interrupt_speech = True
         engine.stop_playback()
+        print(f"[input] typed request received: {text!r}", flush=True)
         def flow():
-            for _ in range(400):
-                if self._busy.acquire(blocking=False):
-                    break
-                time.sleep(0.05)
-            else:
-                self._busy.acquire()     # blocking fallback if spin-wait timed out
+            if not self._busy.acquire(timeout=8.0):
+                reply = ("The previous request is still finishing, so I did not run this one. "
+                         "Try it once more.")
+                print("[input] request rejected: busy for more than 8s", flush=True)
+                self.last_reply = reply
+                add_message(self.window, "ted", reply)
+                show_issue(self.window, reply)
+                set_state(self.window, "idle")
+                return
             try:
                 self._respond(text, echo_user=False)  # echo_user=False: we already show the typed text
                 # Typed turns count toward session memory too — otherwise a

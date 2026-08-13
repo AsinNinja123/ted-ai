@@ -282,7 +282,9 @@ var API='http://127.0.0.1:5175/api';
 var muted=true;                    // Ted now starts silent (chat-first)
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
 var currentChat=null;              // active session id (created lazily)
-var pendingTurns=[];               // turns before the session exists
+var chatCreatePromise=null;        // one in-flight lazy session creation
+var chatSaveQueue=Promise.resolve();
+var chatEpoch=0;                   // prevents an old save crossing into New chat
 var turnCount=0, titled=false;
 var streamEl=null, streamBuf='';
 var lastStreamText=null;           // dedupe: app.py re-sends streamed replies
@@ -420,28 +422,37 @@ function checkServer(){
       'port 5175. Close it (or restart your Mac) and relaunch Ted.');
   });
 }
+function ensureChat(epoch){
+  if(epoch!==chatEpoch) return Promise.reject(new Error('stale chat save'));
+  if(currentChat!=null) return Promise.resolve(currentChat);
+  if(!chatCreatePromise){
+    chatCreatePromise=apiFetch('/chats',{method:'POST'}).then(function(j){
+      if(j==null||j.id==null) throw new Error('chat create returned no id');
+      if(epoch!==chatEpoch) throw new Error('stale chat create');
+      currentChat=j.id; refreshChats();
+      return currentChat;
+    }).catch(function(e){
+      chatCreatePromise=null;
+      throw e;
+    });
+  }
+  return chatCreatePromise;
+}
 function recordTurn(role,text){
   if(!text||!text.trim()) return;
   turnCount++;
-  if(currentChat==null){
-    pendingTurns.push({role:role,content:text});
-    if(role!=='user') return;             // create the session on first USER turn
-    apiFetch('/chats',{method:'POST'}).then(function(j){
-      if(j==null||j.id==null){ checkServer(); return; }
-      currentChat=j.id;
-      var flush=pendingTurns.slice(); pendingTurns=[];
-      (function next(i){
-        if(i>=flush.length){ refreshChats(); return; }
-        apiFetch('/chats/'+currentChat+'/turns',{method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body:JSON.stringify(flush[i])}).then(function(){ next(i+1); });
-      })(0);
-    }).catch(function(){});
-    return;
-  }
-  apiFetch('/chats/'+currentChat+'/turns',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({role:role,content:text})}).catch(function(){});
+  var epoch=chatEpoch, turn={role:role,content:text};
+  chatSaveQueue=chatSaveQueue.then(function(){
+    return ensureChat(epoch);
+  }).then(function(id){
+    if(epoch!==chatEpoch) return;
+    return apiFetch('/chats/'+id+'/turns',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(turn)});
+  }).catch(function(e){
+    if(String(e).indexOf('stale chat')!==-1) return;
+    console.error('Ted chat save failed',e);
+    tedHud.showIssue('Chat history failed to save this turn. The request still ran.');
+  });
 }
 function maybeSummarize(){
   if(currentChat==null) return;
@@ -480,8 +491,9 @@ function refreshChats(){
 }
 function openChat(id){
   apiFetch('/chats/'+id).then(function(c){
+    chatEpoch++; chatCreatePromise=null; chatSaveQueue=Promise.resolve();
     currentChat=id; titled=(c.title!=='New chat'); turnCount=c.turns.length;
-    pendingTurns=[]; streamEl=null; streamBuf='';
+    streamEl=null; streamBuf='';
     $('chat-title').textContent=c.title;
     $('msgs').innerHTML='';
     if(!c.turns.length) $('msgs').innerHTML=
@@ -491,7 +503,8 @@ function openChat(id){
   }).catch(function(){});
 }
 function newChat(){
-  currentChat=null; titled=false; turnCount=0; pendingTurns=[];
+  chatEpoch++; chatCreatePromise=null; chatSaveQueue=Promise.resolve();
+  currentChat=null; titled=false; turnCount=0;
   streamEl=null; streamBuf='';
   $('chat-title').textContent='New chat';
   $('msgs').innerHTML='<div id="empty"><div class="big">What\'s on your mind?</div>'+

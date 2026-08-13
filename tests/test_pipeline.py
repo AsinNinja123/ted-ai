@@ -190,6 +190,17 @@ def js_containing(api, fragment):
 
 # ═════════════════════════════════════════════════════════════════════════════
 print("— _respond: interrupt commands are intercepted before any LLM call —")
+check("ordinary Mac actions now reach the reasoning/tool stage",
+      not app_mod._use_deterministic_command("open Notes and then type my grocery list"))
+check("one-step website opens are interpreted by the model",
+      not app_mod._use_deterministic_command("open youtube"))
+check("one-step app closes are interpreted by the model",
+      not app_mod._use_deterministic_command("close spotify"))
+check("timers remain deterministic and instant",
+      app_mod._use_deterministic_command("set a timer for five minutes"))
+check("explicit personal-memory edits remain deterministic",
+      app_mod._use_deterministic_command("remember that I prefer Brave"))
+
 api = make_api()
 api._respond("stop")
 check("'stop' stops playback", "stop_playback" in fake_engine.calls)
@@ -261,8 +272,9 @@ check("reply lands in the HUD chat", js_containing(api, "addMessage"))
 api = make_api()
 LLM_STREAM_REPLY.clear()
 api._respond("how are you")
-check("empty LLM stream → rotated confused reply",
-      api.last_reply in intents._CONFUSED_TED and SPOKEN == [api.last_reply])
+check("empty LLM stream reports a runtime failure without blaming the user",
+      api.last_reply == "That request stopped before I could complete it. Nothing was changed."
+      and "catch" not in api.last_reply.lower() and SPOKEN == [api.last_reply])
 LLM_STREAM_REPLY.append("LLM reply.")
 
 print("\n— _assistant_command: briefing (before any timers exist) —")
@@ -459,6 +471,34 @@ check("retired list_add is reported honestly, not silently ignored",
 
 check("get_weather dispatches", api._dispatch_tool("get_weather", {}) == WEATHER_REPLY)
 
+print("\n— consequential tool confirmation —")
+api = make_api()
+SENT_MESSAGES.clear()
+app_mod.search_contacts = lambda q: [("Gavin Smith", "+15551234567")]
+prompt = api._dispatch_tool("send_message", {
+    "contact": "Gavin", "instruction": "say hi", "style": "casual",
+})
+check("message tool pauses before sending",
+      "Say yes" in prompt and api._pending_tool_confirmation is not None
+      and SENT_MESSAGES == [])
+api._respond("yes")
+check("explicit yes executes the pending tool once",
+      SENT_MESSAGES == [("+15551234567", "[casual] say hi")]
+      and api._pending_tool_confirmation is None)
+check("confirmed outcome remains in conversation context",
+      api.active_conversation[-2]["content"] == "yes"
+      and api.active_conversation[-1]["content"] == "Sent to Gavin.")
+
+api = make_api()
+SENT_MESSAGES.clear()
+app_mod.search_contacts = lambda q: [("Gavin Smith", "+15551234567")]
+api._dispatch_tool("send_message", {
+    "contact": "Gavin", "instruction": "say hi", "style": "casual",
+})
+api._respond("no")
+check("anything other than explicit confirmation cancels",
+      SENT_MESSAGES == [] and "Canceled" in SPOKEN[-1])
+
 print("\n— compose flow: instruction → style → send —")
 api = make_api()
 app_mod.search_contacts = lambda q: [("Gavin Smith", "+15551234567")]
@@ -493,14 +533,13 @@ api._respond("the second")
 check("ordinal answer picks the right contact and completes the send",
       SENT_MESSAGES == [("addr-b", "[casual] say hi")] and api._pending_msg is None)
 
-# Pinned quirk: "the second one" contains "one", which the ordinals table maps
-# to index 0 — so it selects the FIRST candidate, not the second.
+# Regression: the generic word "one" must not beat the explicit "second".
 api = make_api()
 SENT_MESSAGES.clear()
 r = api._compose_and_send("john", instruction="say hi", style="casual")
 api._respond("the second one")
-check("QUIRK: 'the second one' matches 'one' → first candidate",
-      SENT_MESSAGES == [("addr-a", "[casual] say hi")])
+check("'the second one' selects the second candidate",
+      SENT_MESSAGES == [("addr-b", "[casual] say hi")])
 
 api = make_api()
 r = api._compose_and_send("john", instruction="say hi", style="casual")
@@ -508,15 +547,18 @@ api._respond("nope")
 check("cancel word aborts disambiguation",
       SPOKEN[-1] == "Got it, canceling." and api._pending_msg is None)
 
-# Pinned quirk: "nevermind" through _respond is swallowed by the CANCEL-command
-# branch before disambiguation runs — nothing is spoken and the pending
-# question stays armed until its 30 s expiry.
+# Regression: generic cancel interception must clear a pending question too.
 api = make_api()
 r = api._compose_and_send("john", instruction="say hi", style="casual")
 api._respond("nevermind")
-check("QUIRK: 'nevermind' hits the cancel branch; disambiguation stays pending",
-      SPOKEN == [] and api._pending_msg is not None)
-api._pending_msg = None
+check("'nevermind' cancels and clears pending disambiguation",
+      SPOKEN[-1] == "Got it, canceling." and api._pending_msg is None)
+
+api = make_api()
+api._pending_compose = {"type": "imessage", "stage": "style"}
+api._respond("cancel that")
+check("cancel also clears a pending compose flow",
+      SPOKEN[-1] == "Got it, canceling." and api._pending_compose is None)
 
 api = make_api()
 api._pending_msg = ([("John Adams", "addr-a")], "hi", time.time() - 1)   # already expired

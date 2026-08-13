@@ -135,7 +135,7 @@ Barge-in has never been verified since the Aug 5 rewrite. You're already here.
 | 6.2 | Ask `which mode are you in` | Says voice |
 | 6.3 | Interrupt him **mid-sentence** | Stops immediately |
 | 6.4 | Interrupt him **at a pause between sentences** | Stops. **This is the case that was broken** |
-| 6.5 | Play music on speakers, let Ted talk over it | He doesn't interrupt himself. AEC is gone, so this rests on energy + VAD + pitch |
+| 6.5 | Play music on speakers, let Ted talk over it | He doesn't interrupt himself; native AEC and the VAD/pitch gates reject speaker leak |
 | 6.6 | Type while he's speaking | Typing still interrupts |
 | 6.7 | Mic off. Ask `which mode are you in` | Says chat, formats properly, code in fenced blocks |
 

@@ -140,7 +140,40 @@ if not USE_GROQ_STT:
     whisper_model = whisper.load_model("small.en")
     print("Whisper loaded.")
 else:
-    print("STT: Groq Whisper cloud — skipping local model load")
+    print("STT: Groq Whisper cloud — local model will load only if needed")
+
+
+def _get_local_whisper():
+    """Lazy-load local Whisper, including when cloud STT fails mid-session."""
+    global whisper_model
+    if whisper_model is None:
+        import whisper
+        print("Loading Whisper (local fallback)…")
+        whisper_model = whisper.load_model("small.en")
+    return whisper_model
+
+
+def _transcribe_local(path):
+    result = _get_local_whisper().transcribe(
+        path,
+        language="en",
+        fp16=False,
+        condition_on_previous_text=False,
+        no_speech_threshold=NO_SPEECH_MAX,
+        logprob_threshold=LOGPROB_MIN,
+        temperature=0,
+    )
+    text = (result.get("text") or "").strip()
+    if not text:
+        return None
+    segs = result.get("segments", []) or []
+    if segs:
+        ns = sum(s.get("no_speech_prob", 0.0) for s in segs) / len(segs)
+        lp = sum(s.get("avg_logprob", 0.0) for s in segs) / len(segs)
+        if ns > NO_SPEECH_MAX and lp < -0.4:
+            print(f"   (ignored — likely silence: {text!r})")
+            return None
+    return text
 
 # TTS — ElevenLabs (cloud) if configured, otherwise Kokoro (local).
 _elevenlabs_client = None
@@ -169,8 +202,7 @@ engine = AudioEngine(
 )
 _mode = engine.start()
 if _mode == "aec":
-    print("🎧 Audio: native engine — voice barge-in ON. (No echo cancellation: "
-          "if Ted interrupts himself, lower the speaker volume.)")
+    print("🎧 Audio: native engine with echo cancellation — voice barge-in ON.")
 else:
     print("🔉 Audio: sounddevice fallback (no echo cancellation). Build native/ted_audio "
           "to enable talking over Ted.")
@@ -560,29 +592,19 @@ def capture(prearmed=False):
                     print(f"   (ignored — low confidence logprob {lp:.2f}: {text!r})")
                     return None
         except Exception as e:
-            print(f"[capture] Groq STT error: {e}")
-            return None
+            print(f"[capture] Groq STT unavailable — using local Whisper: {e}")
+            try:
+                text = _transcribe_local(INPUT_FILE)
+                if not text:
+                    return None
+            except Exception as local_error:
+                print(f"[capture] local Whisper fallback failed: {local_error}")
+                return None
     else:
-        # 2) Local Whisper fallback
-        result = whisper_model.transcribe(
-            INPUT_FILE,
-            language="en",
-            fp16=False,
-            condition_on_previous_text=False,
-            no_speech_threshold=NO_SPEECH_MAX,
-            logprob_threshold=LOGPROB_MIN,
-            temperature=0,
-        )
-        text = (result.get("text") or "").strip()
+        # 2) Local Whisper
+        text = _transcribe_local(INPUT_FILE)
         if not text:
             return None
-        segs = result.get("segments", []) or []
-        if segs:
-            ns = sum(s.get("no_speech_prob", 0.0) for s in segs) / len(segs)
-            lp = sum(s.get("avg_logprob", 0.0) for s in segs) / len(segs)
-            if ns > NO_SPEECH_MAX and lp < -0.4:
-                print(f"   (ignored — likely silence: {text!r})")
-                return None
 
     # 3) blocklist — phantom phrases both Whisper variants hallucinate on silence
     if _looks_hallucinated(text):

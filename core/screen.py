@@ -1,7 +1,8 @@
 """
-core/screen.py — Screenshot + vision description using Groq (Llama 4 Scout).
+core/screen.py — Screenshot + vision through Ted's normal provider route.
 
-Uses the existing GROQ_API_KEY — no new credentials required.
+Qwen 3.6 handles normal screenshots on Groq; the same request falls back to
+the local multimodal Qwen model when Groq or the internet is unavailable.
 
 Public API:
     take_screenshot(path)          → path to PNG file, or None on failure
@@ -13,12 +14,9 @@ import base64
 import subprocess
 import tempfile
 
-try:
-    from config import GROQ_API_KEY
-except Exception:
-    GROQ_API_KEY = ""
+from core.providers import CLOUD_CHAT_MODEL
 
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+VISION_MODEL = CLOUD_CHAT_MODEL
 
 
 def take_screenshot(path: str = None) -> str:
@@ -38,9 +36,6 @@ def take_screenshot(path: str = None) -> str:
 
 
 def describe_screen(question: str = "Briefly describe what's on the screen.") -> str:
-    if not GROQ_API_KEY:
-        return "I need a Groq API key to see the screen."
-
     path = take_screenshot()
     if not path:
         return "Couldn't take a screenshot right now."
@@ -54,10 +49,8 @@ def describe_screen(question: str = "Briefly describe what's on the screen.") ->
         return "Couldn't read the screenshot."
 
     try:
-        from groq import Groq
-        client = Groq(api_key=GROQ_API_KEY)
-        resp = client.chat.completions.create(
-            model=VISION_MODEL,
+        from core.llm import chat_create
+        resp = chat_create(
             messages=[
                 {
                     "role": "user",
@@ -78,5 +71,5 @@ def describe_screen(question: str = "Briefly describe what's on the screen.") ->
         )
         return (resp.choices[0].message.content or "").strip() or "Nothing to describe."
     except Exception as e:
-        print(f"[screen] vision API error: {e}")
-        return "Screen description failed. The vision model may be unavailable."
+        print(f"[screen] vision error: {e}")
+        return "Screen description failed — neither vision provider was available."

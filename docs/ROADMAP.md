@@ -95,8 +95,9 @@ because VAD alone calls claps "speech" · sliding 300 ms window (`BARGE_WINDOW 1
 `BARGE_PITCH_FRAMES 4`) · `BARGE_MARGIN` 3.0 → **2.0** with floor `0.012` and ceiling `0.030` ·
 `TED_DEBUG_BARGE=1` to make it observable.
 
-**Aug 5, 22:36 — echo cancellation was removed from the Swift binary.** Voice Processing ducked
-Spotify. The `"aec"` mode name is now historical.
+**Aug 5, 22:36 — echo cancellation was temporarily removed from the Swift binary, then restored
+before the Aug 6 baseline.** Voice Processing had ducked Spotify; the restored path uses macOS
+14's minimum other-audio ducking setting.
 
 ### Phase 4–5 · Commit, migration, housekeeping (Aug 6–8)
 
@@ -114,14 +115,12 @@ Spotify. The `"aec"` mode name is now historical.
 
 | Layer | Current | Replaced |
 |---|---|---|
-| **LLM** | Groq `openai/gpt-oss-120b` (replies + tool calling) → `llama-3.3-70b-versatile` on rate limit | Ollama / LLaMA 3.2 3B local |
-| **Small model** | `llama-3.1-8b-instant` — fact extraction, summaries | — |
-| **Vision** | Llama-4-Scout via Groq — screenshot description | — |
-| **Live info** | `groq/compound-mini` (searches before answering) → DuckDuckGo (`ddgs`) | raw DuckDuckGo |
-| **Second brain** | optional `claude-sonnet-5` relay — "ask Claude…" | — |
-| **STT** | **Groq Whisper cloud** (`USE_GROQ_STT = True`); local `openai-whisper` fallback | local Whisper only |
+| **LLM** | Free-tier Groq `qwen/qwen3.6-27b` → local Ollama `qwen3.5:35b-a3b` for any hosted failure | GPT-OSS + cloud fallback |
+| **Vision** | Same hosted/local Qwen provider route | Groq-only vision |
+| **Live info** | Model-selected `web_search` tool over DuckDuckGo (`ddgs`) | keyword routing |
+| **STT** | **Groq Whisper cloud** (`USE_GROQ_STT = True`) → automatic local `openai-whisper` fallback | local Whisper only |
 | **TTS** | **Kokoro** ONNX local, `am_michael` (310 MB); ElevenLabs optional | ElevenLabs Daniel |
-| **Audio** | native Swift `ted_audio` (full-duplex, **no AEC**) or sounddevice; webrtcvad + pitch barge-in | fixed 5-second recording |
+| **Audio** | native Swift `ted_audio` (full-duplex + Apple Voice Processing AEC) or sounddevice; webrtcvad + pitch barge-in | fixed 5-second recording |
 | **Wake** | none required — 90 s attention window, "Hey Ted" from standby | OpenWakeWord "hey jarvis" |
 | **Memory** | SQLite `data/memory.db` — exchanges, facts, habits, patterns, session_summaries | Neo4j ← ChromaDB |
 | **Knowledge** | ChromaDB + fastembed, PDF intake from `inbox/` | — |
@@ -144,7 +143,7 @@ Legend: **✅ built** · **🟡 partial** · **⬜ not started** · **⚠️ lis
 | **Event-bus decomposition of `core/app.py`** | 🟡 **started Aug 6** | Scoped 6/28, untouched for six weeks, then `9fa57bc` landed **stage 1: characterization tests** (`tests/test_pipeline.py`). No code has moved yet. ⚠️ The list says "~103 KB" — it's now **110 KB**. It grew while waiting. |
 | Background daemon / `launchd` always-on service | ⬜ | `core/proactive.py` exists but runs **in-process** — it dies with the HUD window. No plist, no `.app`. This still blocks every proactive feature. |
 | **Conversation-history / coreference bug** | ✅ **fixed** | README: *"In-session: recent turns are sent to the model each reply."* `test_pipeline.py` pins **both** conversation-history trim behaviors. ⚠️ Cross this off. |
-| Model-agnostic interface | 🟡 | Real fallback chains exist (`gpt-oss-120b`→`llama-3.3-70b`, compound→DuckDuckGo, Groq STT→local Whisper, Kokoro→ElevenLabs). But everything is routed through one Groq client in `core/llm.py`. Swapping *families* would still be surgery. |
+| Model-agnostic interface | ✅ | `core/providers.py` owns Groq→Ollama routing and adapts streaming, tools, JSON, and vision to one response shape. |
 
 ### §1 Core voice pipeline
 
@@ -153,7 +152,7 @@ Legend: **✅ built** · **🟡 partial** · **⬜ not started** · **⚠️ lis
 | Always-listening, no wake word | ✅ | Attention window, not wake word. |
 | Barge-in / interrupt-on-speech | ✅ but **unverified** | ⚠️ The list describes "Web Audio API monitors mic during playback, halts `sd.play()`". That's not the implementation anymore — it's webrtcvad + pitch + sliding window in `core/audio.py`. **And it has never been run since the fix landed.** |
 | Streaming sentence-by-sentence TTS | ✅ | `speak_streaming` in `core/voice.py`. |
-| **Native Swift AEC engine** | ❌ **removed Aug 5** | ⚠️ Listed as built. Voice Processing ducked Spotify, so it was ripped out. The `"aec"` mode name is a leftover. On speakers, barge-in now rests entirely on energy + VAD + pitch. |
+| **Native Swift AEC engine** | ✅ | Apple Voice Processing is enabled; on macOS 14+ other-audio ducking is set to minimum so Spotify is not heavily ducked. |
 | Mute button | ✅ | Covered in `test_pipeline`. |
 | **`SILENCE_HANG` = 1.0 s** | ⚠️ wrong | It's **1.35** (`1.0 + 350 ms` buffer for trailing consonants). Someone raised it. |
 | **"Kokoro, Whisper, OpenWakeWord — all local"** | ⚠️ wrong on two of three | Kokoro is local. **STT defaults to Groq Whisper cloud.** **OpenWakeWord is gone** — not in `requirements.txt`, not imported. |
@@ -164,11 +163,11 @@ Legend: **✅ built** · **🟡 partial** · **⬜ not started** · **⚠️ lis
 | Item | Status | Reality |
 |---|---|---|
 | **Local Qwen stack (3.6 35B-A3B / 27B dense)** | ⬜ **never happened** | ⚠️ The list frames Groq as "the original/interim backbone **before** the local Qwen switch." There was no switch. Ted is **100 % cloud** today — Groq for brain, STT, vision, and search. There is no local LLM at all. This is the single biggest gap between the plan and reality. |
-| Small/fast model for routing | 🟡 | `llama-3.1-8b-instant` exists but only does fact extraction and summaries — it doesn't route. |
-| Vision: Claude primary, local fallback | ❌ inverted | `core/screen.py` routes to **Groq Llama-4-Scout**, not Claude. The list's own reasoning (multi-step visual reasoning is a real accuracy gap) argues against the current setup. |
+| Small/fast model for routing | ❌ removed | Fact extraction and summaries now use the same reasoning model as chat; the retired 8B path is gone. |
+| Vision: Claude primary, local fallback | ❌ different | `core/screen.py` routes to **Groq Qwen 3.6**, not Claude, and has no local fallback. |
 | Routing, not named sub-agents | ✅ decision held | No sub-agents were built. Good. |
 | Hybrid local/cloud with connectivity fallback | ⬜ | Fallbacks are all cloud→cloud. **Ted is fully offline-broken today.** |
-| "Ask Claude" second brain | ✅ | `ANTHROPIC_API_KEY` + `CLAUDE_MODEL = "claude-sonnet-5"` wired in config. |
+| "Ask Claude" second brain | ❌ removed | The unused relay was removed during the one-reasoning-model migration. |
 
 ### §3 Self-improvement / code editing
 
@@ -274,7 +273,7 @@ Ordered by what unblocks what, not by appeal.
 - [ ] **Run Ted.** He hasn't been launched since Aug 6, 21:33 — four minutes *before* the commit
       containing the barge-in fix. Test with `TED_DEBUG_BARGE=1`: interrupt mid-sentence, then
       interrupt exactly at a sentence pause (the case that was broken), confirm typing still
-      interrupts, and confirm he doesn't interrupt *himself* on speakers now that AEC is gone.
+      interrupts, and confirm native AEC prevents self-interruption without noticeably ducking Spotify.
 - [ ] **Fix session summaries.** 0 rows. This is what blocks autobiographical callbacks — the
       list's own #1 "feels like a person" signal. *My suggestion: move the write to `atexit` +
       a SIGTERM handler rather than pywebview's closing hook, and flush every N exchanges so a
@@ -305,7 +304,7 @@ Ordered by what unblocks what, not by appeal.
       plan — right now it's neither.
 - [ ] **Email password in cleartext.** The Graph path is one line from working; check admin
       consent on the school tenant first.
-- [ ] **Vision routing.** Groq Llama-4-Scout today, Claude recommended by the list. A/B it on
+- [ ] **Vision routing.** Groq Qwen 3.6 today, Claude recommended by the list. A/B it on
       real homework before spending anything.
 - [ ] **Confirmation gate on agentic actions.** Ted can type keys and drive the clipboard with
       no gate. Fine today; not fine the day browser automation lands.

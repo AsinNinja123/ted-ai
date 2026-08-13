@@ -10,74 +10,63 @@ import time
 import traceback
 from datetime import date
 
-from groq import Groq
-
 from core import features, intents
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
+from core import providers
 from core.memory import (save_memory, get_memory, save_fact, get_facts_about,
                          format_memories_for_prompt)
 
-from config import GROQ_API_KEY  # required — app won't start without this
 try:
     from config import OWNER_NAME
 except Exception:
     OWNER_NAME = "Charlie"
 
-# ONE reasoning model. Everything that thinks — replies, tool calls, fact
-# extraction, session summaries, summarising a web result — goes through
-# chat_create() and lands on CHAT_MODEL.
-#
-# CHAT_FALLBACK_MODEL is not a second brain; it is an availability twin that
-# only runs when the primary is rate-limited or down, and it says so in the log
-# when it does. Aug 2026: three other models were removed. llama-3.1-8b-instant
-# was running fact extraction and session memory — an 8B doing judgment work,
-# and the source of both the five-week silent JSON failure and the "bananas are
-# berries" facts. groq/compound-mini was answering anything matching a keyword
-# list, unstreamed, with a 14s timeout and a retry, deciding before the model
-# ever saw the message. claude-sonnet-5 was a relay that never had a key.
-#
-# gpt-oss-120b benchmarked 5-9x faster than llama-3.3-70b with better tool
-# calling (it handled the misheard-verb cases that made llama emit malformed
-# tool calls).
-CHAT_MODEL          = "openai/gpt-oss-120b"
-CHAT_FALLBACK_MODEL = "llama-3.3-70b-versatile"
+# ONE provider path. Everything that thinks — replies, tool calls, fact
+# extraction, session summaries, web synthesis, and vision — goes through
+# chat_create(). The free hosted Qwen is tried first; the local Qwen is a true
+# offline fallback for the same request, not a separate lower-quality workflow.
+CHAT_MODEL          = providers.CLOUD_CHAT_MODEL
+CHAT_FALLBACK_MODEL = providers.LOCAL_CHAT_MODEL
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Kept as an attribute for the voice module's cloud Whisper path. It may be
+# None when Ted is configured for completely local/offline use.
+groq_client = providers.groq_client()
 
 
 def chat_create(**kwargs):
-    """chat.completions.create on the primary chat model, with automatic
-    fallback to CHAT_FALLBACK_MODEL when the primary is rate-limited or
-    erroring (they share limits with the web-answer model). gpt-oss is a
-    reasoning model — reasoning_effort='low' keeps voice latency snappy and
-    is only sent to models that accept it."""
-    last_exc = None
-    for model in (CHAT_MODEL, CHAT_FALLBACK_MODEL):
-        params = dict(kwargs)
-        params["model"] = model
-        if model.startswith("openai/gpt-oss"):
-            params["reasoning_effort"] = "low"
-        try:
-            return groq_client.chat.completions.create(**params)
-        except Exception as e:
-            last_exc = e
-            msg = str(e)
-            retryable = any(k in msg for k in
-                            ("429", "rate_limit", "over capacity", "503",
-                             "500", "413", "request_too_large",
-                             # model retired/renamed — keep Ted alive on llama
-                             "404", "model_not_found", "decommissioned"))
-            if model != CHAT_FALLBACK_MODEL and retryable:
-                print(f"[llm] {model} unavailable ({msg[:80]}) — "
-                      f"falling back to {CHAT_FALLBACK_MODEL}")
-                continue
-            raise
-    raise last_exc
+    """Use the free hosted brain, then the genuinely local offline brain."""
+    return providers.chat_create(**kwargs)
 
 MAX_HISTORY = 20        # messages sent to LLM per turn
 MAX_CONV_MESSAGES = 40  # hard cap on stored conversation length (keeps system msg at [0])
+
+
+_DEEP_REQUEST_RE = re.compile(
+    r"\b(?:why|how does|how do|explain|analy[sz]e|compare|evaluate|research|"
+    r"investigate|reason|figure out|debug|design|architect|plan|prove|solve|"
+    r"what do you think|should i|pros and cons|step[- ]by[- ]step)\b",
+    re.I,
+)
+
+
+def reasoning_effort_for(text):
+    """Choose thinking depth from request complexity, not command phrases.
+
+    Short, single-clause turns do not need hidden chain-of-thought just to pick
+    a tool or answer a greeting. Longer, chained, explanatory, and analytical
+    requests retain Qwen's normal reasoning mode. The model still sees the same
+    complete tool menu in both modes and remains the sole intent router.
+    """
+    words = re.findall(r"[A-Za-z0-9']+", text or "")
+    if len(words) > 12:
+        return "default"
+    if re.search(r"\b(?:and then|then|after that|before you|followed by)\b", text or "", re.I):
+        return "default"
+    if _DEEP_REQUEST_RE.search(text or ""):
+        return "default"
+    return "none"
 
 
 def stable_window(items, min_keep, chunk=8):
@@ -101,7 +90,7 @@ def stable_window(items, min_keep, chunk=8):
 _GROQ_OK = True
 
 def groq_ok():
-    return _GROQ_OK
+    return _GROQ_OK and providers.active_provider() == "groq"
 
 # ---------- persona ----------
 SYSTEM_PROMPT = (
@@ -221,6 +210,16 @@ def _parse_fact_payload(raw):
         return _coerce(json.loads(raw))
     except Exception:
         pass
+    # Groq occasionally returns JSON whose formatting whitespace is itself
+    # escaped (literal ``\\n`` outside a JSON string). It looks valid in logs
+    # but json.loads correctly rejects it. Turning only escaped whitespace into
+    # spaces keeps string values safe and recovers the otherwise valid object.
+    whitespace_fixed = re.sub(r"\\[nrt]", " ", raw)
+    if whitespace_fixed != raw:
+        try:
+            return _coerce(json.loads(whitespace_fixed))
+        except Exception:
+            pass
     # Salvage: grab the outermost JSON-looking span and retry.
     for opener, closer in (("{", "}"), ("[", "]")):
         start, end = raw.find(opener), raw.rfind(closer)
@@ -331,8 +330,11 @@ def search_web(query):
             body = r.get("body") or r.get("excerpt") or ""
             when = r.get("date", "")
             title = r.get("title", "")
-            parts.append(f"[{when}] {title}: {body}" if when else f"{title}: {body}")
-        return " ".join(parts)
+            url = r.get("url") or r.get("href") or ""
+            prefix = f"[{when}] " if when else ""
+            source = f" (Source: {url})" if url else ""
+            parts.append(f"{prefix}{title}: {body}{source}")
+        return "\n".join(parts)
     except Exception as e:
         print(f"[web] search failed: {e}")
         return "__SEARCH_ERROR__"
@@ -396,6 +398,34 @@ def _remember_exchange(user_input, full_reply, conversation):
                          args=(user_input, full_reply), daemon=True).start()
 
 # ---------- tool runtime ----------
+def validate_tool_arguments(schema, args):
+    """Return a concise validation error, or ``None`` for valid arguments."""
+    if not isinstance(args, dict):
+        return "arguments must be a JSON object"
+    params = ((schema or {}).get("function") or {}).get("parameters") or {}
+    props = params.get("properties") or {}
+    missing = [name for name in params.get("required", [])
+               if name not in args or args[name] is None or args[name] == ""]
+    if missing:
+        return "missing required argument(s): " + ", ".join(missing)
+    unknown = [name for name in args if name not in props]
+    if unknown:
+        return "unknown argument(s): " + ", ".join(unknown)
+    py_types = {
+        "string": str, "integer": int, "number": (int, float),
+        "boolean": bool, "array": list, "object": dict,
+    }
+    for name, value in args.items():
+        rule = props.get(name) or {}
+        expected = py_types.get(rule.get("type"))
+        numeric_bool = rule.get("type") in ("integer", "number") and isinstance(value, bool)
+        if expected and (not isinstance(value, expected) or numeric_bool):
+            return f"{name} must be {rule['type']}"
+        if "enum" in rule and value not in rule["enum"]:
+            return f"{name} must be one of: {', '.join(map(str, rule['enum']))}"
+    return None
+
+
 class ToolRuntime:
     """Everything ask_streaming needs to run a tool, without llm.py importing
     the tool layer (which would be a circular import).
@@ -405,37 +435,63 @@ class ToolRuntime:
     action_tools  — names whose result IS the reply and is spoken verbatim
     on_failure    — called with a failed action's message, for the HUD
     """
-    __slots__ = ("schemas", "dispatch", "action_tools", "on_failure")
+    __slots__ = ("schemas", "dispatch", "action_tools", "on_failure",
+                 "is_failure", "schema_by_name")
 
-    def __init__(self, schemas, dispatch, action_tools=(), on_failure=None):
+    def __init__(self, schemas, dispatch, action_tools=(), on_failure=None,
+                 is_failure=None):
         self.schemas = schemas
         self.dispatch = dispatch
         self.action_tools = frozenset(action_tools)
         self.on_failure = on_failure or (lambda _m: None)
+        self.is_failure = is_failure or (lambda _m: False)
+        self.schema_by_name = {
+            (s.get("function") or {}).get("name"): s for s in schemas
+            if (s.get("function") or {}).get("name")
+        }
 
 
 # Tool-selection instructions. These live in the STATIC system message
 # (appended to the persona once, identically every turn) rather than in the
 # per-turn context block, so they stay inside the cacheable prefix.
 TOOL_GUIDANCE = (
-    "\n\nYou have tools. Use one when the user wants something done rather than "
-    "discussed, and answer directly when they don't — most turns are conversation "
-    "and need no tool at all. Never call a tool to look busy, and never call one "
-    "to look up something you already know. Input may contain speech-recognition "
-    "errors or unusual phrasing — read intent over literal words. If a detail a "
-    "tool needs is missing, pick the reasonable default and proceed rather than "
-    "stalling. Honour stated preferences: if the user has said they want a site "
-    "opened in a particular browser, pass that browser."
+    "\n\nYou have tools. Understand the user's whole outcome, not just the first "
+    "verb. Use tools when they want something done; answer directly when they "
+    "only want conversation. For multi-step work, call every independent tool "
+    "together, then use returned results to choose the next dependent tool. "
+    "Continue until the complete outcome is reached. Never claim an action "
+    "happened unless its tool returned success, and never repeat an action that "
+    "already succeeded. Use web_search whenever an answer depends on current or "
+    "changing information, or when the user asks you to search or verify. Base "
+    "current claims on its results and include the relevant source URLs in the answer. Input "
+    "may contain speech-recognition errors or unusual phrasing: infer intent over "
+    "literal words. Use known preferences and reasonable low-risk defaults. Ask "
+    "one short question only when a missing value materially changes the result "
+    "or makes an action unsafe."
 )
 
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 5
+MAX_TOOL_CALLS = 10
+
+
+_NEXT_ACTION_RE = re.compile(
+    r"\b(?:and then|then|after that|followed by)\b|"
+    r"\band\s+(?:open|close|type|copy|read|check|set|play|send|add|search|"
+    r"show|hide|turn|write|put)\b",
+    re.I,
+)
+
+
+def _multi_step_request(text):
+    """Generic sequence signal used only to decide whether to keep planning."""
+    return bool(_NEXT_ACTION_RE.search(text or ""))
 
 # How much text to hold back before committing to "this turn is a text reply".
 # See _stream_turn for why this buffer exists.
 _TOOL_DECIDE_CHARS = 40
 
 
-def _stream_turn(resp, calls):
+def _stream_turn(resp, calls, suppress_text=False):
     """Consume ONE streamed completion. Yields text deltas to the caller and
     fills `calls` (index -> {id, name, args}) with any tool calls the model
     emitted. Returns the text it yielded.
@@ -477,20 +533,23 @@ def _stream_turn(resp, calls):
                 continue
             if committed:
                 out += delta
-                yield delta
+                if not suppress_text:
+                    yield delta
                 continue
             buf += delta
             if len(buf) >= _TOOL_DECIDE_CHARS:
                 committed = True
                 print(f"[timing] first token {int((time.time() - t0) * 1000)}ms")
                 out += buf
-                yield buf
+                if not suppress_text:
+                    yield buf
                 buf = ""
         if buf and not calls:
             if not committed:
                 print(f"[timing] first token {int((time.time() - t0) * 1000)}ms")
             out += buf
-            yield buf
+            if not suppress_text:
+                yield buf
     finally:
         try:
             resp.close()
@@ -529,30 +588,6 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     today = date.today().strftime("%B %d, %Y")
 
-    # --- live-web questions: search, then let the one model answer from it ---
-    # This used to hop to groq/compound-mini, which answered by itself, was not
-    # streamed, and had a 14s timeout plus a retry — so a message containing
-    # "news" could sit silent for half a minute and then arrive all at once.
-    # Now the snippets go into the context block and the normal streamed reply
-    # uses them, which means live-web answers stream like everything else.
-    search_results = ""
-    _web_error_msg = None
-    if intents._needs_web(user_input):
-        _t_web = time.time()
-        raw = search_web(user_input)
-        print(f"[timing] web search {int((time.time() - _t_web) * 1000)}ms")
-        if raw == "__NO_RESULTS__":
-            _web_error_msg = "I couldn't find anything on that."
-        elif raw == "__SEARCH_ERROR__":
-            _web_error_msg = "I couldn't reach the web right now."
-        else:
-            search_results = raw
-
-    # If web search completely failed, short-circuit rather than hallucinating
-    if _web_error_msg and not search_results:
-        yield _web_error_msg
-        return
-
     # --- memory retrieval (run concurrently — independent network/DB round-trips,
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
     _ctx = {"mem": "", "facts": "", "know": "", "sessions": ""}
@@ -577,7 +612,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     # Build the context string injected as a system message just before recent history.
     # Keeping it as a single message (rather than modifying the system prompt) means
-    # per-turn data (today's date, web results) stays out of the prompt cache.
+    # per-turn data stays out of the prompt cache. Live information is no longer
+    # keyword-injected here: web_search is a normal tool selected by the brain.
     # Hard caps on retrieved context. Without these the block grows with the
     # database — more facts, longer recalled exchanges — and every turn pays
     # to reprocess it, which is the slow creep that shows up after a database
@@ -587,8 +623,6 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
 
     context_parts = [f"Today is {today}."]
-    if search_results:
-        context_parts.append(f"Relevant web results: {_cap(search_results, 2000)}.")
     context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200) or 'none'}.")
     context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200) or 'none'}.")
     if knowledge_ctx:
@@ -677,7 +711,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     def _do_groq_call(msgs=None):
         """Inner helper so the retry logic below can call the same request.
-        chat_create handles the gpt-oss → llama fallback internally."""
+        chat_create handles the primary → availability fallback internally."""
         return chat_create(
             messages=messages if msgs is None else msgs,
             # Voice keeps the old tight cap; chat gets room for real answers —
@@ -685,13 +719,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             max_tokens=250 if voice_mode else 1200,
             stream=True,
             timeout=12.0 if voice_mode else 30.0,
+            reasoning_effort=reasoning_effort_for(user_input),
             **_tools_kw,
         )
 
-    # Auto-retry on rate limits (up to 3×) and transient timeouts (up to 2×).
-    # Any other API error is logged and surfaced as a spoken fallback.
+    # The provider has already attempted cloud -> local fallback. These retries
+    # cover a transient failure only when neither brain completed the request.
     import groq as _groq_mod
     resp = None
+    closing = False
     try:
         resp = _do_groq_call()
     except _groq_mod.RateLimitError:
@@ -707,8 +743,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             except Exception as e:
                 print(f"[groq] rate limit retry failed: {e}")
                 _GROQ_OK = False
-                if window: show_issue(window, "Groq is rate-limiting Ted right now — give it a moment.")
-                yield "I'm being throttled right now — give me a moment and try again."
+                if window: show_issue(window, "Both Ted brains are temporarily unavailable.")
+                yield "Both my online and offline brains are unavailable right now — try again in a moment."
                 return
     except (_groq_mod.APITimeoutError, Exception) as e:
         if "timeout" in str(e).lower() or isinstance(e, _groq_mod.APITimeoutError):
@@ -719,8 +755,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             except Exception as e2:
                 print(f"[groq] timeout retry failed: {e2}")
                 _GROQ_OK = False
-                if window: show_issue(window, "Ted can't reach Groq (timeout) — check your connection.")
-                yield "I can't reach my brain right now — try again in a moment."
+                if window: show_issue(window, "Both Ted brains timed out.")
+                yield "Both my online and offline brains timed out — try again in a moment."
                 return
         elif "tool_use_failed" in str(e):
             # The model emitted a syntactically broken call, or invented a tool
@@ -736,14 +772,14 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 yield "I tried to use a tool for that and it didn't take — say it again?"
                 return
         else:
-            print(f"[groq] API error: {e}")
-            error_log.error(f"Groq API error: {e}\n{traceback.format_exc()}")
+            print(f"[provider] both brains failed: {e}")
+            error_log.error(f"Provider failure: {e}\n{traceback.format_exc()}")
             _GROQ_OK = False
-            if window: show_issue(window, "Groq API error — Ted couldn't generate a reply.")
+            if window: show_issue(window, "Both Ted brains failed to generate a reply.")
             yield "I ran into an issue — give me a second and try again."
             return
 
-    _GROQ_OK = True   # we have a response object — Groq is reachable
+    _GROQ_OK = providers.active_provider() == "groq"
     full_reply = ""
     # Results from the most recent round that produced any. If the loop ends
     # without the model writing a sentence, these are said instead of nothing.
@@ -751,32 +787,67 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # rotated "didn't quite catch that", which blames the user for a tool that
     # actually ran.
     last_results = []
-    # (name, arguments) already executed this turn. gpt-oss will happily call
-    # the same tool again after seeing its result, and for a slow tool like
+    # (name, arguments) already executed this turn. Models can call the same
+    # tool again after seeing its result, and for a slow tool like
     # screen_describe — screenshot plus a vision call — three rounds of that is
     # a minute of silence with two wasted screenshots.
     seen_calls = set()
+    action_results = []
+    had_non_action = False
+    planning_sequence = _multi_step_request(user_input)
     try:
         msgs = messages
         rounds = 0
+        total_calls = 0
         while True:
             rounds += 1
             calls = {}
-            full_reply += yield from _stream_turn(resp, calls)
+            turn_text = yield from _stream_turn(
+                resp, calls, suppress_text=bool(action_results))
 
             # Plain conversation: the answer already streamed. One round trip.
             if not calls or tool_runtime is None:
+                if action_results:
+                    # Action claims come only from handlers. A model's final
+                    # narration may be appended for mixed read+act chains, but
+                    # it can never replace the verified action results.
+                    parts = [str(r) for r in action_results]
+                    if had_non_action and turn_text.strip():
+                        parts.append(turn_text.strip())
+                    final = " ".join(parts)
+                    full_reply += final
+                    yield final
+                else:
+                    full_reply += turn_text
                 break
 
             ordered = [calls[i] for i in sorted(calls)]
-            fresh = [c for c in ordered
-                     if (c["name"], c["args"] or "{}") not in seen_calls]
-            if not fresh:
+            prepared = []
+            for c in ordered:
+                parse_error = None
+                try:
+                    args = json.loads(c["args"] or "{}")
+                except Exception:
+                    args = None
+                    parse_error = "arguments were not valid JSON"
+                schema = tool_runtime.schema_by_name.get(c["name"])
+                if schema is None:
+                    parse_error = f"unknown tool '{c['name']}'"
+                elif parse_error is None:
+                    parse_error = validate_tool_arguments(schema, args)
+                canonical = (c["name"], json.dumps(args, sort_keys=True)
+                             if isinstance(args, dict) else c["args"] or "{}")
+                if canonical in seen_calls:
+                    continue
+                seen_calls.add(canonical)
+                prepared.append((c, args, parse_error))
+            if not prepared:
                 print("[tools] model repeated a call it already made — stopping")
                 break
-            for c in fresh:
-                seen_calls.add((c["name"], c["args"] or "{}"))
-            ordered = fresh
+            if total_calls + len(prepared) > MAX_TOOL_CALLS:
+                print(f"[tools] hit MAX_TOOL_CALLS ({MAX_TOOL_CALLS})")
+                break
+            total_calls += len(prepared)
             msgs = msgs + [{
                 "role": "assistant",
                 "content": "",
@@ -784,18 +855,25 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                                 "type": "function",
                                 "function": {"name": c["name"],
                                              "arguments": c["args"] or "{}"}}
-                               for n, c in enumerate(ordered)],
+                               for n, (c, _args, _err) in enumerate(prepared)],
             }]
 
             results = []
             all_actions = True
-            for n, c in enumerate(ordered):
+            action_failed = False
+            for n, (c, args, validation_error) in enumerate(prepared):
                 if not c["name"]:
                     continue
-                try:
-                    args = json.loads(c["args"] or "{}")
-                except Exception:
-                    args = {}
+                if validation_error:
+                    all_actions = False
+                    repair = (f"TOOL_ARGUMENT_ERROR for {c['name']}: {validation_error}. "
+                              "Correct the arguments and call the tool again; nothing ran.")
+                    print(f"[tools] rejected {c['name']}: {validation_error}")
+                    msgs.append({"role": "tool",
+                                 "tool_call_id": c["id"] or f"call_{n}",
+                                 "name": c["name"],
+                                 "content": repair})
+                    continue
                 result = tool_runtime.dispatch(c["name"], args)
                 if result is None:
                     # None means the handler crashed or the tool is unknown.
@@ -805,29 +883,38 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 results.append(result)
                 if c["name"] not in tool_runtime.action_tools:
                     all_actions = False
+                    had_non_action = True
                 else:
                     # The hook decides whether this reads as a failure worth
                     # surfacing on the HUD — that check lives in the tool layer.
                     tool_runtime.on_failure(result)
+                    action_results.append(result)
+                    action_failed = action_failed or tool_runtime.is_failure(result)
                 msgs.append({"role": "tool",
                              "tool_call_id": c["id"] or f"call_{n}",
+                             "name": c["name"],
                              "content": str(result)})
 
             if results:
                 last_results = results
 
-            # ACTION tools report ground truth. Their result IS the reply — say it
-            # verbatim and STOP. Never let the model take another round to
-            # re-narrate; that is where "Spotify isn't open" becomes a cheerful
-            # fake "Playing your music!".
+            # A simple action still completes in one model call. A request that
+            # explicitly contains a sequence keeps planning after successful
+            # actions, so "open Notes and then type..." can issue the dependent
+            # second tool. Failed actions stop immediately for safety.
             if all_actions and results:
-                final = " ".join(str(r) for r in results)
-                full_reply += final
-                yield final
-                break
+                if action_failed or not planning_sequence or len(results) > 1:
+                    final = " ".join(str(r) for r in action_results)
+                    full_reply += final
+                    yield final
+                    break
 
             if rounds >= MAX_TOOL_ROUNDS:
                 print(f"[tools] hit MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS})")
+                if action_results and not full_reply.strip():
+                    final = " ".join(str(r) for r in action_results)
+                    full_reply += final
+                    yield final
                 break
 
             try:
@@ -835,6 +922,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             except Exception as e:
                 print(f"[groq] follow-up call failed: {e}")
                 break
+    except GeneratorExit:
+        # speak_streaming closes this generator when the user interrupts or the
+        # window exits. Yielding a fallback from ``finally`` during close raises
+        # "generator ignored GeneratorExit" and was leaking into launch logs.
+        closing = True
+        raise
     except Exception as e:
         print(f"[groq] stream error mid-response: {e}")
         error_log.error(f"Groq stream error: {e}\n{traceback.format_exc()}")
@@ -842,6 +935,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         # One exit for every path above. A turn that ran tools but produced no
         # sentence says what the tools returned; a turn that produced nothing at
         # all says so honestly. Never silence.
+        if closing:
+            return
         if not full_reply.strip():
             if last_results:
                 final = " ".join(str(r) for r in last_results)

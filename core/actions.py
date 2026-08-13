@@ -194,15 +194,24 @@ def open_app(app_name):
             r = subprocess.run(["open", "-a", bundle], capture_output=True, timeout=8)
         except Exception:
             return f"I couldn't open {bundle}."
-        return (f"Pulling up {bundle}." if r.returncode == 0
-                else f"I couldn't open {bundle} — it may not be installed.")
+        if r.returncode != 0:
+            return f"I couldn't open {bundle} — it may not be installed."
+        # ``open`` returning zero only means Launch Services accepted the
+        # request. Verify that the process actually appears before claiming
+        # success; permissions and damaged app bundles can otherwise produce a
+        # convincing lie.
+        for _ in range(10):
+            if any(bundle.lower() == name.lower() for name in get_running_apps()):
+                return f"Opened {bundle}."
+            time.sleep(0.2)
+        return f"macOS accepted the request, but I couldn't verify that {bundle} opened."
     if key in WEB_APPS:
         try:
             r = subprocess.run(["open", WEB_APPS[key]], capture_output=True, timeout=8)
         except Exception:
             return f"I couldn't open {key.title()}."
-        return (f"Opening {key.title()} in your browser." if r.returncode == 0
-                else f"I couldn't open {key.title()} in your browser.")
+        return (f"I sent {key.title()} to your default browser, but can't verify the page."
+                if r.returncode == 0 else f"I couldn't open {key.title()} in your browser.")
     # Last-ditch: let macOS try to resolve the name itself. `open -a` exits non-zero
     # when the app doesn't exist, so check before confirming we launched anything —
     # otherwise a misheard word makes Ted claim it opened an app that isn't there.
@@ -210,9 +219,13 @@ def open_app(app_name):
         r = subprocess.run(["open", "-a", app_name], capture_output=True, timeout=8)
     except Exception:
         return f"I couldn't open {app_name}."
-    if r.returncode == 0:
-        return f"Pulling up {app_name}."
-    return f"I couldn't find an app called {app_name}."
+    if r.returncode != 0:
+        return f"I couldn't find an app called {app_name}."
+    for _ in range(10):
+        if any(app_name.lower() == name.lower() for name in get_running_apps()):
+            return f"Opened {app_name}."
+        time.sleep(0.2)
+    return f"macOS accepted the request, but I couldn't verify that {app_name} opened."
 
 
 # Spoken references to "whatever app I'm looking at" — resolved to the frontmost app.
@@ -569,7 +582,10 @@ def _answer_location_question(user_input):
 
 
 def detect_action(user_input):
-    """Check whether the input maps to a built-in action (date, open app/URL).
+    """Answer local date/location facts before invoking a model.
+
+    App and website requests deliberately go through the model's tool menu so
+    they can participate in multi-step plans and honor remembered preferences.
     Returns a spoken response string if handled, or None to let the LLM answer."""
     date_answer = answer_date_question(user_input)
     if date_answer:
@@ -578,18 +594,5 @@ def detect_action(user_input):
     loc_answer = _answer_location_question(user_input)
     if loc_answer:
         return loc_answer
-
-    text = user_input.lower()
-
-    if text.startswith("open "):
-        target = text[5:].strip()
-        # A target with "." and no spaces looks like a domain (e.g. "github.com") → URL.
-        # Multi-word targets (e.g. "open up my playlist") fall through to the LLM.
-        if "." in target and " " not in target:
-            return open_website(target)
-        # Only intercept if the target matches a known app name exactly —
-        # otherwise let "open up my playlist" etc. fall through to the LLM.
-        if target in APPS:
-            return open_app(target)
 
     return None  # nothing matched — let the LLM handle it

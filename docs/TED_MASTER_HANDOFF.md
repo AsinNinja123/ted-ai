@@ -218,9 +218,9 @@ across the whole reply; **webrtcvad + autocorrelation pitch gate** (`PITCH_MIN =
 (`BARGE_WINDOW 15`, `BARGE_FRAMES 10`, `BARGE_PITCH_FRAMES 4`); `BARGE_MARGIN` 3.0 → 2.0
 with floor 0.012 and ceiling 0.030; `TED_DEBUG_BARGE=1` to make it observable.
 
-**Aug 5, 22:36 — echo cancellation was removed from the Swift binary.** Apple's Voice
-Processing ducked Spotify audio. The `"aec"` mode name in the code is now historical and
-means nothing. On speakers, barge-in rests entirely on energy + VAD + pitch.
+**Aug 5, 22:36 — echo cancellation was temporarily removed from the Swift binary, then
+restored before the Aug 6 baseline.** Apple's Voice Processing had ducked Spotify audio;
+the restored path uses macOS 14's minimum other-audio ducking setting.
 
 ### Phase 4 — Commit, migration stage 1, housekeeping (Aug 6–9)
 
@@ -249,24 +249,23 @@ paths; ~1,100 insertions / ~544 deletions. **None of it is committed.** See §7 
 
 | Layer | Current | Replaced |
 |---|---|---|
-| **Main LLM** | Groq `openai/gpt-oss-120b` (replies + tool calling), `reasoning_effort=low` for latency → auto-fallback to `llama-3.3-70b-versatile` on rate limit / 5xx / 413 / 404 | Ollama + LLaMA 3.2 3B, local |
-| **Fast model** | `llama-3.1-8b-instant` — fact extraction, session summaries | — |
-| **Vision** | Llama-4-Scout via Groq — screenshot description | — |
-| **Live info** | `groq/compound-mini` (searches server-side before answering) → DuckDuckGo (`ddgs`) fallback | raw DuckDuckGo |
-| **Second brain** | optional `claude-sonnet-5` relay via `ANTHROPIC_API_KEY` — "ask Claude…". **Config slot exists and is empty.** | — |
-| **STT** | Groq Whisper cloud (`USE_GROQ_STT = True`); local `openai-whisper` as fallback | local Whisper only |
+| **Main LLM** | Free-tier Groq `qwen/qwen3.6-27b` → local Ollama `qwen3.5:35b-a3b` on any cloud/key/network failure | GPT-OSS 120B + hosted fallback |
+| **Vision** | Same Qwen provider route — hosted 3.6, local 3.5 fallback | separate Groq-only vision call |
+| **Live info** | Model-selected `web_search` tool over DuckDuckGo (`ddgs`) | keyword injection before reasoning |
+| **STT** | Groq Whisper cloud (`USE_GROQ_STT = True`) with automatic local `openai-whisper` fallback | cloud failure ended capture |
 | **TTS** | **Kokoro** ONNX local, voice `am_michael` (325 MB model + 28 MB voices); ElevenLabs optional | ElevenLabs "Daniel" |
-| **Audio** | native Swift `ted_audio` binary (full-duplex, **no AEC**) over a Unix socket, or `sounddevice` fallback; webrtcvad + pitch barge-in | fixed 5-second recording |
+| **Audio** | native Swift `ted_audio` binary (full-duplex + Apple Voice Processing AEC) over stdio, or `sounddevice` fallback; webrtcvad + pitch barge-in | fixed 5-second recording |
 | **Wake** | none required — attention window + "Hey Ted" from standby | OpenWakeWord `"hey jarvis"` |
 | **Memory** | SQLite `data/memory.db` | Neo4j ← ChromaDB |
 | **Knowledge base** | ChromaDB + fastembed, PDF intake from `inbox/` | — |
 | **UI** | pywebview + `ui/ted_hud.html` | Streamlit |
 | **Dashboard** | Flask on `127.0.0.1:5175`, auto-started from `hud.py` in a daemon thread | — |
-| **Remote** | Flask on `:5150`, GET `/ask?token=…&text=…` for iOS Shortcuts | — |
-| **Tests** | 6 suites, 207 checks as of `9fa57bc` | none |
+| **Remote** | Flask on `:5150`; disabled without a token, authenticated LAN access for iOS Shortcuts when `REMOTE_TOKEN` is set | — |
+| **Tests** | 10 suites, including provider, single-call, safety, and pipeline coverage | none |
 
-**Ted is 100% cloud for inference.** There is no local model. He is fully broken offline.
-This is a deliberate reversal of the original vision — see §12.5.
+Ted's normal fast path is hosted on Groq's free tier, but the complete reasoning,
+tool-calling, and vision path can fail over to the downloaded 24 GB Qwen model on
+the Mac. Kokoro, memory, knowledge retrieval, and local Whisper are also offline.
 
 ### 4.2 The decision ladder — how a message becomes an answer
 
@@ -309,7 +308,8 @@ this should be exactly one stage emitting one decision event.
 
 ### 4.3 Gate 8 in detail — what `ask_streaming` does per turn
 
-1. **Web check** — `_needs_web()`; if live info is needed, compound model searches, DDG fallback
+1. **Tool selection** — current or explicitly searched information is handled by
+   the model-selected `web_search` tool and returned to the same reasoning loop
 2. **Parallel memory retrieval on four threads** (4 s join):
    - recent related exchanges — FTS5 keyword search (`memory.py`)
    - known facts about Charlie (`facts` table)
@@ -725,7 +725,7 @@ document.**
 | **Streamlit UI + 5-second record button** | Replaced by pywebview and always-listening. |
 | **OpenWakeWord / "hey jarvis"** | Replaced by the attention window. Not in `requirements.txt`, not imported. |
 | **Local LLM via Ollama** | Never made it to the Mac. See §12.5. |
-| **Native Swift AEC (echo cancellation)** | Built, worked, **removed Aug 5** because Apple's Voice Processing ducked Spotify audio. The Swift engine is still used for full-duplex I/O; the `"aec"` mode name is historical. |
+| **Native Swift AEC (echo cancellation)** | Built and active. Apple Voice Processing is enabled; on macOS 14+ other-audio ducking is set to minimum. |
 | **Microsoft Graph for email** | Stalled on the MSAL `offline_access` scope error. IMAP shipped instead. Recoverable — §8.5. |
 | **Fireworks-store features** (sales tally, goals, countdown, store mode) | Seasonal, deleted Jul 2 in `3dd744c`. |
 | **Inventory / Sortly tracking** | Deleted with the above. **Keep the design calls if it ever returns:** math in Python not the LLM; folders → categories; Min Level → reorder point; and the seasonality warning — naive units-per-day velocity is worse than useless against a July 4th spike. |
@@ -755,18 +755,12 @@ Related and also correctly absent:
 The decision was **routing, not named sub-agents**. It has held. Don't add a "Ted researcher"
 and a "Ted coder."
 
-### 11.3 No local model — and this is now a choice, not an accident
+### 11.3 Local fallback is active
 
-[stated, Aug 2026] **No local AI model in Ted now or planned.** Cloud models only — Groq for
-simple work, stronger Claude/GPT models for specific use cases.
-
-This is a full reversal of the April vision (100% local, offline, private, no subscriptions)
-and of the June plan (Qwen 3 35B-A3B via Ollama as the target local brain, with the Groq
-hybrid evaluated as superior for real-time voice latency — that evaluation is what won).
-The M5 Pro was bought partly to support local models and they aren't being used for Ted.
-
-**Consequence to state plainly: Ted is fully broken offline.** All fallback chains are
-cloud→cloud. If offline capability is ever wanted again it's a new project, not a fallback.
+As of Aug 13, Ted uses free hosted inference for normal latency but has a genuine
+offline fallback: Ollama `qwen3.5:35b-a3b`, Q4_K_M, approximately 24 GB, with
+reasoning, tools, vision, and a 262K context window. It was downloaded and verified
+on Charlie's 48 GB M5 Pro. Do not remove it merely because Groq is usually faster.
 
 ### 11.4 Also intentionally absent
 
@@ -942,7 +936,7 @@ Also present and stale: a leftover Neo4j password. Remove it.
 | **The probe** | Round 1 of `_try_tools`, a cheap "does this need a tool?" call |
 | **Attention window** | Idle timeout after which Ted needs "Hey Ted" again |
 | **Barge-in** | Interrupting Ted by talking over him |
-| **AEC** | Acoustic echo cancellation — **removed Aug 5**; the name lingers in code |
+| **AEC** | Acoustic echo cancellation — active in the native Swift audio engine |
 | **The monolith** | `core/app.py`, 118 KB |
 | **Migration / stage 1** | The event-bus decomposition; stage 1 = characterization tests, done |
 | **Cowork vs Claude Code** | Cowork = Linux sandbox, can read/edit but not run Ted. Claude Code = on the Mac, can run it. |
@@ -991,8 +985,8 @@ does) → `docs/ROADMAP.md` (how it got here) → `core/app.py::_respond` top to
 5. **Solve the daemon** (`launchd`) — nothing proactive is possible without it.
 6. Then: merge Gates 6 and 8, gut Gate 5, wire difficulty-based model routing.
 
-**Do not:** add keyword triggers, give Ted the ability to edit its own code, add a local
-model, rebuild named lists, re-attempt fine-tuning or voice cloning, or plan off any
+**Do not:** add keyword triggers, give Ted the ability to edit its own code,
+rebuild named lists, re-attempt fine-tuning or voice cloning, or plan off any
 document without re-checking the repo first.
 
 ---

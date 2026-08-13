@@ -9,14 +9,13 @@ Endpoints:
     GET  /status                  →  {"status": "ok", "muted": bool}
 
 Security: set REMOTE_TOKEN in config.py and every request must carry it —
-either an  X-Ted-Token  header or a  &token=  query parameter. With no token
-configured, anyone on your Wi-Fi can command Ted (fine at home, think twice
-on shared networks).
+either an X-Ted-Token header or a &token= query parameter. Without a token the
+server stays disabled; it is never exposed unauthenticated.
 """
 
 import threading
-import time
 import logging
+import hmac
 
 try:
     from config import REMOTE_PORT
@@ -28,11 +27,23 @@ except Exception:
     REMOTE_TOKEN = ""
 
 
+def _bind_host(token=REMOTE_TOKEN):
+    """Expose the endpoint to the LAN only when authentication is configured."""
+    return "0.0.0.0" if str(token).strip() else "127.0.0.1"
+
+
+def _enabled(token=REMOTE_TOKEN):
+    return bool(str(token).strip())
+
+
 class RemoteServer:
     def __init__(self, api):
         self._api = api
 
     def start(self):
+        if not _enabled():
+            print("[remote] disabled — set REMOTE_TOKEN to enable authenticated LAN access")
+            return
         try:
             from flask import Flask, request, jsonify
         except ImportError:
@@ -48,10 +59,10 @@ class RemoteServer:
 
         def _authorized():
             if not REMOTE_TOKEN:
-                return True
+                return False
             supplied = (request.headers.get("X-Ted-Token")
                         or request.args.get("token") or "")
-            return supplied == REMOTE_TOKEN
+            return hmac.compare_digest(str(supplied), str(REMOTE_TOKEN))
 
         @app.route("/status", methods=["GET"])
         def status():
@@ -72,12 +83,10 @@ class RemoteServer:
             done = threading.Event()
 
             def flow():
-                for _ in range(400):
-                    if api._busy.acquire(blocking=False):
-                        break
-                    time.sleep(0.05)
-                else:
-                    api._busy.acquire()
+                if not api._busy.acquire(timeout=20.0):
+                    result[0] = "Ted is still busy with another request."
+                    done.set()
+                    return
                 try:
                     api._respond(text, echo_user=False)
                     result[0] = api.last_reply
@@ -91,12 +100,13 @@ class RemoteServer:
                     done.set()
 
             threading.Thread(target=flow, daemon=True).start()
-            done.wait(timeout=30.0)
+            if not done.wait(timeout=30.0):
+                return jsonify({"error": "Ted did not finish within 30 seconds"}), 504
             return jsonify({"reply": result[0] or ""})
 
         def run():
-            app.run(host="0.0.0.0", port=REMOTE_PORT, threaded=True)
+            app.run(host=_bind_host(), port=REMOTE_PORT, threaded=True)
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
-        print(f"[remote] HTTP server listening on port {REMOTE_PORT}")
+        print(f"[remote] authenticated HTTP server listening on LAN port {REMOTE_PORT}")

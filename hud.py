@@ -26,9 +26,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 TED_VERSION = "v4"
 print(f"▶ Launching Ted {TED_VERSION}  ({os.path.abspath(__file__)})")
 
-from config import GROQ_API_KEY  # required — app won't start without this
+try:
+    from config import GROQ_API_KEY
+except Exception:
+    GROQ_API_KEY = ""
 if not GROQ_API_KEY:
-    sys.exit("FATAL: GROQ_API_KEY is missing from config.py — add it and restart.")
+    print("[provider] No Groq key configured — Ted will use the local Ollama brain.")
 
 import webview
 

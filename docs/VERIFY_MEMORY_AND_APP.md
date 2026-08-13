@@ -96,7 +96,7 @@ The periodic flush (every 12 exchanges) and the shutdown write upsert the same r
   or add openers to `_ROUTINE_OPENERS` in `core/llm.py`.
 - **Nothing ever gets remembered.** Check the log for
   `[memory] session summary returned non-JSON` — that means `FAST_MODEL`
-  (`llama-3.1-8b-instant`) is ignoring JSON mode, same failure shape as the fact
+  (`openai/gpt-oss-120b`) is ignoring JSON mode, same failure shape as the fact
   extractor bug. The salvage parser should catch it; if it doesn't, log the raw reply.
 - **Startup got slower.** `format_memories_for_prompt()` runs in the existing parallel
   context-load block with a 4 s join, so it shouldn't — but it is one more SQLite read

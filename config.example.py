@@ -3,8 +3,12 @@
 # SETUP:  cp config.example.py config.py   then fill in your real values.
 # config.py is gitignored so your keys never get committed.
 
-# ── LLM (required) ───────────────────────────────────────────────────────────
-GROQ_API_KEY = ""          # required — get one free at https://console.groq.com
+# ── LLM ──────────────────────────────────────────────────────────────────────
+GROQ_API_KEY = ""          # optional free hosted brain; local Ollama works without it
+CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"
+LOCAL_CHAT_MODEL = "qwen3.5:35b-a3b"
+OLLAMA_URL = "http://127.0.0.1:11434"
+SITE_BROWSER_PREFERENCES = {"youtube": "Brave"}
 USE_GROQ_STT = True        # True = Groq Whisper cloud STT; False = local Whisper
 
 # ── TTS ──────────────────────────────────────────────────────────────────────
@@ -43,7 +47,7 @@ DAILY_BRIEFING_TIME = ""   # e.g. "7:30am" — Ted speaks the morning rundown da
 
 # ── Remote HTTP endpoint (iOS Shortcuts / curl access) ───────────────────────
 REMOTE_PORT = 5150         # Ted listens on this port for /ask requests
-REMOTE_TOKEN = ""          # set a passphrase to require it on every remote request
+REMOTE_TOKEN = ""          # required for LAN/iPhone access; blank disables the server
 
 # ── Spotify Web API (optional — playlists + song search; needs Premium) ──────
 # Create a free app at https://developer.spotify.com/dashboard, add the redirect
