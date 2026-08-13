@@ -10,6 +10,7 @@ table, shown in the History tab.
 """
 
 import os
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_file
 
@@ -19,13 +20,35 @@ app = Flask(__name__)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _allowed_hud_origin(origin):
+    """Accept Ted's local pywebview origin without opening memory to websites.
+
+    pywebview serves local HTML through a random ``127.0.0.1`` HTTP port, so
+    the HUD's browser origin is not reliably ``file://`` or ``null``. Only an
+    exact loopback hostname over HTTP is trusted; public and LAN origins remain
+    unable to read or mutate the dashboard API from browser JavaScript.
+    """
+    if origin in ("null", "file://"):
+        return True
+    try:
+        parsed = urlsplit(origin or "")
+        return (parsed.scheme == "http"
+                and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                and parsed.port is not None
+                and not parsed.username
+                and not parsed.password
+                and parsed.path in ("", "/")
+                and not parsed.query
+                and not parsed.fragment)
+    except (TypeError, ValueError):
+        return False
+
+
 @app.after_request
 def _cors(resp):
-    """The HUD is a file:// page (origin 'null') fetching this local server —
-    without these headers every chat-sidebar request would be blocked. Do not
-    grant arbitrary websites access: these endpoints can edit/delete memory."""
+    """Permit Ted's local HUD while blocking arbitrary browser origins."""
     origin = request.headers.get("Origin")
-    if origin == "null" or (origin or "").startswith("file://"):
+    if _allowed_hud_origin(origin):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type"

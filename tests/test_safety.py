@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import llm, remote, screen, tools  # noqa: E402
-from dashboard.app import app  # noqa: E402
+from dashboard.app import app, _allowed_hud_origin  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -36,12 +36,21 @@ client = app.test_client()
 evil = client.get("/api/version", headers={"Origin": "https://example.com"})
 hud = client.get("/api/version", headers={"Origin": "null"})
 webkit_hud = client.get("/api/version", headers={"Origin": "file://"})
+pywebview_hud = client.get(
+    "/api/version", headers={"Origin": "http://127.0.0.1:49152"})
 check("dashboard does not grant arbitrary websites CORS access",
       "Access-Control-Allow-Origin" not in evil.headers)
 check("file-based Ted HUD keeps dashboard CORS access",
       hud.headers.get("Access-Control-Allow-Origin") == "null")
 check("WKWebView file origin can save chat turns",
       webkit_hud.headers.get("Access-Control-Allow-Origin") == "file://")
+check("pywebview's random loopback origin can save chat turns",
+      pywebview_hud.headers.get("Access-Control-Allow-Origin")
+      == "http://127.0.0.1:49152")
+check("lookalike and credential-bearing origins stay blocked",
+      not _allowed_hud_origin("http://127.0.0.1.evil.test:49152")
+      and not _allowed_hud_origin("http://user@127.0.0.1:49152")
+      and not _allowed_hud_origin("https://127.0.0.1:49152"))
 
 print("\n— provider lifecycle —")
 retired = {"llama-3.1-8b-instant", "llama-3.3-70b-versatile",
