@@ -572,7 +572,7 @@ class TedApi:
         else:
             # An empty stream is a runtime failure, not a failure to understand
             # the user. Never blame the request with "didn't catch that."
-            err = "That request stopped before I could complete it. Nothing was changed."
+            err = self._explain_empty_turn()
             self.last_reply = err
             add_message(w, "ted", err)
             show_issue(w, err)
@@ -582,6 +582,49 @@ class TedApi:
         if not llm.groq_ok():
             set_state(w, "error")
         return barged
+
+    def _explain_empty_turn(self):
+        """Say what actually happened when a turn produced no text.
+
+        The old wording was one fixed sentence: "That request stopped before I
+        could complete it. Nothing was changed." It was wrong in the case that
+        matters most. A send_message turn arms a confirmation and then returns;
+        if the stream ends empty around it, the user is told nothing was changed
+        while Ted is in fact holding a message waiting for "yes" — the exact
+        cheerful-lie shape the honesty rule exists to prevent, pointed the other
+        way.
+
+        So: report the pending confirmation if there is one, name the brain that
+        failed if one did, and only fall back to the generic sentence when
+        neither is true.
+        """
+        pending = self._pending_tool_confirmation
+        if pending:
+            what = (pending.get("name") or "that").replace("_", " ")
+            return (f"I got as far as preparing {what} and stopped there. "
+                    "Nothing has been sent — say yes to go ahead, or anything "
+                    "else to cancel.")
+
+        if self._pending_msg is not None or self._pending_compose is not None:
+            return ("I stopped part way through and I'm still waiting on your "
+                    "answer to finish it. Nothing was sent.")
+
+        try:
+            provider = llm.providers.active_provider()
+            cloud_error = llm.providers.last_cloud_error()
+        except Exception:
+            provider, cloud_error = "", ""
+
+        if provider == "none" and cloud_error:
+            return ("Neither brain answered — the cloud model was unreachable "
+                    "and the local one didn't start. Nothing was changed.")
+        if provider == "ollama":
+            return ("The cloud model was unavailable so I fell back to the "
+                    "local one, and that didn't finish. Nothing was changed.")
+        if cloud_error:
+            return (f"The cloud model failed on that one. Nothing was changed.")
+
+        return "That request stopped before I could complete it. Nothing was changed."
 
     def _assistant_command(self, text):
         """Instrumented wrapper around the deterministic-command dispatch.

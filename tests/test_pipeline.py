@@ -594,5 +594,47 @@ n_before = len(conv)
 llm._remember_exchange("hello", "   ", conv)
 check("whitespace-only reply is never recorded", len(conv) == n_before)
 
+print("\n— an empty turn says what actually happened —")
+
+# Regression: the empty-stream message was one fixed sentence claiming nothing
+# was changed. A send_message turn arms a confirmation and returns; if the
+# stream then ends empty, that sentence tells the user nothing is pending while
+# Ted is holding a message waiting for "yes". Same shape as a cheerful lie about
+# an action, pointed the other way.
+api = make_api()
+api._pending_tool_confirmation = None
+api._pending_msg = None
+api._pending_compose = None
+_orig_active = llm.providers.active_provider
+_orig_err = llm.providers.last_cloud_error
+llm.providers.active_provider = lambda: "groq"
+llm.providers.last_cloud_error = lambda: ""
+check("a plain empty turn still says nothing was changed",
+      "Nothing was changed" in api._explain_empty_turn())
+
+api._pending_tool_confirmation = {"name": "send_message", "args": {}}
+msg = api._explain_empty_turn()
+check("an armed confirmation is reported, not denied",
+      "send message" in msg and "say yes" in msg.lower())
+check("…and it still says nothing was sent", "Nothing has been sent" in msg)
+
+api._pending_tool_confirmation = None
+api._pending_msg = ([("Gavin", "555")], "hi", time.time() + 20)
+check("a pending 'which one?' is reported too",
+      "waiting on your answer" in api._explain_empty_turn())
+
+api._pending_msg = None
+llm.providers.active_provider = lambda: "none"
+llm.providers.last_cloud_error = lambda: "Connection error."
+check("both brains failing is named as such",
+      "local one didn't start" in api._explain_empty_turn())
+
+llm.providers.active_provider = lambda: "ollama"
+check("a local-brain turn that died says so",
+      "fell back to the local one" in api._explain_empty_turn())
+
+llm.providers.active_provider = _orig_active
+llm.providers.last_cloud_error = _orig_err
+
 print(f"\n{'=' * 50}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
