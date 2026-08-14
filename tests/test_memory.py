@@ -28,7 +28,16 @@ memory.save_memory("what's a good road trip snack", "Beef jerky and trail mix.")
 memory.save_memory("remind me to water the plants", "Reminder set.")
 got = memory.get_memory("road trip")
 check("keyword recall finds the road-trip exchange", "Beef jerky" in got)
-check("recency fallback when no keyword hits", memory.get_memory("zzzunmatched") != "")
+# Changed Aug 14. This used to assert that an unmatched query still returned
+# the most recent exchanges "so the prompt always has some grounding context".
+# It cost ~300 tokens on every greeting, and what it returned was the same
+# recent conversation the prompt already carries as history — the same fact
+# from two places, billed twice. Retrieval now answers the question it was
+# asked: relevance, not recency. Nothing relevant means nothing returned.
+check("an unmatched query retrieves nothing rather than padding the prompt",
+      memory.get_memory("zzzunmatched") == "")
+check("…and the caller can still ask for recency explicitly",
+      memory.get_memory("zzzunmatched", fallback_recent=True) != "")
 
 print("\n— facts —")
 memory.save_fact("Charlie", "LIKES", "jazz")
