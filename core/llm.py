@@ -90,7 +90,10 @@ def stable_window(items, min_keep, chunk=8):
 _GROQ_OK = True
 
 def groq_ok():
-    return _GROQ_OK and providers.active_provider() == "groq"
+    # active_provider() is "none" until the first completion of the session, so
+    # gating on == "groq" alone made the HUD report a Groq outage at boot that
+    # had not happened. Only a real local-fallback turn counts as Groq down.
+    return _GROQ_OK and providers.active_provider() != "ollama"
 
 # ---------- persona ----------
 SYSTEM_PROMPT = (
@@ -804,6 +807,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             calls = {}
             turn_text = yield from _stream_turn(
                 resp, calls, suppress_text=bool(action_results))
+
+            # Text emitted ALONGSIDE a tool call was already streamed to the
+            # HUD and the speaker, so it has to land in full_reply too:
+            # full_reply is the turn that gets stored, and memory and the chat
+            # transcript are built from it. Dropping it desynced what Ted said
+            # from what Ted remembers saying. Suppressed rounds yield nothing,
+            # so there is nothing to capture once action_results is non-empty.
+            if calls and turn_text and not action_results:
+                full_reply += turn_text
 
             # Plain conversation: the answer already streamed. One round trip.
             if not calls or tool_runtime is None:

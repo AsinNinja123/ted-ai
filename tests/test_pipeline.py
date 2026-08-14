@@ -200,6 +200,14 @@ check("timers remain deterministic and instant",
       app_mod._use_deterministic_command("set a timer for five minutes"))
 check("explicit personal-memory edits remain deterministic",
       app_mod._use_deterministic_command("remember that I prefer Brave"))
+# Regression: gutting gate 5 dropped arithmetic through to the model. "Math in
+# Python, words in the LLM" exists because a model's wrong number looks exactly
+# like a right one — there is nothing to notice and nothing to log.
+check("arithmetic stays in Python, not the model",
+      app_mod._use_deterministic_command("what's 8 percent of 250")
+      and app_mod._use_deterministic_command("total on 3 at 45"))
+check("…without swallowing ordinary conversation that mentions numbers",
+      not app_mod._use_deterministic_command("what did you think of chapter 3"))
 
 api = make_api()
 api._respond("stop")

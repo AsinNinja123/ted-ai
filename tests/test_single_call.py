@@ -351,6 +351,63 @@ check("a repeated identical tool call is refused, not re-run", len(SHOTS) == 1)
 check("…and the turn still answers from the first result",
       out == "Your editor is open.")
 
+print("\n— what Ted said is what Ted remembers saying —")
+
+# Regression: a preamble long enough to commit (>_TOOL_DECIDE_CHARS) streams to
+# the HUD and the speaker, then a tool call arrives. That text was being dropped
+# from full_reply, so the stored turn — and therefore memory and the chat
+# transcript — was missing a sentence the user had already seen.
+_stored = {}
+_orig_remember = llm._remember_exchange
+llm._remember_exchange = lambda u, r, c: _stored.__setitem__("reply", r)
+
+preamble = "Let me pull that up for you, one moment while I check. "
+assert len(preamble) > llm._TOOL_DECIDE_CHARS
+llm.chat_create = scripted(
+    FakeStream([text_chunk(preamble),
+                tool_chunk(0, id="c1", name="get_weather", args="{}")]),
+    FakeStream([text_chunk("It is 71 and clear.")]),
+)
+out, _ = run("what's the weather", runtime(lambda n, a: "71F clear",
+                                          action_tools=set()))
+check("a committed preamble still reaches the user", preamble in out)
+check("…and is stored in the turn, not silently dropped",
+      preamble in _stored.get("reply", ""))
+check("…alongside the narrated result",
+      "It is 71 and clear." in _stored.get("reply", ""))
+
+# The honesty rule still wins: a SHORT preamble ahead of a failed action is
+# discarded, so the user sees only the failure. This is the invariant the fix
+# above must not have loosened.
+_stored.clear()
+llm.chat_create = scripted(
+    FakeStream([text_chunk("Sure! "),
+                tool_chunk(0, id="c1", name="open_app", args='{"name": "Spotify"}')]),
+)
+out, _ = run("open spotify", runtime(lambda n, a: "Spotify isn't installed.",
+                                     action_tools={"open_app"}))
+check("a short preamble before a failed action is still suppressed",
+      out == "Spotify isn't installed.")
+check("…and never enters the stored turn either",
+      _stored.get("reply", "") == "Spotify isn't installed.")
+
+llm._remember_exchange = _orig_remember
+
+print("\n— the health dot does not cry wolf —")
+
+# Regression: groq_ok() gated on active_provider() == "groq", but that is
+# "none" until the first completion of the session — so the HUD lit up a Groq
+# outage at boot, before Groq had been asked for anything.
+_orig_active = llm.providers.active_provider
+llm._GROQ_OK = True
+llm.providers.active_provider = lambda: "none"
+check("a fresh session is not reported as a Groq outage", llm.groq_ok())
+llm.providers.active_provider = lambda: "groq"
+check("a served cloud turn reports healthy", llm.groq_ok())
+llm.providers.active_provider = lambda: "ollama"
+check("a real fall back to the local brain reports Groq down", not llm.groq_ok())
+llm.providers.active_provider = _orig_active
+
 llm.chat_create = _orig_chat_create
 
 print("\n" + "=" * 50)

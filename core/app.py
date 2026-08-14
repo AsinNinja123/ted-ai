@@ -120,7 +120,21 @@ def _use_deterministic_command(text):
     if any(_matches(text, phrases) for phrases in
            (_BRIEF_PHRASES, _HOLD_PHRASES, _RECALL_PHRASES, _THINK_ENTER, _THINK_EXIT)):
         return True
-    if any(str(phrase).lower() in t for phrase in SHORTCUTS):
+    # Mirror the matcher gate 5 actually uses below (equality or prefix on the
+    # normalized text). A loose substring test disagreed with it: "think" is a
+    # shortcut, so "what did you think of chapter 3" was routed into the 750-line
+    # regex dispatch, which then declined to fire the shortcut anyway. Two places
+    # deciding "is this a command" by different rules is the bug class this
+    # rewrite exists to remove.
+    _t_norm = _normalize_cmd(text)
+    for _phrase in SHORTCUTS:
+        _k_norm = _normalize_cmd(str(_phrase))
+        if _k_norm and (_k_norm == _t_norm or _t_norm.startswith(_k_norm)):
+            return True
+    # Arithmetic stays in Python. A language model doing "8 percent of 250" is
+    # the exact failure the "math in Python, words in the LLM" rule exists to
+    # prevent, and it fails silently — a wrong number reads like a right one.
+    if _parse_calc(text) is not None:
         return True
     if (_parse_correction(text) or _parse_cancel_scheduled(text)
             or _is_timer_request(text) or _parse_reminder(text)):
