@@ -311,13 +311,19 @@ def play_track(query, artist=None):
             # limit=1 took whatever Spotify's relevance ranking put first, which
             # answered "Let It Go" with a Jordan Davis country song instead of
             # the Frozen one. Asking for several and keeping the most popular
-            # picks the track a person means by a bare title. When the caller
-            # named an artist, relevance already did the disambiguating and
-            # Spotify's own order is left alone.
-            res = sp.search(q=q, type="track", limit=1 if artist else 8)
+            # picks the track a person means by a bare title.
+            #
+            # This applies WITH an artist too. Asked to play a song from The
+            # Little Mermaid, the model sent artist="The Little Mermaid" — a
+            # film, not an artist — and the strict search happily returned a
+            # Royal Philharmonic Orchestra cover as its top relevance hit.
+            # Sorting by popularity inside the artist-filtered results costs
+            # nothing when the artist is real and rescues the case where the
+            # model put a soundtrack, a genre or a mood in that field.
+            res = sp.search(q=q, type="track", limit=8)
             items = res.get("tracks", {}).get("items", [])
             if items:
-                if not artist and len(items) > 1:
+                if len(items) > 1:
                     items = sorted(
                         items, key=lambda t: t.get("popularity", 0), reverse=True)
                 break

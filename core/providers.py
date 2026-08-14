@@ -49,6 +49,10 @@ except Exception:
 # Below, a rate limit falls through to the local brain, and failing that
 # surfaces as an error the user can read within a second or two.
 _groq = Groq(api_key=GROQ_API_KEY, max_retries=0) if GROQ_API_KEY else None
+
+# One-element list so the flag can be flipped from inside chat_create without a
+# global declaration, and so tests can reset it.
+_USAGE_SUPPORTED = [True]
 _active_provider = "none"
 _last_cloud_error = ""
 _last_model = ""
@@ -371,7 +375,15 @@ def chat_create(**kwargs):
         # streamed turn reports no token counts at all and the dashboard is
         # left estimating from character length — which is close enough to be
         # believed and wrong enough to matter next to an 8,000/minute ceiling.
-        if params.get("stream"):
+        #
+        # Guarded by a capability flag because older SDKs reject the argument
+        # outright, and this module treats ANY cloud exception as grounds to
+        # fall back to the local brain. Sending an unsupported kwarg therefore
+        # did not degrade token counting — it took the cloud offline entirely
+        # and quietly moved every conversation onto Ollama at ten times the
+        # latency. A feature that cannot be added safely must not be added
+        # unconditionally.
+        if params.get("stream") and _USAGE_SUPPORTED[0]:
             params.setdefault("stream_options", {"include_usage": True})
         # Tool-bearing foreground turns get Qwen's thinking mode. Tiny helper
         # calls (titles, JSON extraction, short compositions) do not: otherwise
@@ -381,7 +393,20 @@ def chat_create(**kwargs):
         params.setdefault("reasoning_effort", "none" if short_helper else "default")
         params.setdefault("reasoning_format", "hidden")
         try:
-            result = _groq.chat.completions.create(**params)
+            try:
+                result = _groq.chat.completions.create(**params)
+            except TypeError as exc:
+                # The installed SDK does not know this argument. Drop it, never
+                # try again this session, and say so once — exact token counts
+                # are a nice-to-have; a working cloud brain is not.
+                if "stream_options" not in str(exc) or not _USAGE_SUPPORTED[0]:
+                    raise
+                _USAGE_SUPPORTED[0] = False
+                params.pop("stream_options", None)
+                print("[provider] this groq SDK has no stream_options — token "
+                      "counts will be estimated. `pip install -U groq` for exact "
+                      "ones.")
+                result = _groq.chat.completions.create(**params)
             _active_provider, _last_model = "groq", CLOUD_CHAT_MODEL
             _last_cloud_error = ""
             return result

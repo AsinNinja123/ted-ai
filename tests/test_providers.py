@@ -138,5 +138,71 @@ providers.OLLAMA_URL = _orig_url
 providers.subprocess.Popen = _orig_popen
 
 print("\n" + "=" * 50)
+print("\n— an unsupported SDK argument must not take the cloud offline —")
+
+# Aug 14: stream_options was added to get exact token counts. The installed SDK
+# rejected it with a TypeError, chat_create treats ANY cloud exception as
+# grounds to fall back, and so every single conversation silently moved to the
+# local brain at ten times the latency. The log line said "Groq unavailable".
+# Groq was entirely available; we were sending it something it did not know.
+providers._USAGE_SUPPORTED[0] = True
+seen = []
+
+
+class _OldSDK:
+    class chat:
+        class completions:
+            @staticmethod
+            def create(**kw):
+                seen.append(dict(kw))
+                if "stream_options" in kw:
+                    raise TypeError(
+                        "Completions.create() got an unexpected keyword "
+                        "argument 'stream_options'")
+                return "cloud-response"
+
+
+_saved_groq, _saved_mode = providers._groq, providers.get_provider_mode()
+providers._groq = _OldSDK
+providers.set_provider_mode("auto")
+local_hits = []
+_saved_ollama = providers._ollama_create
+providers._ollama_create = lambda **kw: local_hits.append(1)
+
+out = providers.chat_create(messages=[], stream=True)
+check("an old SDK still gets a cloud answer", out == "cloud-response")
+check("…and the turn never fell through to the local brain", not local_hits)
+check("…the retry dropped only the unsupported argument",
+      "stream_options" in seen[0] and "stream_options" not in seen[1])
+check("…and the capability is remembered, not re-probed every turn",
+      providers._USAGE_SUPPORTED[0] is False)
+
+seen.clear()
+providers.chat_create(messages=[], stream=True)
+check("the next call does not send it again", "stream_options" not in seen[0])
+
+# A TypeError that is NOT about stream_options must still behave like a real
+# failure, or this rescue would swallow genuine bugs.
+providers._USAGE_SUPPORTED[0] = True
+
+
+class _Broken:
+    class chat:
+        class completions:
+            @staticmethod
+            def create(**kw):
+                raise TypeError("create() got an unexpected keyword argument 'nonsense'")
+
+
+providers._groq = _Broken
+providers.chat_create(messages=[], stream=True)
+check("an unrelated TypeError still falls back to the local brain",
+      len(local_hits) == 1)
+
+providers._groq, providers._ollama_create = _saved_groq, _saved_ollama
+providers._USAGE_SUPPORTED[0] = True
+providers.set_provider_mode(_saved_mode)
+
+
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
