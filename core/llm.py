@@ -506,7 +506,9 @@ class ToolRuntime:
 
     def __init__(self, schemas, dispatch, action_tools=(), on_failure=None,
                  is_failure=None):
-        self.schemas = schemas
+        # Keep one mutable list. The find_tools meta-tool can append schemas
+        # between reasoning rounds and the next provider call sees the expansion.
+        self.schemas = list(schemas)
         self.dispatch = dispatch
         self.action_tools = frozenset(action_tools)
         self.on_failure = on_failure or (lambda _m: None)
@@ -515,6 +517,18 @@ class ToolRuntime:
             (s.get("function") or {}).get("name"): s for s in schemas
             if (s.get("function") or {}).get("name")
         }
+
+    def add_schemas(self, schemas):
+        """Add newly discovered tools without duplicating the request menu."""
+        added = []
+        for schema in schemas:
+            name = (schema.get("function") or {}).get("name")
+            if not name or name in self.schema_by_name:
+                continue
+            self.schemas.append(schema)
+            self.schema_by_name[name] = schema
+            added.append(name)
+        return added
 
 
 # Tool-selection instructions. These live in the STATIC system message
@@ -531,7 +545,9 @@ TOOL_GUIDANCE = (
     "changing information, or when the user asks you to search or verify. Base "
     "current claims on its results and include the relevant source URLs in the answer. Input "
     "may contain speech-recognition errors or unusual phrasing: infer intent over "
-    "literal words. Use known preferences and reasonable low-risk defaults. Ask "
+    "literal words. The initial menu is intentionally small: if it lacks a needed "
+    "capability, call find_tools, then use the tools it loads. Use known preferences "
+    "and reasonable low-risk defaults. Ask "
     "one short question only when a missing value materially changes the result "
     "or makes an action unsafe."
 )
@@ -541,9 +557,7 @@ MAX_TOOL_CALLS = 10
 
 
 _NEXT_ACTION_RE = re.compile(
-    r"\b(?:and then|then|after that|followed by)\b|"
-    r"\band\s+(?:open|close|type|copy|read|check|set|play|send|add|search|"
-    r"show|hide|turn|write|put)\b",
+    r"\b(?:and then|then|after that|afterwards|followed by|once that)\b",
     re.I,
 )
 
@@ -626,7 +640,9 @@ def _stream_turn(resp, calls, suppress_text=False):
 
 # ---------- streaming conversation ----------
 def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
-                  window=None, voice_mode=False, tool_runtime=None):
+                  window=None, voice_mode=False, tool_runtime=None,
+                  context_scope="full", operational_context="",
+                  require_tool=False, min_action_calls=0):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
@@ -655,7 +671,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     today = date.today().strftime("%B %d, %Y")
 
-    # --- memory retrieval (run concurrently — independent network/DB round-trips,
+    # --- selective memory retrieval (run concurrently when this turn earns it) ---
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
     _ctx = {"mem": "", "facts": "", "know": "", "sessions": ""}
     def _load_mem():   _ctx["mem"]   = get_memory(user_input)
@@ -664,8 +680,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     def _load_know():
         if features.HAS_KNOWLEDGE:
             _ctx["know"] = features.knowledge.search(user_input, k=3)
-    _lk_threads = [threading.Thread(target=f, daemon=True)
-                   for f in (_load_mem, _load_facts, _load_know, _load_sessions)]
+    loaders = []
+    if context_scope in ("relevant", "full"):
+        loaders.extend((_load_mem, _load_know))
+    if context_scope == "full":
+        loaders.extend((_load_facts, _load_sessions))
+    _lk_threads = [threading.Thread(target=f, daemon=True) for f in loaders]
     _ctx_t0 = time.time()
     for _t in _lk_threads: _t.start()
     # ONE deadline for all four, not four independent timeouts. `join(timeout=4)`
@@ -706,8 +726,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
 
     context_parts = [f"Today is {today}."]
-    context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200) or 'none'}.")
-    context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200) or 'none'}.")
+    if operational_context:
+        context_parts.append(_cap(operational_context, 900) + ".")
+    if known_facts:
+        context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200)}.")
+    if past_memory:
+        context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200)}.")
     if knowledge_ctx:
         context_parts.append(f"Personal knowledge base: {_cap(knowledge_ctx, 1500)}.")
 
@@ -775,7 +799,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # caching skips reprocessing it, which directly cuts time-to-first-token.
     # (Putting instructions closest to the user message also makes the model
     # follow them more reliably — recency wins in attention.)
-    recent = stable_window(conversation[1:], MAX_HISTORY)
+    history_limit = MAX_HISTORY if context_scope == "full" else (8 if context_scope == "relevant" else 4)
+    recent = stable_window(conversation[1:], history_limit)
     # Tool guidance is concatenated onto the persona rather than sent as its own
     # message: it is byte-identical every turn, so it stays in the cached prefix.
     _system = conversation[0]
@@ -786,15 +811,29 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 + [{"role": "system", "content": context},
                    {"role": "user", "content": user_input}])
 
-    # The schemas are part of the static request shape, so prefix caching covers
-    # them — attaching them to every turn costs close to nothing, and it is what
-    # lets one call do the job the probe + streaming pair used to do.
-    _tools_kw = ({"tools": tool_runtime.schemas, "tool_choice": "auto"}
+    # Schemas still make one request do the old probe + response job, but they
+    # are real input tokens and the free tier bills them. Routing therefore
+    # supplies a focused initial menu instead of the complete catalog.
+    _tools_kw = ({"tools": tool_runtime.schemas,
+                  "tool_choice": "required" if require_tool else "auto"}
                  if tool_runtime is not None else {})
+    # Provider tokenizers differ, so this is intentionally a stable estimate,
+    # not fake precision. It makes prompt regressions visible in the same launch
+    # log as latency and rate-limit failures.
+    _prompt_chars = len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")))
+    if tool_runtime is not None:
+        _prompt_chars += len(json.dumps(tool_runtime.schemas, ensure_ascii=False,
+                                        separators=(",", ":")))
+    print(f"[prompt] scope={context_scope} tools="
+          f"{len(tool_runtime.schemas) if tool_runtime else 0} "
+          f"~{max(1, round(_prompt_chars / 4))} input tokens")
 
-    def _do_groq_call(msgs=None):
+    def _do_groq_call(msgs=None, force_tool=False):
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the primary → availability fallback internally."""
+        tool_kwargs = dict(_tools_kw)
+        if force_tool and tool_runtime is not None:
+            tool_kwargs["tool_choice"] = "required"
         return chat_create(
             messages=messages if msgs is None else msgs,
             # Voice keeps the old tight cap; chat gets room for real answers —
@@ -803,7 +842,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             stream=True,
             timeout=12.0 if voice_mode else 30.0,
             reasoning_effort=reasoning_effort_for(user_input),
-            **_tools_kw,
+            **tool_kwargs,
         )
 
     # The provider has already attempted cloud -> local fallback. These retries
@@ -888,6 +927,16 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     action_results = []
     had_non_action = False
     planning_sequence = _multi_step_request(user_input)
+    # App.py supplies an exact lower bound for recognized multi-target requests.
+    # Keep ask_streaming safe for direct callers too: an explicit dependency
+    # connector ("and then", "after that") necessarily asks for at least two
+    # completed stages even when the caller did not pre-compute a count.
+    effective_min_action_calls = max(
+        min_action_calls, 2 if planning_sequence else 1)
+    tool_retry_used = False
+    stream_retry_used = False
+    completion_retry_used = False
+    completed_tool_calls = 0
     try:
         msgs = messages
         rounds = 0
@@ -895,8 +944,32 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         while True:
             rounds += 1
             calls = {}
-            turn_text = yield from _stream_turn(
-                resp, calls, suppress_text=bool(action_results))
+            expecting_tool = (require_tool or tool_retry_used) and total_calls == 0
+            try:
+                turn_text = yield from _stream_turn(
+                    resp, calls,
+                    suppress_text=bool(action_results) or expecting_tool)
+            except Exception as e:
+                # Groq can accept a completion and only report malformed tool
+                # JSON while the stream is being consumed. Required-action text
+                # is suppressed and completed calls are recorded in ``msgs``, so
+                # one retry can safely continue without repeating real work.
+                incomplete_required_action = (
+                    tool_runtime is not None and require_tool
+                    and completed_tool_calls < effective_min_action_calls)
+                if (incomplete_required_action and not stream_retry_used
+                        and rounds < MAX_TOOL_ROUNDS):
+                    stream_retry_used = True
+                    print(f"[tools] provider stream failed before an action — "
+                          f"retrying once: {str(e)[:120]}", flush=True)
+                    msgs = msgs + [{"role": "system", "content": (
+                        "The previous tool response was malformed. Preserve any tools "
+                        "that already succeeded, do not repeat them, and continue the "
+                        "missing requested action now with valid tool arguments."
+                    )}]
+                    resp = _do_groq_call(msgs, force_tool=True)
+                    continue
+                raise
             if rounds == 1:
                 # The number that matches what the user felt: their key press to
                 # the first word on screen, retrieval, retries and all.
@@ -915,6 +988,59 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             if calls and turn_text and not action_results:
                 full_reply += turn_text
 
+            # A required-action turn that came back as prose is a model-routing
+            # failure, not a reason to make the user repeat himself. Retry once
+            # with an explicit correction and required tool choice. The first
+            # prose was held back above, so a fake "Opened it" never reaches him.
+            claimed_without_tool = (
+                not calls and tool_runtime is not None and total_calls == 0
+                and claims_completed_action(turn_text)
+            )
+            if (not calls and tool_runtime is not None and total_calls == 0
+                    and (expecting_tool or claimed_without_tool)
+                    and not tool_retry_used and rounds < MAX_TOOL_ROUNDS):
+                tool_retry_used = True
+                print("[honesty] action request returned no tool — retrying automatically",
+                      flush=True)
+                if not expecting_tool and turn_text:
+                    # Auto-mode prose may already have streamed before its claim
+                    # was recognizable. Preserve what the user saw in memory.
+                    full_reply += turn_text
+                msgs = msgs + [
+                    {"role": "assistant", "content": turn_text},
+                    {"role": "system", "content": (
+                        "That response described an action without performing it. "
+                        "Do not narrate. Call the required tool now; if a capability "
+                        "is missing, call find_tools first."
+                    )},
+                ]
+                try:
+                    resp = _do_groq_call(msgs, force_tool=True)
+                    continue
+                except Exception as e:
+                    print(f"[honesty] automatic tool retry failed: {e}")
+
+            if (not calls and action_results
+                    and completed_tool_calls < effective_min_action_calls
+                    and not completion_retry_used and rounds < MAX_TOOL_ROUNDS):
+                completion_retry_used = True
+                print(f"[tools] outcome incomplete ({completed_tool_calls}/"
+                      f"{effective_min_action_calls} actions) — continuing", flush=True)
+                msgs = msgs + [
+                    {"role": "assistant", "content": turn_text},
+                    {"role": "system", "content": (
+                        f"Only {completed_tool_calls} of at least "
+                        f"{effective_min_action_calls} "
+                        "requested actions ran. Continue with the missing target or "
+                        "stage now. Do not repeat completed calls."
+                    )},
+                ]
+                try:
+                    resp = _do_groq_call(msgs, force_tool=True)
+                    continue
+                except Exception as e:
+                    print(f"[tools] completion retry failed: {e}")
+
             # Plain conversation: the answer already streamed. One round trip.
             if not calls or tool_runtime is None:
                 if action_results:
@@ -928,6 +1054,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     full_reply += final
                     yield final
                 else:
+                    if expecting_tool:
+                        correction = ("I couldn't turn that request into a real action, "
+                                      "so nothing ran.")
+                        full_reply += correction
+                        yield correction
+                        break
                     full_reply += turn_text
                     # No tool ran this turn. If the model nonetheless said it
                     # did something, say so rather than letting it stand.
@@ -939,8 +1071,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                             "Model claimed a completed action with no tool call: "
                             f"{turn_text.strip()[:200]}")
                         correction = ("\n\n(Correction: I didn't actually run "
-                                      "anything just then — say it again and "
-                                      "I'll do it for real.)")
+                                      "anything just then.)")
                         full_reply += correction
                         yield correction
                 break
@@ -1005,6 +1136,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     result = "That didn't go through — something failed on my end."
                 print(f"[tools] {c['name']}({args}) → {str(result)[:80]}")
                 results.append(result)
+                if c["name"] != "find_tools":
+                    completed_tool_calls += 1
                 if c["name"] not in tool_runtime.action_tools:
                     all_actions = False
                     had_non_action = True
@@ -1027,7 +1160,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             # actions, so "open Notes and then type..." can issue the dependent
             # second tool. Failed actions stop immediately for safety.
             if all_actions and results:
-                if action_failed or not planning_sequence or len(results) > 1:
+                outcome_complete = completed_tool_calls >= effective_min_action_calls
+                if action_failed or (outcome_complete and not planning_sequence):
+                    final = " ".join(str(r) for r in action_results)
+                    full_reply += final
+                    yield final
+                    break
+                if outcome_complete and planning_sequence:
+                    # The lower bound accounts for each explicit dependent stage.
+                    # Once reached, another model round would only invite repeats.
                     final = " ".join(str(r) for r in action_results)
                     full_reply += final
                     yield final

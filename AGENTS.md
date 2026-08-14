@@ -25,9 +25,9 @@
 | Thinks with | `qwen/qwen3.6-27b` (cloud), falling back to `qwen3.5:35b-a3b` on local Ollama |
 | Hears / speaks | `whisper-large-v3-turbo` / `kokoro-v1.0.onnx` (local) |
 | Tools | 32 |
-| Routing | one streamed call; legacy path behind TED_LEGACY_LADDER=1 |
+| Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
 | Memory | 22 facts, ~450 chat turns, 3 session memories |
-| Tests | 378 checks across 13 suites |
+| Tests | 421 checks across 14 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**

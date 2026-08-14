@@ -348,21 +348,21 @@ was measured from *inside* the stream, after the request was accepted — every
 one of the waits above was outside the only number being printed. There are now
 `request accepted after Nms` and `turn to first output Nms`.
 
-### The open question, honestly stated
+### The prompt-weight question was addressed Aug 14
 
-Two things point at the model rather than the plumbing, and both are unresolved:
+The old request shape was roughly 6,400 input tokens, including all 32 schemas,
+against the live free-account limit of **8,000 TPM**. The new routing layer sends
+only relevant schemas and selects memory scope per request. Measured operational
+prompts are now roughly 1,900–2,300 estimated input tokens; a plain-chat tool menu
+is 461 schema characters versus 15,269 for the complete menu.
 
-1. Every message costs ~6,400 tokens (3,645 of it tool schemas) against a
-   **6,000 tokens-per-minute** free tier. One message per minute fits. A
-   conversation is by definition several in a row.
-2. The Qwen3.6 family has documented tool-calling failures — the model
-   "acknowledges needing to perform actions but produces no actual tool calls",
-   which is exactly the VS Code incident.
-
-Charlie's position, which deserves recording: **this behaviour predates the Qwen
-swap**, so neither of the above can be the whole story. The next session should
-resolve it with the logs, not with argument — `grep '\[provider\]'` for rate
-limits, `[honesty]` for phantom actions, `[timing]` for where the wait is.
+This does not make Qwen infallible. The first safe three-case run gave cloud Qwen
+2/3 (one malformed clipboard tool stream) at 1.0–2.8 seconds and local Qwen 3/3
+at 4.8–10.8 seconds. After extending recovery to incomplete multi-stage streams,
+the formerly failing cloud case passed on re-test. Cloud therefore remains primary
+for latency; local remains the availability fallback. Required actions retry one
+phantom narration or malformed provider stream automatically, and explicit
+multi-target requests are not considered complete after only the first action.
 
 ---
 
@@ -386,7 +386,7 @@ limits, `[honesty]` for phantom actions, `[timing]` for where the wait is.
 | **Dashboard** | Flask on `127.0.0.1:5175`, auto-started from `hud.py` in a daemon thread | — |
 | **Proactive** | `ted_daemon.py` under launchd, outside the HUD process | in-process thread that died with the window |
 | **Remote** | Flask on `:5150`, GET `/ask?token=…&text=…` for iOS Shortcuts | — |
-| **Tests** | 11 suites, **353 checks** | none |
+| **Tests** | see the generated current-state block in `AGENTS.md` | none |
 
 **One place a model name enters a request.** `core/providers.py` is new and owns
 provider routing: `chat_create()` tries Groq, and on *any* cloud failure —
@@ -404,9 +404,9 @@ web do not, and `USE_GROQ_STT = False` is the switch for the first of those.
 Lives in `TedApi._respond()` in `core/app.py`. Full write-up in
 `docs/DECISION_FLOW.md` (updated Aug 13, and more current than this summary).
 
-**This changed shape on Aug 12.** The old design had eight gates and made two
-LLM calls per message. It now has a short run of cheap local controls, then
-**one streamed reasoning call** with the whole tool menu attached.
+**This changed shape on Aug 12–14.** The old design had eight gates and made two
+LLM calls per message. It now has cheap local controls, a deliberately narrow
+zero-model app reflex, then **one streamed reasoning loop** with a focused menu.
 
 | Step | What it is | Why it stays ahead of the model |
 |---|---|---|
@@ -416,7 +416,8 @@ LLM calls per message. It now has a short run of cheap local controls, then
 | 3 | UI commands — "open chat log", "repeat that", "speak faster" | drives the window, never a thought |
 | 4 | Pending flows — a question Ted asked last turn, or a confirmation awaiting yes/no | conversational state, not a new request |
 | 5 | **What's left of the old regex dispatch**, guarded by `_use_deterministic_command()` | see below |
-| 6 | **One streamed call** — text or tool calls, chained, with the full menu | everything else |
+| 6 | **Conservative app reflex** — fully resolved reversible opens/closes only | removes model latency without guessing |
+| 7 | **One streamed loop** — text or tool calls, with relevant schemas | everything else |
 
 **Gate 5 has been gutted, not deleted.** `_use_deterministic_command()` now
 admits only five kinds of message: the voice shortcuts in `shortcuts.json`;
@@ -441,18 +442,18 @@ it is not a supported mode.
 
 ### 4.3 What the streamed call does per turn
 
-1. **Web check** — `_needs_web()`; if live info is needed, DuckDuckGo snippets
-   go into the context block. The model can also call `web_search` itself
-2. **Parallel memory retrieval on four threads** (4 s join):
-   - recent related exchanges — FTS5 keyword search (`memory.py`)
-   - known facts about Charlie (`facts` table)
-   - personal knowledge base (ChromaDB, `knowledge.py`)
-   - past session + chat-thread summaries (`memory.py`)
-3. **Assemble the prompt** — order matters for speed, see §7.2
-4. **Mode line** — `CURRENT MODE: VOICE` or `CURRENT MODE: CHAT`, regenerated every turn
-5. **Stream** tokens to the HUD; sentence-by-sentence to the speaker if voice is on.
-   Tool calls arrive in the same stream; results feed the next round, bounded
-6. **Background threads afterwards** — save the exchange, extract facts, log topic patterns
+1. **Select capabilities** in `core/routing.py`; begin with only relevant schemas
+   plus `find_tools`, which can expand the menu during the same turn.
+2. **Select memory scope:** none for operations, related exchanges/knowledge for
+   ordinary chat, full facts/session memories only for explicit personal recall.
+3. **Add structured recent actions** so pronouns and references can resolve from
+   verified state rather than a transcript guess.
+4. **Assemble the prompt** — order matters for speed, see §7.2.
+5. **Require tools for clear actions.** Multi-target/stage requests carry a minimum
+   completion count; phantom narration and malformed provider streams retry once.
+6. **Stream** tokens to the HUD; sentence-by-sentence to the speaker if voice is on.
+   Tool results feed the next bounded round and remain the user-visible truth.
+7. **Background threads afterwards** — save the exchange, extract facts, log patterns.
 
 ### 4.4 File map
 
@@ -463,6 +464,7 @@ it is not a supported mode.
 | `core/app.py` | **The monolith.** The ladder, tool dispatch, what remains of the regex dispatch | **126 KB, 2,686 lines.** Highest-risk file in the project |
 | `core/llm.py` | Prompts, the streamed turn, memory assembly, fact extraction, web search | 53 KB. Second most important |
 | `core/providers.py` | **New.** Groq → Ollama routing; the only place a model name enters a request | 9 KB. Clean seam |
+| `core/routing.py` | Reflex safety, capability selection/discovery, memory scope, recent-action context, completion bounds | Pure and unit-tested |
 | `core/tools.py` | The tool *menu* the model sees (schemas only) | 24 KB. Safe to edit |
 | `core/tool_handlers.py` | What each tool actually does | 12 KB |
 | `core/memory.py` | SQLite: exchanges, facts, sessions, habits, patterns, FTS5 | 21 KB. Clean, well-bounded |
@@ -492,7 +494,7 @@ it is not a supported mode.
 
 ## 5. What Ted can do today
 
-### 5.1 The tool menu (32 schemas in `core/tools.py`) [code, Aug 14]
+### 5.1 The tool catalog (32 schemas in `core/tools.py`) [code, Aug 14]
 
 ```
 web_search        open_app          close_app         browse_to
@@ -506,6 +508,8 @@ type_text         log_habit         get_habit_streak  calculate
 ```
 
 Notes:
+- The catalog is no longer attached wholesale. `core/routing.py` selects a small
+  initial menu, and the model calls `find_tools` if another capability is needed.
 - `web_search` and `calculate` are new. Both exist to move a decision the code
   used to make by keyword into the model's hands, while keeping the *execution*
   deterministic — the model chooses to search or compute; Python does the
@@ -726,25 +730,19 @@ can be copied. `ui/ted_hud_orb.html` is kept as the orb variant.
 Reordered Aug 14 after the first real day of use. The top item is no longer a
 refactor — it is that nobody knows yet whether Ted is usable.
 
-### 8.0 Unresolved: is the remaining slowness the tier, the model, or neither?
+### 8.0 Prompt weight reduced; real-use validation remains
 
-Charlie's report after a day of use: "I cannot get a conversation out of ted."
-Six mechanical causes were found and fixed (§Phase 7). Whether that is *enough*
-is unknown, and the two candidates left disagree with each other:
+The Aug 14 change reduced measured operational prompts from roughly 6,400 input
+tokens to about 1,900–2,300 by selecting schemas and memory per request. The live
+Groq header reports an 8,000 TPM free-account ceiling. Simple fully resolved Mac
+app opens/closes now skip both models entirely.
 
-- **The tier.** ~6,400 tokens per message against a 6,000 TPM free limit. Fits
-  one message a minute. Cutting the 3,645 tokens of tool schemas or paying for a
-  tier without the ceiling both solve it.
-- **The model.** Qwen3.6 has documented tool-calling failures matching the
-  observed "said it closed the apps, called nothing" incident exactly.
-- **Charlie's objection, which stands:** the freezing predates the Qwen swap, so
-  neither explains everything. He is right that this was diagnosed with too much
-  confidence once already.
-
-**Settle it with logs, not argument.** After a normal session:
-`grep -c '\[provider\]'` (rate limits), `grep '\[honesty\]'` (phantom
-actions), `grep '\[timing\] turn to first output'` (where the wait is). Those
-three numbers decide it.
+The safe benchmark is intentionally small, so it does not prove everyday
+reliability: cloud initially passed 2/3 at 1.0–2.8 seconds and its failed case
+passed after recovery was extended; local passed 3/3 at 4.8–10.8. That evidence
+supports cloud-primary/local-fallback, not a permanent local switch.
+Continue judging normal sessions with `[prompt]`, `[provider]`, `[honesty]`, and
+`[timing] turn to first output` in `data/ted_launch.log`.
 
 ### 8.1 `core/app.py` is 126 KB and the decomposition never happened — **the central debt**
 

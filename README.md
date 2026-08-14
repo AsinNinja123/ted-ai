@@ -70,15 +70,23 @@ The first launch after building asks for **microphone permission** — allow it.
 - **Live info:** `web_search` is a normal tool. The brain decides when fresh
   DuckDuckGo results are required instead of relying on a keyword gate.
 - **Tool reliability:** arguments are schema-validated before execution; malformed
-  calls are returned to the model for repair. Chains are bounded to five rounds
+  calls are returned to the model for repair. Ted sends only request-relevant
+  schemas and can load more with `find_tools`. Chains are bounded to five rounds
   and ten calls, repeated actions are refused, and action results remain ground truth.
+- **Selective context:** operational actions skip episodic memory, ordinary chat
+  retrieves relevant context, and explicit recall gets the full personal-memory set.
+  The last verified actions are kept as compact structured state for references
+  such as "close the two apps I just opened."
 - **Difficulty-aware latency:** short single-clause turns use Qwen's low-latency
   reasoning mode; longer, chained, explanatory, and analytical requests keep full
   reasoning. Both paths expose the same tools and use the model as the intent router.
-- **Model-selected, verified actions:** ordinary requests such as "open YouTube"
-  and "close Spotify" go through the reasoning model and shared tool menu rather
-  than phrase-specific command code. Browser opens require a real browser window;
-  app launches/closes confirm process state before reporting success.
+- **Model-selected, verified actions:** ambiguous or compound requests go through
+  the reasoning model and a focused tool menu. Fully specified, reversible Mac app
+  opens/closes use a narrow local reflex for instant execution. Browser opens
+  require a real browser window; app actions confirm process state before success.
+- **Action recovery:** unmistakable actions require a real tool call. If a model
+  merely claims it acted, or its tool stream is malformed, Ted suppresses the fake
+  narration and retries once automatically.
 - **Confirmations:** messages and consequential email changes pause for an explicit
   yes before execution.
 
@@ -161,6 +169,7 @@ ted-ai/
 │   ├── app.py             # TedApi — conversation loop, command routing, threads
 │   ├── voice.py           # TTS (Kokoro/ElevenLabs), STT capture, audio engine init
 │   ├── llm.py             # Groq client, persona, streaming replies, ask-Claude
+│   ├── routing.py         # reflex lane, dynamic tools/context, action completion
 │   ├── intents.py         # spoken-command parsing (pure — unit-tested in tests/)
 │   ├── music.py           # spoken Spotify routing (local app + Web API fallback)
 │   ├── tool_handlers.py   # handlers behind the LLM's function-calling tools
@@ -186,7 +195,8 @@ ted-ai/
 │   ├── ted_audio.swift    # echo-cancelling audio engine
 │   └── build.sh           # builds it
 ├── tools/
-│   └── make_app.sh        # builds Ted.app (double-clickable launcher + icon)
+│   ├── make_app.sh        # builds Ted.app (double-clickable launcher + icon)
+│   └── benchmark_brains.py # safe cloud/local tool-routing comparison
 ├── tests/                 # use-case tests — run each with the venv python
 │   ├── test_intents.py    # command parsing
 │   ├── test_barge.py      # barge-in behaviour
@@ -195,6 +205,7 @@ ted-ai/
 │   ├── test_session_memory.py  # what's worth remembering
 │   ├── test_pipeline.py
 │   ├── test_single_call.py     # merged streaming + tool-call behavior
+│   ├── test_routing.py         # dynamic menus, reflex safety, context scopes
 │   └── test_safety.py          # provider lifecycle + local-network exposure
 ├── ui/
 │   ├── ted_hud.html       # the live HUD window (particle sphere) — loaded by paths.py

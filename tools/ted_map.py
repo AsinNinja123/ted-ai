@@ -218,7 +218,8 @@ STEP_PURPOSE = {
     "ui": "Window controls — open the chat log, repeat that, speak faster.",
     "pending": "Answers to a question Ted asked you last turn, and yes/no confirmations.",
     "deterministic": "The short list of things that must not be left to a model.",
-    "model": "Everything else. One streamed call with all the tools attached.",
+    "reflex": "Complete reversible Mac app opens/closes run locally without a model.",
+    "model": "Everything else. One streamed loop with a focused tool menu.",
 }
 
 
@@ -266,9 +267,10 @@ def collect_routing() -> dict:
     # The old two-call path still EXISTS in the file behind the legacy flag, so
     # "is the probe string present" answers the wrong question. What decides it
     # is whether the default path builds a ToolRuntime instead of probing.
-    probe_gone = bool(re.search(r"_runtime\s*=\s*None if LEGACY_LADDER", src))
+    probe_gone = "tool_runtime=_runtime" in src and "llm.ToolRuntime(" in src
+    reflex = "routing.plan_reflex(" in src
     return {"deterministic": kept, "guard_doc": guard.strip().split("\n")[0] if guard else "",
-            "legacy_flag": legacy, "single_call": probe_gone,
+            "legacy_flag": legacy, "single_call": probe_gone, "reflex": reflex,
             "purpose": STEP_PURPOSE}
 
 
@@ -624,8 +626,10 @@ def render(d: dict) -> str:
         f"<span class=why style='display:block'>Currently: {esc(det)}. "
         "Arithmetic is on this list because a model getting a number wrong fails "
         "<i>silently</i> — a wrong answer looks exactly like a right one.</span></li>")
+    if r["reflex"]:
+        add(f"<li><b>Fast app reflex.</b> {esc(r['purpose']['reflex'])}</li>")
     add("<li class=big><b>Everything else goes to the model</b>, in one streamed "
-        "call with all the tools attached. It can answer, or use a tool, or use "
+        "loop with a focused tool menu. It can answer, discover another tool, or use "
         "several and chain them."
         + (" <span class=why style='display:block'>There used to be two calls per "
            "message — one to ask 'does this need a tool?', another to write the "
@@ -780,7 +784,10 @@ def render_markdown(d: dict, stable: bool = False) -> str:
              f"`{m['local']['value']}` on local Ollama |")
     L.append(f"| Hears / speaks | `{m['stt']['value']}` / `{m['tts']['value']}` (local) |")
     L.append(f"| Tools | {len(d['tools']['all'])} |")
-    L.append(f"| Routing | {'one streamed call' if d['routing']['single_call'] else 'two calls'}"
+    route = ("local app reflex + one streamed loop" if d["routing"].get("reflex")
+             and d["routing"]["single_call"] else
+             "one streamed loop" if d["routing"]["single_call"] else "two calls")
+    L.append(f"| Routing | {route}"
              f"{'; legacy path behind TED_LEGACY_LADDER=1' if d['routing']['legacy_flag'] else ''} |")
     if stable:
         L.append(f"| Memory | {rows.get('facts', 0)} facts, "

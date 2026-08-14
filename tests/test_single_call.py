@@ -35,7 +35,7 @@ voice_stub = types.ModuleType("core.voice")
 voice_stub.SPEED = 1.1
 sys.modules.setdefault("core.voice", voice_stub)
 
-from core import llm  # noqa: E402
+from core import llm, routing  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -110,9 +110,9 @@ llm.features.HAS_KNOWLEDGE = False
 SYSTEM = {"role": "system", "content": "You are Ted."}
 
 
-def run(text, runtime=None, conversation=None):
+def run(text, runtime=None, conversation=None, **kwargs):
     conv = conversation if conversation is not None else [dict(SYSTEM)]
-    out = "".join(llm.ask_streaming(text, conv, tool_runtime=runtime))
+    out = "".join(llm.ask_streaming(text, conv, tool_runtime=runtime, **kwargs))
     return out, conv
 
 
@@ -126,6 +126,8 @@ def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=N
             "set_timer": ({"duration": {"type": "string"}}, ["duration"]),
             "screen_describe": ({"question": {"type": "string"}}, []),
             "type_text": ({"text": {"type": "string"}}, ["text"]),
+            "clipboard_write": ({"text": {"type": "string"}}, ["text"]),
+            "clipboard_read": ({}, []),
             "web_search": ({"query": {"type": "string"}}, ["query"]),
         }
         schemas = [{
@@ -167,6 +169,25 @@ check("short single-clause turns use low-latency reasoning",
 check("exchange stored", conv[-2:] == [{"role": "user", "content": "how are you"},
                                        {"role": "assistant", "content": "Not much, you?"}])
 
+memory_reads = []
+llm.get_memory = lambda q: (memory_reads.append("memory"), "")[1]
+llm.get_facts_about = lambda who: (memory_reads.append("facts"), "")[1]
+llm.format_memories_for_prompt = lambda: (memory_reads.append("sessions"), "")[1]
+llm.chat_create = scripted(FakeStream([
+    tool_chunk(0, id="c1", name="open_app", args='{"name":"Notes"}')
+]))
+out, _ = run("open Notes somehow", runtime(
+    lambda n, a: "Notes opened.", action_tools={"open_app"}),
+    context_scope="none", require_tool=True,
+    operational_context="Recent verified actions: close_app({'name': 'Notes'}) -> Closed Notes.")
+check("operational turns skip all episodic memory reads", memory_reads == [])
+check("unmistakable actions require a tool from the provider",
+      llm.chat_create.kwargs[0]["tool_choice"] == "required")
+check("compact operational turn still executes normally", out == "Notes opened.")
+llm.get_memory = lambda q: ""
+llm.get_facts_about = lambda who: ""
+llm.format_memories_for_prompt = lambda: ""
+
 llm.chat_create = scripted(FakeStream([text_chunk("Hi.")]))
 out, _ = run("hey", runtime(lambda n, a: "unused"))
 check("a reply shorter than the decide-buffer still gets flushed", out == "Hi.")
@@ -199,6 +220,35 @@ check("an interrupted partial reply is not stored as a complete exchange", conv 
 check("closing the generator closes the provider stream", stream.closed)
 
 print("\n— action tools: ground truth, spoken verbatim, loop stops —")
+
+discovered_calls = []
+discover_runtime = None
+
+def _discover_dispatch(name, args):
+    if name == "find_tools":
+        added = discover_runtime.add_schemas(
+            routing.discover_tool_schemas(args["query"], exclude=discover_runtime.schema_by_name))
+        return "Loaded: " + ", ".join(added)
+    discovered_calls.append((name, args))
+    return "Opened Notes."
+
+discover_runtime = llm.ToolRuntime(
+    [routing.FIND_TOOLS_SCHEMA], _discover_dispatch, action_tools={"open_app"})
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="d1", name="find_tools",
+                           args='{"query":"open a mac app"}')]),
+    FakeStream([tool_chunk(0, id="d2", name="open_app",
+                           args='{"name":"Notes"}')]),
+)
+out, _ = run("bring up the program for my notes", discover_runtime,
+             require_tool=True, context_scope="none")
+check("find_tools expands an initially tiny menu during the same turn",
+      discovered_calls == [("open_app", {"name": "Notes"})]
+      and "open_app" in discover_runtime.schema_by_name)
+check("the follow-up provider request receives the discovered schema",
+      "open_app" in {s["function"]["name"]
+                     for s in llm.chat_create.kwargs[1]["tools"]})
+check("a discovered action still returns handler ground truth", out == "Opened Notes.")
 
 calls = []
 llm.chat_create = scripted(FakeStream([
@@ -237,6 +287,22 @@ out, _ = run("open spotify and close mail", runtime(
     lambda n, a: f"{n} ok.", action_tools={"open_app", "close_app"}))
 check("parallel action calls are all run, in index order",
       out == "open_app ok. close_app ok.")
+
+completed = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app",
+                           args='{"name":"Notes"}')]),
+    FakeStream([tool_chunk(0, id="c2", name="open_app",
+                           args='{"name":"Calendar"}')]),
+)
+out, _ = run("open Notes and Calendar", runtime(
+    lambda n, a: (completed.append(a["name"]), f"Opened {a['name']}.")[1],
+    action_tools={"open_app"}), require_tool=True, context_scope="none",
+    min_action_calls=2)
+check("one success does not prematurely finish a multi-target request",
+      completed == ["Notes", "Calendar"])
+check("multi-target completion reports both verified results",
+      out == "Opened Notes. Opened Calendar.")
 
 CHAINED_ACTIONS = []
 llm.chat_create = scripted(
@@ -317,6 +383,33 @@ llm.chat_create = scripted(Boom([]))
 out, _ = run("hello", runtime(lambda n, a: "x"))
 check("a stream that dies before any text says so honestly",
       out == "Something cut out — ask me again.")
+
+llm.chat_create = scripted(
+    Boom([]),
+    FakeStream([tool_chunk(0, id="c1", name="open_app",
+                           args='{"name":"Notes"}')]),
+)
+out, _ = run("open Notes", runtime(
+    lambda n, a: "Opened Notes.", action_tools={"open_app"}),
+    require_tool=True)
+check("a required action retries one provider stream failure automatically",
+      out == "Opened Notes." and llm.chat_create.calls == 2)
+
+PARTIAL_RECOVERY_CALLS = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="clipboard_write",
+                           args='{"text":"TED TOOL TEST"}')]),
+    Boom([]),
+    FakeStream([tool_chunk(0, id="c2", name="clipboard_read", args="{}")]),
+)
+out, _ = run("copy this, then read it", runtime(
+    lambda n, a: (PARTIAL_RECOVERY_CALLS.append(n),
+                  "Copied it." if n == "clipboard_write" else "TED TOOL TEST")[1],
+    action_tools={"clipboard_write", "clipboard_read"}),
+    require_tool=True, min_action_calls=2)
+check("stream recovery preserves completed stages and continues the missing one",
+      out == "Copied it. TED TOOL TEST"
+      and PARTIAL_RECOVERY_CALLS == ["clipboard_write", "clipboard_read"])
 
 print("\n— never end a turn silent —")
 
@@ -429,10 +522,24 @@ check("an action the USER took is not Ted's claim",
       not llm.claims_completed_action(
           "You closed that tab yourself a minute ago, so it should be gone."))
 
-llm.chat_create = scripted(FakeStream([text_chunk("Closed VS Code and Notes.")]))
-out, _ = run("close vs code and notes", runtime(lambda n, a: "unused"))
-check("the user is told nothing actually ran", "didn't actually run" in out)
-check("...while still seeing what the model said", "Closed VS Code" in out)
+recovered = []
+llm.chat_create = scripted(
+    FakeStream([text_chunk("Closed VS Code and Notes.")]),
+    FakeStream([
+        tool_chunk(0, id="c1", name="close_app", args='{"name":"VS Code"}'),
+        tool_chunk(1, id="c2", name="close_app", args='{"name":"Notes"}'),
+    ]),
+)
+out, _ = run("close vs code and notes", runtime(
+    lambda n, a: (recovered.append((n, a)), f"Closed {a['name']}.")[1],
+    action_tools={"close_app"}), require_tool=True, context_scope="none")
+check("a prose-only action is retried automatically with tools",
+      recovered == [("close_app", {"name": "VS Code"}),
+                    ("close_app", {"name": "Notes"})])
+check("the fake action prose is held back during recovery",
+      out == "Closed VS Code. Closed Notes.")
+check("the recovery explicitly requires tool use",
+      llm.chat_create.kwargs[1]["tool_choice"] == "required")
 
 llm.chat_create = scripted(FakeStream([text_chunk(
     "You closed that tab yourself a minute ago, so it should be gone.")]))

@@ -122,13 +122,19 @@ th.tool_get_weather = lambda: WEATHER_REPLY
 
 LLM_STREAM_CALLS = []
 LLM_STREAM_RUNTIMES = []      # the ToolRuntime handed to each streaming call
+LLM_CONTEXT_SCOPES = []
+LLM_REQUIRE_TOOLS = []
 LLM_STREAM_REPLY = ["LLM reply."]
 
 
 def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=False,
-                        window=None, voice_mode=False, tool_runtime=None):
+                        window=None, voice_mode=False, tool_runtime=None,
+                        context_scope="full", operational_context="",
+                        require_tool=False, min_action_calls=0):
     LLM_STREAM_CALLS.append(text)
     LLM_STREAM_RUNTIMES.append(tool_runtime)
+    LLM_CONTEXT_SCOPES.append(context_scope)
+    LLM_REQUIRE_TOOLS.append(require_tool)
     for piece in LLM_STREAM_REPLY:
         yield piece
 
@@ -176,6 +182,8 @@ def make_api():
     fake_engine.barge_in = False
     LLM_STREAM_CALLS.clear()
     LLM_STREAM_RUNTIMES.clear()
+    LLM_CONTEXT_SCOPES.clear()
+    LLM_REQUIRE_TOOLS.clear()
     api = app_mod.TedApi()
     # Ted boots muted since the chat-first pivot. Most cases below describe a
     # live voice session, so start unmuted and let the mute cases opt in.
@@ -276,6 +284,29 @@ check("non-command reaches the streaming LLM once", LLM_STREAM_CALLS == ["how ar
 check("streamed reply is spoken and stored",
       SPOKEN == ["LLM reply."] and api.last_reply == "LLM reply.")
 check("reply lands in the HUD chat", js_containing(api, "addMessage"))
+check("plain conversation carries only the discovery meta-tool",
+      [s["function"]["name"] for s in LLM_STREAM_RUNTIMES[0].schemas]
+      == ["find_tools"])
+check("plain conversation uses relevant—not full—memory retrieval",
+      LLM_CONTEXT_SCOPES == ["relevant"] and LLM_REQUIRE_TOOLS == [False])
+
+api = make_api()
+api._respond("open Notes and YouTube")
+selected = {s["function"]["name"] for s in LLM_STREAM_RUNTIMES[0].schemas}
+check("mixed natural actions receive a small relevant capability menu",
+      {"find_tools", "open_app", "browse_to"}.issubset(selected)
+      and len(selected) < 8)
+check("natural action reasoning skips episodic memory and requires a real tool",
+      LLM_CONTEXT_SCOPES == ["none"] and LLM_REQUIRE_TOOLS == [True])
+
+api = make_api()
+REFLEX_CLOSED = []
+app_mod.close_app = lambda name: (REFLEX_CLOSED.append(name), f"Closed {name}.")[1]
+api._respond("close Notes and Calendar")
+check("complete reversible app requests bypass the model",
+      LLM_STREAM_CALLS == [] and sorted(REFLEX_CLOSED) == ["calendar", "notes"])
+check("reflex results populate structured recent-action state",
+      [item["tool"] for item in api._recent_actions] == ["close_app", "close_app"])
 
 api = make_api()
 LLM_STREAM_REPLY.clear()
@@ -506,6 +537,23 @@ api._dispatch_tool("send_message", {
 api._respond("no")
 check("anything other than explicit confirmation cancels",
       SENT_MESSAGES == [] and "Canceled" in SPOKEN[-1])
+
+api = make_api()
+SENT_MESSAGES.clear()
+app_mod.search_contacts = lambda q: [("Gavin Smith", "+15551234567")]
+question = api._dispatch_tool("send_message", {"contact": "Gavin"})
+check("missing message content is collected before confirmation",
+      "What exact message" in question
+      and api._pending_compose is not None
+      and api._pending_tool_confirmation is None)
+api._respond("TEST ONLY")
+check("the content answer becomes a visible confirmation, not a cancellation",
+      api._pending_compose is None
+      and api._pending_tool_confirmation is not None
+      and "TEST ONLY" in SPOKEN[-1]
+      and SENT_MESSAGES == [])
+api._respond("no")
+check("declining the completed preview sends nothing", SENT_MESSAGES == [])
 
 print("\n— compose flow: instruction → style → send —")
 api = make_api()

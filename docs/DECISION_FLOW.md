@@ -1,6 +1,6 @@
 # How Ted Decides What To Do
 
-**Updated:** August 13, 2026
+**Updated:** August 14, 2026
 **Scope:** the full path from "user says something" to "Ted answers," which files
 own each step, and where the weak points are.
 
@@ -8,13 +8,13 @@ own each step, and where the weak points are.
 
 ## The one-paragraph version
 
-Every message first passes a few cheap controls that must be immediate: mute,
-stop, UI controls, pending confirmations, and timers/reminders. Ordinary chat
-and computer requests then enter **one streamed reasoning loop** with the entire
-tool menu attached. The model can answer, call independent tools together, use a
-result in a later dependent call, or search the live web. This replaces the old
-keyword ladder and separate tool-probe call that frequently stole requests before
-the reasoning model could understand the whole outcome.
+Every message first passes cheap controls that must be immediate: mute, stop, UI
+controls, pending confirmations, and timers/reminders. Fully specified, reversible
+Mac app opens/closes take a deliberately narrow zero-model reflex lane. Everything
+else enters **one streamed reasoning loop** with only relevant tool schemas and the
+minimum useful memory attached. The model can discover a missing capability,
+call independent tools together, use a result in a dependent call, or answer in
+text. Verified tool results—never model narration—are the truth about actions.
 
 ---
 
@@ -70,19 +70,28 @@ notes, web, clipboard, computer control, habits, weather, music, and calculation
 reach the reasoning model and its tool menu. `TED_LEGACY_LADDER=1` restores the
 old behavior temporarily.
 
-### Gate 6 — One reasoning and tool loop
-The normal path is now one streamed request carrying the full tool menu. It can
-answer directly or emit calls. Calls are schema-validated before dispatch; invalid
-arguments are returned to the model for repair without executing anything. The
-loop supports parallel and dependent calls, is capped at five rounds/ten calls,
-and blocks duplicates. Verified action results remain the user-visible truth.
-Messages and consequential email changes require a pending yes/no confirmation.
+### Gate 6 — Conservative app reflex
+`plan_reflex()` in **`core/routing.py`** accepts only fully resolved open/close
+requests for known Mac apps. It rejects websites, pronouns, partial targets,
+mixed capabilities, and dependent sequences. Multiple independent app targets
+run concurrently. This gives "close Notes and Calendar" local-command latency
+without hard-coding broader language understanding.
+
+### Gate 7 — One reasoning and tool loop
+The normal path is one streamed request carrying a small capability menu selected
+in **`core/routing.py`**. `find_tools` can add schemas during the same turn when
+the initial menu is insufficient. Action requests force tool choice; fake action
+prose and provider stream failures are automatically retried once. Calls are
+schema-validated before dispatch, invalid arguments are repaired without running,
+and explicit multi-target requests continue until their minimum completion count
+is reached. The loop remains capped at five rounds/ten calls and blocks duplicates.
+Messages and consequential email changes require pending yes/no confirmation.
 
 The provider layer tries free Groq Qwen 3.6 first and repeats the same request on
 local Ollama Qwen 3.5 35B-A3B if Groq is unavailable. `_try_tools()` now exists
 only behind the `TED_LEGACY_LADDER=1` escape hatch.
 
-### Gate 7 — Built-in actions (inside the LLM path)
+### Gate 8 — Built-in actions (inside the LLM path)
 `detect_action()` in **`core/actions.py`** runs at the top of `ask_streaming()` —
 date and location questions only. App launches now use the shared tool loop so
 they can participate in larger plans.
@@ -92,22 +101,20 @@ they can participate in larger plans.
 > gates. It should be folded into Gate 5 or 6. Right now, three different files
 > can each independently decide your message is a command.
 
-### Gate 8 — Streaming conversation (`ask_streaming`)
+### Gate 9 — Streaming conversation (`ask_streaming`)
 **File:** `core/llm.py`. This is Ted-as-chatbot. In order:
 
-1. **Parallel memory retrieval** (four threads, so they overlap):
-   - recent related exchanges — FTS5 keyword search (`core/memory.py`)
-   - known facts about you (`facts` table)
-   - personal knowledge base (ChromaDB, `core/knowledge.py`)
-   - past session + chat-thread summaries (`core/memory.py`)
+1. **Select a context scope:** operational actions get no episodic retrieval;
+   ordinary chat gets related exchanges + knowledge; explicit personal recall
+   gets the full facts/session-memory set. Eligible sources still load in parallel.
 2. **Assemble the prompt:** `[static system prompt] [history] [per-turn context]
    [your message]` — in that order, deliberately, so the static prefix stays
    byte-identical and Groq's prefix cache can skip reprocessing it.
 3. **Mode line** — VOICE (short, spoken, no formatting) or CHAT (full answers,
    fenced code). Regenerated every turn.
-4. **Reason or use tools** — the brain answers directly or selects tools such as
-   `web_search`; results return into the same bounded loop for synthesis or the
-   next dependent call.
+4. **Reason or use tools** — the brain answers directly, selects a provided tool,
+   or calls `find_tools`; results return into the same bounded loop for synthesis
+   or the next dependent call.
 5. **Stream** tokens to the HUD, sentence-by-sentence to the speaker if voice
    mode is on.
 6. **Afterwards, on background threads:** save the exchange, extract facts
@@ -121,6 +128,7 @@ they can participate in larger plans.
 |---|---|---|
 | `core/app.py` | The ladder, tool dispatch, all the deterministic commands | ~103KB. **The monolith.** Highest-risk file in the project |
 | `core/llm.py` | Prompts, streaming, memory assembly, fact extraction, web search | Second most important |
+| `core/routing.py` | Reflex planning, capability menus, memory scope, completion counts, recent-action context | Pure and unit-tested |
 | `core/tools.py` | The tool *menu* the model sees (schemas only) | Small, safe to edit |
 | `core/tool_handlers.py` | What each tool actually does | Medium |
 | `core/memory.py` | SQLite: exchanges, facts, sessions, habits, FTS5 search | Clean, well-bounded |
@@ -133,10 +141,11 @@ they can participate in larger plans.
 
 ## What was changed, and what remains
 
-**Completed:** Gate 5 is narrow, the tool probe and conversation pass are one
-streamed loop, malformed calls are validated and repaired before execution,
-dependent calls can continue for up to five rounds, duplicate calls are blocked,
-and free hosted requests fall back to the same workflow on local Ollama.
+**Completed:** Gate 5 is narrow; a conservative app reflex handles obvious local
+actions; tool schemas and memory are selected per request; recent actions are
+structured; unmistakable actions require tools; phantom narration and malformed
+provider streams retry automatically; dependent calls have completion bounds;
+and a safe fake-handler benchmark compares cloud and local brains.
 
 **Next architectural cleanup:** replace the separate pending-compose,
 disambiguation, and confirmation instance variables with one typed pending-flow
@@ -150,8 +159,9 @@ turns to a paid API. The current everyday and offline paths remain free.
 
 ## Two structural notes for the rebuild
 
-- **Cheap controls before reasoning are still useful.** They now cover Ted's own
-  immediate state rather than trying to understand every possible user request.
-- **There is one normal command decision point.** `_try_tools()` survives only as
-  a temporary environment-flag rollback path; `detect_action()` handles only
+- **Cheap controls before reasoning are still useful.** They cover Ted's own
+  immediate state plus one audited class of reversible app actions; ambiguous
+  intent still belongs to the model.
+- **There is one general command decision point.** `_try_tools()` survives only
+  as a temporary environment-flag rollback path; `detect_action()` handles only
   date/location shortcuts. The model tool loop owns ordinary intent.

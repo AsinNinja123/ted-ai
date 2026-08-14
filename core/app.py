@@ -13,9 +13,10 @@ import re
 import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import features, llm, music, tool_handlers as th, voice
+from core import features, llm, music, routing, tool_handlers as th, voice
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
 from core.hud_bridge import js, set_state, add_message, show_issue
@@ -197,6 +198,10 @@ class TedApi:
         self._pending_compose         = None   # dict awaiting message/email style/content input
         self._pending_disambig_compose = None  # {instruction, style} saved during contact disambiguation
         self._pending_tool_confirmation = None  # {name,args,expires} awaiting yes/no
+        # Structured ground truth for context like "close those again". This is
+        # intentionally separate from prose chat history so command reasoning
+        # does not need twenty old messages just to resolve a pronoun.
+        self._recent_actions = []
 
         # Augment the base system prompt with the user's auto-detected location so
         # Ted can answer "what's the weather" / "where am I" without config.
@@ -443,7 +448,8 @@ class TedApi:
                 result = "That confirmation expired, so I didn't do it."
             elif _normalize_cmd(text) in {
                     "yes", "yeah", "yep", "confirm", "do it", "send it", "go ahead"}:
-                result = self._dispatch_tool(pending["name"], pending["args"], confirmed=True)
+                result = self._dispatch_and_record(
+                    pending["name"], pending["args"], confirmed=True)
             else:
                 result = "Canceled — nothing was sent or changed."
             if echo_user:
@@ -518,6 +524,19 @@ class TedApi:
             return False
 
         # ── fast deterministic commands (no LLM call — regex/rule-based) ──
+        # Only complete, reversible app requests qualify. A partial/ambiguous
+        # match declines the whole turn and reaches the reasoner below.
+        reflex = routing.plan_reflex(text)
+        if reflex is not None:
+            results = self._execute_reflex(reflex)
+            reply = " ".join(results)
+            self.last_reply = reply
+            add_message(w, "ted", reply)
+            if any(th.looks_like_failure(result) for result in results):
+                show_issue(w, reply)
+            speak(w, reply, self)
+            return False
+
         asst_result = self._assistant_command(text) if _use_deterministic_command(text) else None
         if asst_result is not None:
             engine.reset_barge_in()
@@ -548,19 +567,43 @@ class TedApi:
             if th.looks_like_failure(result):
                 show_issue(w, result)
 
-        _runtime = None if LEGACY_LADDER else llm.ToolRuntime(
-            schemas=TOOL_SCHEMAS,
-            dispatch=self._dispatch_tool,
-            action_tools=th.ACTION_TOOLS,
-            on_failure=_note_action_result,
-            is_failure=th.looks_like_failure,
-        )
+        _runtime = None
+        _selected_schemas = []
+        _op_context = routing.operational_context(self._recent_actions)
+        if not LEGACY_LADDER:
+            _selected_schemas = routing.select_tool_schemas(text, _op_context)
+
+            def _selected_dispatch(name, args):
+                if name == "find_tools":
+                    existing = set(_runtime.schema_by_name)
+                    found = routing.discover_tool_schemas(
+                        args.get("query", ""), exclude=existing)
+                    added = _runtime.add_schemas(found)
+                    if added:
+                        return ("Loaded capabilities: " + ", ".join(added)
+                                + ". Now use the appropriate tool.")
+                    return ("No matching capability is available. Ask one short "
+                            "clarifying question or explain the limitation.")
+                return self._dispatch_and_record(name, args)
+
+            _runtime = llm.ToolRuntime(
+                schemas=_selected_schemas,
+                dispatch=_selected_dispatch,
+                action_tools=th.ACTION_TOOLS,
+                on_failure=_note_action_result,
+                is_failure=th.looks_like_failure,
+            )
+        _context_scope = routing.memory_scope_for(text, _selected_schemas)
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
                                 window=w,
                                 voice_mode=not self.muted,
-                                tool_runtime=_runtime)
+                                tool_runtime=_runtime,
+                                context_scope=_context_scope,
+                                operational_context=_op_context,
+                                require_tool=routing.likely_action_request(text),
+                                min_action_calls=routing.expected_action_calls(text))
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -1604,6 +1647,43 @@ class TedApi:
             self.active_conversation.append({"role": "assistant", "content": fallback})
         return fallback
 
+    def _record_action(self, name, args, result):
+        """Remember compact structured action ground truth for later references."""
+        self._recent_actions.append({
+            "tool": name,
+            "args": dict(args or {}),
+            "result": str(result or ""),
+            "ts": time.time(),
+        })
+        self._recent_actions = self._recent_actions[-8:]
+
+    def _dispatch_and_record(self, name, args, confirmed=False):
+        result = self._dispatch_tool(name, args, confirmed=confirmed)
+        # Consequential tools have not acted when they merely arm confirmation.
+        if (name in th.ACTION_TOOLS
+                and (name not in th.CONFIRMATION_TOOLS or confirmed)):
+            self._record_action(name, args, result)
+        return result
+
+    def _execute_reflex(self, plan):
+        """Run independent reversible app calls concurrently and preserve order."""
+        calls = list(plan.calls)
+
+        def _run(call):
+            name, args = call
+            if name == "open_app":
+                return open_app(args.get("name", ""))
+            return close_app(args.get("name", ""))
+
+        if len(calls) == 1:
+            results = [_run(calls[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(calls))) as pool:
+                results = list(pool.map(_run, calls))
+        for (name, args), result in zip(calls, results):
+            self._record_action(name, args, result)
+        return results
+
     def _dispatch_tool(self, name, args, confirmed=False):
         """Route a tool call from the LLM to the right Python handler.
         Returns a spoken-style result string; on any error returns an honest
@@ -1611,6 +1691,18 @@ class TedApi:
         try:
             # Surface tool use in the HUD's connected-apps panel (best-effort)
             js(self.window, f"tedHud.noteAppUse({json.dumps(name)})")
+            # Collect required human content before arming confirmation. The old
+            # order asked "what should I say?" while a yes/no confirmation was
+            # already pending, so the user's answer was interpreted as "no" and
+            # canceled the message it was meant to fill.
+            if (name == "send_message" and not confirmed
+                    and not (args.get("text") or args.get("instruction"))):
+                self._pending_compose = {
+                    "type": "tool_message", "stage": "text",
+                    "contact": args.get("contact", ""),
+                }
+                return (f"What exact message should I send to "
+                        f"{args.get('contact', 'them')}?")
             if name in th.CONFIRMATION_TOOLS and not confirmed:
                 self._pending_tool_confirmation = {
                     "name": name, "args": dict(args), "expires": time.time() + 60,
@@ -1936,6 +2028,13 @@ class TedApi:
         """Process user's answer to a compose-flow question (style or instruction)."""
         pc = self._pending_compose
         kind = pc.get("type")
+
+        if kind == "tool_message" and pc.get("stage") == "text":
+            self._pending_compose = None
+            return self._dispatch_tool("send_message", {
+                "contact": pc.get("contact", ""),
+                "text": text,
+            })
 
         if kind == "imessage":
             if pc["stage"] == "instruction":
