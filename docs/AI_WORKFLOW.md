@@ -37,30 +37,54 @@ the only state where work can vanish without trace.
 
 This is the whole rule. Most collisions die here.
 
-## 2b. Regenerate the status block
+## 2b. The status block refreshes itself
 
 ```bash
-python tools/ted_map.py --sync
+bash tools/install_hooks.sh     # once per clone
 ```
 
-Rewrites the generated block in `CLAUDE.md` and `AGENTS.md` from what is
-actually in the repo: models, tool count, routing shape, memory row counts,
-branch, whether the working tree is clean, whether the daemon has ever run.
-Takes a second, and it is what the next assistant reads first.
+After that a pre-commit hook runs `tools/ted_map.py --sync` on every commit, so
+the generated block in `CLAUDE.md` and `AGENTS.md` always describes the commit
+you are looking at. It is read from the repo, never remembered: which models,
+how many tools, what shape the routing is, roughly how much Ted is used, whether
+the calendar daemon has ever run. It takes about a fifth of a second, and it is
+the first thing the next assistant reads.
 
 This exists because the hand-written version of that block was wrong within two
 days — it named the old model stack and claimed the working tree was
 uncommitted long after it had been committed. A status line maintained by hand
 is a second source of truth, and the second one always loses.
 
-Two habits worth keeping: run it after committing, and run it at the start of a
-session too. If the block disagrees with what you just regenerated, the previous
-session ended without syncing, and you should be suspicious of anything else it
-left behind.
+The hook is deliberately toothless: every path through it exits 0. A hook that
+can fail a commit is a hook people delete, and a slightly stale note is never
+worth losing work over. It also refuses to stage `CLAUDE.md` or `AGENTS.md` if
+you already had unstaged edits there — it will refresh the block and tell you,
+rather than sweeping your in-progress writing into a commit about something
+else.
 
-`python tools/ted_map.py` also writes a full page version for Charlie, and the
-memory dashboard serves the same thing live at
-`http://127.0.0.1:5175/map`.
+It lives in `tools/githooks/` and git is pointed at it with `core.hooksPath`,
+so unlike a normal hook it is versioned, reviewable in a diff, and arrives with
+a clone. `git commit --no-verify` skips it once;
+`bash tools/install_hooks.sh --uninstall` removes it.
+
+The block contains only what is expensive to discover — models, tool count,
+routing shape, roughly how much Ted is used, whether the daemon has ever run.
+Branch, working-tree state and recent commits are deliberately absent: `git
+status` and `git log` answer those in one command, and duplicating them into a
+tracked file would both create a second source of truth and dirty
+`CLAUDE.md` on every single commit.
+
+`python tools/ted_map.py` writes the full page version for Charlie, and the
+memory dashboard serves the same thing live at `http://127.0.0.1:5175/map`.
+`--markdown` prints the long form, git state included, for reading rather than
+committing.
+
+**One gap worth knowing.** Cowork does not read this repo at session start — it
+sees the `TED_MASTER_HANDOFF.md` doc attached to Charlie's Claude project
+instead. Nothing syncs that automatically. If you are working from Cowork and
+you change something structural, push the refreshed block into that project doc
+before you finish, or the next Cowork session starts from whatever was true the
+last time someone remembered.
 
 ## 3. Never revert what you did not write
 

@@ -1,0 +1,65 @@
+#!/bin/bash
+# Refresh the generated status block, then include it in this commit.
+#
+# WHY A HOOK
+#   The block in CLAUDE.md and AGENTS.md is the first thing the next assistant
+#   reads. Keeping it current by hand did not work: the previous version claimed
+#   the working tree was uncommitted for two days after it had been committed.
+#   Replacing that with "remember to run --sync" is a smaller habit but still a
+#   habit. This removes the habit.
+#
+# WHY IT NEVER BLOCKS
+#   A hook that can fail a commit is a hook people delete. Every path here exits
+#   0. If the block cannot be refreshed you get a warning and your commit lands
+#   anyway — a slightly stale note is not worth losing work over.
+#
+# Versioned on purpose: git does not track .git/hooks, so this lives in the repo
+# and core.hooksPath points at it. That means you can read it in a diff, and it
+# arrives on a new machine with the clone.
+#
+# Install:   bash tools/install_hooks.sh
+# Skip once: git commit --no-verify
+# Remove:    bash tools/install_hooks.sh --uninstall
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$ROOT/tools/ted_map.py" ] || exit 0
+
+# The venv if it is there, otherwise whatever python is around. ted_map.py
+# imports nothing outside the standard library precisely so this line can be
+# this forgiving.
+PY="$ROOT/venv/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || { echo "[ted_map] no python found — status block not refreshed"; exit 0; }
+
+# Which of these files you were already editing, BEFORE the refresh touched
+# them. Anything in this list gets refreshed but not staged: staging it would
+# sweep your in-progress edit into a commit you did not intend it for, and this
+# project has already lost work to exactly that kind of silent write.
+PREEXISTING="$(git diff --name-only -- CLAUDE.md AGENTS.md)"
+
+OUT="$("$PY" "$ROOT/tools/ted_map.py" --sync 2>&1)" || {
+    echo "[ted_map] could not refresh the status block, committing anyway:"
+    echo "$OUT" | sed 's/^/           /'
+    exit 0
+}
+
+CHANGED=""
+SKIPPED=""
+for f in CLAUDE.md AGENTS.md; do
+    case "$OUT" in
+        *"$f: updated"*) ;;
+        *) continue ;;
+    esac
+    case " $PREEXISTING " in
+        *" $f "*) SKIPPED="$SKIPPED $f" ;;
+        *) git add -- "$ROOT/$f" && CHANGED="$CHANGED $f" ;;
+    esac
+done
+
+[ -n "$CHANGED" ] && echo "[ted_map] status block refreshed:$CHANGED"
+[ -n "$SKIPPED" ] && {
+    echo "[ted_map] refreshed but NOT staged:$SKIPPED"
+    echo "           you had unstaged edits there — commit them yourself so"
+    echo "           nothing of yours rides along in this commit by accident."
+}
+exit 0
