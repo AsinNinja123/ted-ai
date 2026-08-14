@@ -73,6 +73,46 @@ def reasoning_effort_for(text):
     return "none"
 
 
+_ACTION_VERBS = (r"closed|opened|quit|launched|sent|texted|emailed|played|paused|"
+                 r"skipped|scheduled|created|deleted|typed|copied|muted")
+
+# Only Ted's OWN completed actions count. The verb has to either start a
+# sentence — Ted's house style is terse, "Closed VS Code." — or follow "I".
+# Without that anchor, "you closed that tab yourself" tripped the check, and a
+# warning that fires on ordinary conversation is one you learn to ignore.
+_ACTION_CLAIM_RE = re.compile(
+    r"(?:^|(?<=[.!?]\s)|(?<=[.!?]\s\s))\s*(?:" + _ACTION_VERBS + r")\b"
+    r"|\bi(?:'ve| have)?\s+(?:just\s+)?(?:" + _ACTION_VERBS + r")\b",
+    re.I,
+)
+# Reads as past tense but is not a claim that something got done.
+_NOT_A_CLAIM_RE = re.compile(
+    r"\b(?:can't|cannot|couldn't|could not|didn't|did not|won't|will not|"
+    r"unable|haven't|have not|never|want me to|shall i|should i)\b", re.I,
+)
+
+
+def claims_completed_action(text):
+    """True if the reply says Ted DID something.
+
+    Ted told Charlie "Closed VS Code and Notes." having called no tool at all,
+    then a minute later insisted it had no way to close apps — while close_app
+    was in its menu the whole time, and close_app itself verifies properly
+    before confirming. The lie was upstream of every safeguard: the model
+    narrated the outcome instead of acting, and text with no tool call attached
+    streams straight to the user.
+
+    A prompt rule already forbade this and did not hold, so this is the check in
+    code. Deliberately crude — past tense, first person or sentence-initial,
+    negations excluded — because its job is to notice and say so, not to parse
+    English.
+    """
+    body = (text or "").strip()
+    if not body:
+        return False
+    return bool(_ACTION_CLAIM_RE.search(body)) and not _NOT_A_CLAIM_RE.search(body)
+
+
 def stable_window(items, min_keep, chunk=8):
     """Return a recent-suffix of `items` whose START only moves once every
     `chunk` appends (window length ranges min_keep .. min_keep+chunk-1).
@@ -152,6 +192,12 @@ SYSTEM_PROMPT = (
     "to call back in an hour'. "
 
     # Honesty about actions — the one rule you never break
+    "NEVER write a sentence like 'Closed VS Code' or 'Sent it' unless the tool "
+    "call for it is in this same reply. If you intend to do something, call the "
+    "tool — saying it is not doing it, and the user cannot tell the difference "
+    "until they look. If you are unsure whether a tool exists for something, "
+    "check your tool list before saying you cannot: close_app, open_app and the "
+    "rest are always available to you. "
     "You can ONLY perform actions through your tools. Never claim to have opened, "
     "closed, sent, set, scheduled, added, played, typed, or done anything unless a "
     "tool actually ran and confirmed it. If you can't run the tool or aren't sure it "
@@ -883,6 +929,20 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     yield final
                 else:
                     full_reply += turn_text
+                    # No tool ran this turn. If the model nonetheless said it
+                    # did something, say so rather than letting it stand.
+                    if (tool_runtime is not None and total_calls == 0
+                            and claims_completed_action(turn_text)):
+                        print("[honesty] model claimed a completed action with "
+                              "no tool call", flush=True)
+                        error_log.error(
+                            "Model claimed a completed action with no tool call: "
+                            f"{turn_text.strip()[:200]}")
+                        correction = ("\n\n(Correction: I didn't actually run "
+                                      "anything just then — say it again and "
+                                      "I'll do it for real.)")
+                        full_reply += correction
+                        yield correction
                 break
 
             ordered = [calls[i] for i in sorted(calls)]

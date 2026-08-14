@@ -408,6 +408,38 @@ llm.providers.active_provider = lambda: "ollama"
 check("a real fall back to the local brain reports Groq down", not llm.groq_ok())
 llm.providers.active_provider = _orig_active
 
+print("\n— a claimed action with no tool call is corrected, not shipped —")
+
+# Ted said "Closed VS Code and Notes." having called no tool at all, then a
+# minute later insisted it had no way to close apps — while close_app was in
+# its menu the whole time, and close_app itself verifies before confirming.
+# The lie was upstream of every safeguard: the model narrated the outcome
+# instead of acting, and text with no tool call streams straight through.
+
+check("a past-tense action claim is recognised",
+      llm.claims_completed_action("Closed VS Code and Notes."))
+check("...as is a first-person one", llm.claims_completed_action("I've sent it."))
+check("an inability is not a claim",
+      not llm.claims_completed_action("I can't close apps, so I couldn't."))
+check("an intention is not a claim",
+      not llm.claims_completed_action("Opening VS Code now..."))
+check("a question is not a claim",
+      not llm.claims_completed_action("Want me to close VS Code?"))
+check("an action the USER took is not Ted's claim",
+      not llm.claims_completed_action(
+          "You closed that tab yourself a minute ago, so it should be gone."))
+
+llm.chat_create = scripted(FakeStream([text_chunk("Closed VS Code and Notes.")]))
+out, _ = run("close vs code and notes", runtime(lambda n, a: "unused"))
+check("the user is told nothing actually ran", "didn't actually run" in out)
+check("...while still seeing what the model said", "Closed VS Code" in out)
+
+llm.chat_create = scripted(FakeStream([text_chunk(
+    "You closed that tab yourself a minute ago, so it should be gone.")]))
+out, _ = run("did I close it?", runtime(lambda n, a: "unused"))
+check("ordinary conversation gets no disclaimer",
+      "didn't actually run" not in out)
+
 llm.chat_create = _orig_chat_create
 
 print("\n" + "=" * 50)
