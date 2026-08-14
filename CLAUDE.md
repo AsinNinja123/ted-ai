@@ -27,7 +27,7 @@
 | Tools | 32 |
 | Routing | one streamed call; legacy path behind TED_LEGACY_LADDER=1 |
 | Memory | 21 facts, ~350 chat turns, 3 session memories |
-| Tests | 323 checks across 11 suites |
+| Tests | 331 checks across 12 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**
