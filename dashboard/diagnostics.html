@@ -183,9 +183,17 @@ function timeOf(ts) {
 async function loadStats() {
   const s = await (await fetch("/api/diagnostics/stats")).json();
   const limit = s.tpm_limit || 8000, tpm = s.tpm || 0;
-  const pct = Math.min(100, Math.round((tpm / limit) * 100));
-  $("#tpm").textContent = tpm.toLocaleString();
-  $("#tpmLimit").textContent = " / " + limit.toLocaleString() + "  (" + pct + "%)";
+  // Prefer the provider's own remaining-budget header when we have it: our own
+  // sum over the last 60s is an approximation of a window whose exact shape is
+  // the provider's business, and the header is the number that decides whether
+  // the next message is served.
+  const haveReported = s.tpm_limit_source === "provider"
+                     && typeof s.tpm_remaining === "number";
+  const used = haveReported ? Math.max(0, limit - s.tpm_remaining) : tpm;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  $("#tpm").textContent = used.toLocaleString();
+  $("#tpmLimit").textContent = " / " + limit.toLocaleString() + "  (" + pct + "%)"
+    + (haveReported ? "" : "  assumed");
   const bar = $("#bar");
   bar.className = "bar" + (pct >= 90 ? " bad" : pct >= 65 ? " warn" : "");
   bar.firstElementChild.style.width = pct + "%";

@@ -178,20 +178,6 @@ SYSTEM_PROMPT = (
     "favourite, a best, a worst, or what you think — pick one and say why in a line. "
     "'I don't have opinions' is a hedge like any other. If he's wrong, say so.\n"
 
-    # The one rule the persona never breaks. See README 5.3 — do not remove.
-    "ACTIONS — the rule you never break: you act ONLY through tools. Never write "
-    "'Closed VS Code', 'Sent it' or 'Playing that' unless the tool call is in this "
-    "same reply and came back successful. Saying it is not doing it, and he cannot "
-    "tell the difference until he looks. Before claiming you cannot do something, "
-    "check your tool list — and find_tools loads more.\n"
-
-    "HIS WORDS ARE HIS: messages, emails and notes go out from his device, in his "
-    "name, to people he chose. Given the words, send them exactly — no fixed "
-    "grammar, no added greeting, no softened tone. His typos and slang are how he "
-    "talks. Don't argue that a message is too blunt or that a joke might land wrong; "
-    "that is his call and his friend knows him. Slurs and abuse you still refuse, "
-    "in one line.\n"
-
     "GAPS: never freeze, never list every interpretation, never say you're confused. "
     "Either assume the most reasonable thing, act, and name the assumption — or ask "
     "ONE short question, and only when the choice actually changes the outcome.\n"
@@ -504,6 +490,30 @@ class ToolRuntime:
 # Tool-selection instructions. These live in the STATIC system message
 # (appended to the persona once, identically every turn) rather than in the
 # per-turn context block, so they stay inside the cacheable prefix.
+# Rules that only exist because tools exist. They were in the persona, which
+# meant every "how are you" paid ~200 tokens for instructions about not lying
+# about closing VS Code and about not rewriting Charlie's iMessages — on a turn
+# where no tool was attached and neither was reachable.
+#
+# They are not softened, and nothing was dropped. They are attached whenever a
+# real tool is in the menu, which is the only situation in which they can
+# apply. The honesty rule in particular (README 5.3) rides along with every
+# turn that could actually take an action.
+TOOL_RULES = (
+    "\nACTIONS — the rule you never break: you act ONLY through tools. Never write "
+    "'Closed VS Code', 'Sent it' or 'Playing that' unless the tool call is in this "
+    "same reply and came back successful. Saying it is not doing it, and he cannot "
+    "tell the difference until he looks. Before claiming you cannot do something, "
+    "check your tool list — and find_tools loads more.\n"
+
+    "HIS WORDS ARE HIS: messages, emails and notes go out from his device, in his "
+    "name, to people he chose. Given the words, send them exactly — no fixed "
+    "grammar, no added greeting, no softened tone. His typos and slang are how he "
+    "talks. Don't argue that a message is too blunt or that a joke might land wrong; "
+    "that is his call and his friend knows him. Slurs and abuse you still refuse, "
+    "in one line.\n"
+)
+
 TOOL_GUIDANCE = (
     "\n\nTOOLS: aim at the whole outcome, not the first verb. Act when he wants "
     "something done; just answer when he wants conversation. Fire every independent "
@@ -514,6 +524,16 @@ TOOL_GUIDANCE = (
     "for anything current or changing, and cite the URLs. Prefer known preferences "
     "and low-risk defaults; ask one short question only when a missing value "
     "changes the result or makes an action unsafe."
+)
+
+# What a turn carrying nothing but the discovery tool gets. The full guidance
+# describes chaining, web search and citation — none of which can happen until
+# find_tools has actually loaded something. If it does, the next round gets the
+# real thing.
+DISCOVERY_GUIDANCE = (
+    "\n\nTOOLS: your menu holds only find_tools right now. If this turn needs "
+    "an action you cannot see a tool for, call find_tools and then use what it "
+    "loads. Otherwise just answer."
 )
 
 MAX_TOOL_ROUNDS = 5
@@ -814,11 +834,24 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                      else 10 if context_scope == "relevant" else 8)
     recent = stable_window(conversation[1:], history_limit)
     # Tool guidance is concatenated onto the persona rather than sent as its own
-    # message: it is byte-identical every turn, so it stays in the cached prefix.
+    # message: for a given shape it is byte-identical every turn, so it stays in
+    # the cached prefix.
+    #
+    # The shape now depends on whether a REAL tool is attached. A menu holding
+    # nothing but find_tools cannot chain calls, cannot search the web, cannot
+    # send a message and cannot lie about having closed an app — so the rules
+    # governing all of that are ~360 tokens the turn has no use for. On "how
+    # are you" that was most of the bill.
+    #
+    # There are exactly two variants, not one per turn, so prefix caching still
+    # works: conversation, and conversation-with-tools.
+    _real_tools = bool(tool_runtime) and any(
+        (sc.get("function") or {}).get("name") != "find_tools"
+        for sc in tool_runtime.schemas)
     _system = conversation[0]
     if tool_runtime is not None:
-        _system = {"role": "system",
-                   "content": conversation[0]["content"] + TOOL_GUIDANCE}
+        _system = {"role": "system", "content": conversation[0]["content"] + (
+            TOOL_RULES + TOOL_GUIDANCE if _real_tools else DISCOVERY_GUIDANCE)}
     messages = ([_system] + recent
                 + [{"role": "system", "content": context},
                    {"role": "user", "content": user_input}])

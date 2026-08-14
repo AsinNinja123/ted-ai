@@ -42,12 +42,21 @@ check("…and the caller can still ask for recency explicitly",
 print("\n— facts —")
 memory.save_fact("Charlie", "LIKES", "jazz")
 memory.save_fact("Charlie", "LIKES", "jazz")   # duplicate is a no-op
-check("fact recall", "LIKES jazz" in memory.get_facts_about("Charlie"))
+# The prompt encoding changed Aug 14 — the subject is stated once and
+# relationships are lower-cased with underscores removed, because repeating
+# "Charlie" 33 times in SCREAMING_SNAKE_CASE was ~75 tokens of packaging on
+# every request. What is STORED is unchanged; check storage separately so a
+# future encoding change cannot quietly drop a fact.
+check("fact recall", "likes jazz" in memory.get_facts_about("Charlie"))
+check("…and the canonical form is what is stored",
+      ("LIKES", "jazz") in memory.list_facts("Charlie"))
 
 print("\n— facts: normalization, supersede, dedupe —")
 memory.save_fact("Charlie", "lives in", "Spirit Lake")      # lowercase + spaces
 check("relationship normalized to LIVES_IN",
-      "LIVES_IN Spirit Lake" in memory.get_facts_about("Charlie"))
+      ("LIVES_IN", "Spirit Lake") in memory.list_facts("Charlie"))
+check("…and rendered readably in the prompt",
+      "lives in Spirit Lake" in memory.get_facts_about("Charlie"))
 memory.save_fact("Charlie", "LIVES_IN", "Spirit Lake, Iowa")
 _towns = [o for r, o in memory.list_facts("Charlie") if r == "LIVES_IN"]
 check("single-valued fact keeps exactly one value", len(_towns) == 1)

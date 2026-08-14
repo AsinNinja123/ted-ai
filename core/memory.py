@@ -330,14 +330,33 @@ def forget_fact(subject, relationship=None, obj=None):
 
 
 def get_facts_about(subject):
-    """Return a space-joined string of known facts about subject, or ''.
+    """Return known facts about subject as a compact string, or ''.
 
     Newest first and capped at MAX_FACTS_IN_PROMPT so a long-lived database
     can't quietly crowd out the rest of the prompt.
+
+    The encoding matters more than it looks. This used to emit one full triple
+    per fact — "Charlie LIVES_IN Spirit Lake, Iowa Charlie STUDIES computer
+    science Charlie ATTENDS ..." — repeating the subject 25 times and spelling
+    every relationship in SCREAMING_SNAKE_CASE. That was 234 tokens on every
+    single request, and roughly a third of it was the word "Charlie" and some
+    underscores. The facts themselves are worth their space; their packaging
+    was not.
+
+    Now: the subject is stated once, relationships are lower-cased with the
+    underscores removed, and facts sharing a relationship are merged. Same
+    information, and it reads more like a sentence than a database dump, which
+    the model handles at least as well.
     """
     rows = _query("SELECT relationship, object FROM facts WHERE subject = ? "
                   "ORDER BY created DESC LIMIT ?", (subject, MAX_FACTS_IN_PROMPT))
-    return " ".join(f"{subject} {r} {o}" for r, o in rows)
+    if not rows:
+        return ""
+    grouped = {}
+    for rel, obj in rows:
+        grouped.setdefault(rel.replace("_", " ").lower(), []).append(obj)
+    parts = [f"{rel} {', '.join(objs)}" for rel, objs in grouped.items()]
+    return f"{subject}: " + "; ".join(parts)
 
 
 def list_facts(subject):

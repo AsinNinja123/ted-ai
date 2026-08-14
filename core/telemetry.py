@@ -276,7 +276,24 @@ def stats(window=3600.0):
         out["avg_tokens"] = round(out["avg_tokens"])
         out["avg_ms"] = round(out["avg_ms"])
         out["tpm"] = token_rate()
-        out["tpm_limit"] = DEFAULT_TPM_LIMIT
+        # Prefer what the provider itself reported over the constant above.
+        # DEFAULT_TPM_LIMIT is a number read off a blog; the header is the
+        # account's actual ceiling for the model actually being used.
+        reported = {}
+        try:
+            from core import providers
+            reported = providers.rate_limit_status()
+        except Exception:
+            pass
+        if reported.get("limit_tokens"):
+            out["tpm_limit"] = reported["limit_tokens"]
+            out["tpm_limit_source"] = "provider"
+            out["tpm_remaining"] = reported.get("remaining_tokens", 0)
+            out["rpm_limit"] = reported.get("limit_requests", 0)
+            out["rpm_remaining"] = reported.get("remaining_requests", 0)
+        else:
+            out["tpm_limit"] = DEFAULT_TPM_LIMIT
+            out["tpm_limit_source"] = "assumed"
         return out
     except Exception:
         return {}

@@ -278,5 +278,40 @@ diag = open(os.path.join(_root, "dashboard", "diagnostics.html"), encoding="utf-
 check("…and shown in the panel", "ctxBars" in diag)
 
 
+print("\n— the gauge should show the real ceiling, not a number off a blog —")
+
+from core import providers as _pv                              # noqa: E402
+
+_pv._rate_limit.update({"limit_tokens": 0, "remaining_tokens": 0})
+st = telemetry.stats()
+check("with nothing reported, the assumed limit is labelled assumed",
+      st["tpm_limit_source"] == "assumed" and st["tpm_limit"] == 8000)
+
+_pv._read_rate_headers({
+    "x-ratelimit-limit-tokens": "30000",
+    "x-ratelimit-remaining-tokens": "24310",
+    "x-ratelimit-limit-requests": "1000",
+    "x-ratelimit-remaining-requests": "998",
+    "x-ratelimit-reset-tokens": "11.4s",
+})
+st = telemetry.stats()
+check("once the provider reports one, that wins", st["tpm_limit"] == 30000)
+check("…and is labelled as the provider's", st["tpm_limit_source"] == "provider")
+check("…and carries what is actually left", st["tpm_remaining"] == 24310)
+check("…including the request budget", st["rpm_limit"] == 1000)
+
+_pv._read_rate_headers({"x-ratelimit-limit-tokens": "not-a-number"})
+check("garbage headers are ignored rather than zeroing the gauge",
+      _pv.rate_limit_status()["limit_tokens"] == 30000)
+_pv._read_rate_headers({})
+check("missing headers leave the last known value alone",
+      _pv.rate_limit_status()["limit_tokens"] == 30000)
+_pv._rate_limit.update({"limit_tokens": 0, "remaining_tokens": 0})
+
+llm_src2 = open(os.path.join(_root, "core", "llm.py"), encoding="utf-8").read()
+check("a chat turn does not carry the tool rules",
+      "TOOL_RULES + TOOL_GUIDANCE if _real_tools else DISCOVERY_GUIDANCE" in llm_src2)
+
+
 print("\n" + "=" * 50)
 print(f"{_checks[0] - _fails[0]} passed, {_fails[0]} failed")

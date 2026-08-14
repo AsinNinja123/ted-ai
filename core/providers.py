@@ -53,6 +53,45 @@ _groq = Groq(api_key=GROQ_API_KEY, max_retries=0) if GROQ_API_KEY else None
 # One-element list so the flag can be flipped from inside chat_create without a
 # global declaration, and so tests can reset it.
 _USAGE_SUPPORTED = [True]
+
+# Groq reports the account's real ceiling and what is left of it on every
+# response, in headers. Until now the diagnostics gauge was drawn against a
+# number typed in from a blog post — 8,000 — which is per-model, per-account,
+# and changes. Reading it means the gauge shows Charlie's actual remaining
+# budget instead of my guess at it.
+#
+# Behind a capability flag for the same reason stream_options is: `with_raw_
+# response` does not exist on every SDK version, and this module treats any
+# cloud exception as grounds to fall back to the local brain. A telemetry
+# nicety must never be able to take the cloud offline. That already happened
+# once this week.
+_HEADERS_SUPPORTED = [True]
+_rate_limit = {"limit_tokens": 0, "remaining_tokens": 0,
+               "limit_requests": 0, "remaining_requests": 0, "reset": ""}
+
+
+def rate_limit_status():
+    """The provider's own view of the budget, or zeros if never reported."""
+    return dict(_rate_limit)
+
+
+def _read_rate_headers(headers):
+    """Pull Groq's x-ratelimit-* headers into module state. Never raises."""
+    try:
+        def _num(name):
+            raw = headers.get(name) or headers.get(name.title()) or ""
+            raw = str(raw).strip()
+            return int(float(raw)) if raw.replace(".", "", 1).isdigit() else 0
+        limit = _num("x-ratelimit-limit-tokens")
+        if limit:
+            _rate_limit["limit_tokens"] = limit
+            _rate_limit["remaining_tokens"] = _num("x-ratelimit-remaining-tokens")
+            _rate_limit["limit_requests"] = _num("x-ratelimit-limit-requests")
+            _rate_limit["remaining_requests"] = _num("x-ratelimit-remaining-requests")
+            _rate_limit["reset"] = str(
+                headers.get("x-ratelimit-reset-tokens", "") or "")
+    except Exception:
+        pass
 _active_provider = "none"
 _last_cloud_error = ""
 _last_model = ""
@@ -394,7 +433,24 @@ def chat_create(**kwargs):
         params.setdefault("reasoning_format", "hidden")
         try:
             try:
-                result = _groq.chat.completions.create(**params)
+                if _HEADERS_SUPPORTED[0]:
+                    # with_raw_response gives the HTTP headers alongside the
+                    # normal return value. .parse() hands back exactly what
+                    # .create() would have, streaming included, so callers
+                    # cannot tell the difference.
+                    try:
+                        raw = _groq.chat.completions.with_raw_response.create(**params)
+                        _read_rate_headers(raw.headers)
+                        result = raw.parse()
+                    except (AttributeError, TypeError) as hexc:
+                        if "stream_options" in str(hexc):
+                            raise
+                        _HEADERS_SUPPORTED[0] = False
+                        print("[provider] this groq SDK cannot expose response "
+                              "headers — the rate-limit gauge will estimate.")
+                        result = _groq.chat.completions.create(**params)
+                else:
+                    result = _groq.chat.completions.create(**params)
             except TypeError as exc:
                 # The installed SDK does not know this argument. Drop it, never
                 # try again this session, and say so once — exact token counts

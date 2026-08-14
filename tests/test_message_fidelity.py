@@ -112,9 +112,15 @@ llm_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 # rewrite that kept every rule intact. Import the prompt and check the
 # behaviour it describes rather than grepping the source for a sentence.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.llm import SYSTEM_PROMPT as _PERSONA
+from core.llm import SYSTEM_PROMPT as _PERSONA, TOOL_RULES as _TOOL_RULES
 
-_p = _PERSONA.lower()
+# The action and message rules moved OUT of the always-on persona on Aug 14 and
+# are attached whenever a real tool is in the menu. They were costing ~190
+# tokens on every "how are you", a turn where no tool is attached and neither
+# rule can be reached. Checking the text alone is no longer enough — the
+# wiring is now the thing that could break — so the attachment is checked too,
+# further down.
+_p = (_PERSONA + _TOOL_RULES).lower()
 check("Ted is told to send the user's words unchanged",
       "send them exactly" in _p
       and "no fixed grammar" in _p and "no added greeting" in _p)
@@ -170,3 +176,17 @@ check("an API error is unknown, not success",
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
+
+
+print("\n— …and those rules are attached whenever a tool could act —")
+
+llm_src = open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "core", "llm.py"), encoding="utf-8").read()
+check("a real tool in the menu brings the rules with it",
+      "TOOL_RULES + TOOL_GUIDANCE if _real_tools" in llm_src)
+check("…and 'real' means something other than the discovery tool",
+      'name") != "find_tools"' in llm_src)
+check("a discovery-only turn gets the short guidance instead",
+      "else DISCOVERY_GUIDANCE" in llm_src)
+check("there are exactly two shapes, so prefix caching still works",
+      llm_src.count("DISCOVERY_GUIDANCE") >= 2)
