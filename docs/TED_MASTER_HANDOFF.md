@@ -992,6 +992,13 @@ cd ~/ted-ai && source venv/bin/activate && python hud.py
 cd ~/ted-ai && source venv/bin/activate
 for t in tests/test_*.py; do printf "%-34s " "$t"; python "$t" | tail -1; done
 
+# What is Ted, right now — generated from the code, never hand-written
+python tools/ted_map.py            # writes ted_map.html
+python tools/ted_map.py --markdown # the same facts as text
+python tools/ted_map.py --sync     # refresh the block in CLAUDE.md / AGENTS.md
+bash tools/install_hooks.sh        # once per clone: the pre-commit hook does --sync for you
+#   ...or open http://127.0.0.1:5175/map while Ted is running
+
 # Which brain answered last, and why
 grep '\[provider\]' data/ted_launch.log     # only prints when Groq failed over
 ollama list                                  # is qwen3.5:35b-a3b actually pulled?
@@ -1101,9 +1108,15 @@ this repo — read `docs/AI_WORKFLOW.md` before editing. If `git status` shows
 files you did not modify, someone else is mid-task; say so rather than editing
 them.
 
-**Then read, in this order:** `docs/DECISION_FLOW.md` (how it thinks, updated
-Aug 13) → `README.md` (what it does) → `core/providers.py` (small, and it is the
-door every thought goes through) → `core/app.py::_respond` top to bottom.
+**Then read, in this order:** the generated block in `CLAUDE.md` (current
+facts, refreshed by the commit hook) → `docs/DECISION_FLOW.md` (how it thinks,
+updated Aug 13) → `README.md` (what it does) → `core/providers.py` (small, and
+it is the door every thought goes through) → `core/app.py::_respond` top to
+bottom.
+
+**Do not trust this document's numbers over `python tools/ted_map.py`.** That
+script reads the code; this file was written by hand and has been wrong before.
+Where they disagree, the script is right and this file needs fixing.
 
 **Highest-value actions available right now, in order:**
 
