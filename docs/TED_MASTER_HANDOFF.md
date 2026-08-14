@@ -1,11 +1,17 @@
 # TED — MASTER HANDOFF
 
-**Written:** August 12, 2026 · **Revised:** August 14, 2026
+**Written:** August 12, 2026 · **Revised:** August 14, 2026 (after the first day of real use)
 **Written for:** another AI model picking up this project cold, with no prior context
 **Subject:** "Ted" — Charlie Rowenhorst's personal AI assistant
 **Repo:** `~/ted-ai` on `charlies-macbook-pro-local` (macOS, Apple Silicon, 48 GB / 2 TB)
 **Owner:** Charlie Rowenhorst — CS sophomore at Northwest Christian College (NWC), Iowa
 
+> **Aug 14, later.** Charlie used Ted for a day instead of testing him, and
+> six separate causes of freezing came out of it — none of them the model, most
+> of them older than this document. §Phase 7 has them. §8.0 has the one question
+> still open, and the honest note that it was diagnosed overconfidently once
+> already.
+>
 > **Aug 14 revision.** Between Aug 12 and Aug 14 the model layer was rebuilt twice
 > and the two-call ladder became one streamed call. Three things this document
 > previously asserted are now false and were rewritten, not annotated: the model
@@ -286,6 +292,77 @@ guarded matched by prefix; arithmetic falling through to the model after gate 5
 was gutted; text streamed alongside a tool call missing from the stored turn, so
 Ted remembered saying something different from what he said; and `groq_ok()`
 reporting an outage at boot because "no provider yet" was read as "cloud down."
+
+---
+
+### Phase 7 — First real daily use, and what it exposed (Aug 13 – Aug 14)
+
+Charlie stopped testing Ted and started *using* him, and the difference was
+brutal. His words: "I cannot get a conversation out of ted. he freezes every
+damn line." Everything below came out of one afternoon of that.
+
+**The freeze had two causes, neither of them the model.**
+
+`ask()` took the busy lock before doing anything, with an 8 second timeout — so
+**stop was queued behind the thing it was meant to stop.** A real log shows a
+turn hung for 41 seconds while three separate "stop" attempts were each answered
+"the previous request is still finishing". From the text box there was no way
+out. That code has been there since `ask()` was written, which is why the
+symptom predates every change made this week. Stop now bypasses the lock, but
+only while the lock is held.
+
+The 41 seconds itself was **the Groq SDK retrying twice on its own, silently,
+with backoff.** Its timeout is per attempt, so a "30 second" request runs well
+past a minute with no output and no error. `max_retries=0` now.
+
+**Two lies, both of the same shape: intent reported as outcome.**
+
+`play_track` said "Playing X" whenever `start_playback` did not raise. The Web
+API accepts that call in plenty of cases where nothing plays. `_confirm_playing`
+polls `current_playback` and returns True / False / **None**, and None is
+deliberately not success.
+
+Worse: Ted said "Closed VS Code and Notes." **having called no tool at all**,
+then insisted it had no way to close apps — while `close_app` was in its menu
+and already verified quits properly. Every safeguard was downstream of the
+failure. `claims_completed_action()` in `core/llm.py` now catches a past-tense
+claim on a turn where no tool ran, appends a correction, and logs it.
+
+**Ted could not send Charlie's own words.** `send_message` took `instruction` (a
+brief) and `style`; every message went through a model rewrite. Asked to send
+"hey this is ted", Ted asked what vibe it should have and then wrote its own.
+There is now a `text` argument sent byte for byte. The confirmation also quotes
+the message — Charlie was asked to approve a blank one and reasonably objected.
+
+**Retrieval could delay a reply by 16 seconds.** Four context lookups, each
+joined with its own `timeout=4.0`, against a comment claiming a 4 second budget.
+One shared deadline now. The knowledge base was the usual offender and loads at
+startup instead.
+
+**A dead local brain cost ~23 seconds per message.** `_ensure_ollama` polled 20
+times at a 1s timeout; ollama is installed on the Mac but never starts. 6 second
+budget, then a 5 minute cooldown.
+
+**Instrumentation, because none of this was visible.** `[timing] first token`
+was measured from *inside* the stream, after the request was accepted — every
+one of the waits above was outside the only number being printed. There are now
+`request accepted after Nms` and `turn to first output Nms`.
+
+### The open question, honestly stated
+
+Two things point at the model rather than the plumbing, and both are unresolved:
+
+1. Every message costs ~6,400 tokens (3,645 of it tool schemas) against a
+   **6,000 tokens-per-minute** free tier. One message per minute fits. A
+   conversation is by definition several in a row.
+2. The Qwen3.6 family has documented tool-calling failures — the model
+   "acknowledges needing to perform actions but produces no actual tool calls",
+   which is exactly the VS Code incident.
+
+Charlie's position, which deserves recording: **this behaviour predates the Qwen
+swap**, so neither of the above can be the whole story. The next session should
+resolve it with the logs, not with argument — `grep '\[provider\]'` for rate
+limits, `[honesty]` for phantom actions, `[timing]` for where the wait is.
 
 ---
 
@@ -646,8 +723,28 @@ can be copied. `ui/ted_hud_orb.html` is kept as the orb variant.
 
 ## 8. Open problems, ranked
 
-Reordered Aug 14. Two of the Aug 12 entries are closed; one is closed pending
-verification on the Mac.
+Reordered Aug 14 after the first real day of use. The top item is no longer a
+refactor — it is that nobody knows yet whether Ted is usable.
+
+### 8.0 Unresolved: is the remaining slowness the tier, the model, or neither?
+
+Charlie's report after a day of use: "I cannot get a conversation out of ted."
+Six mechanical causes were found and fixed (§Phase 7). Whether that is *enough*
+is unknown, and the two candidates left disagree with each other:
+
+- **The tier.** ~6,400 tokens per message against a 6,000 TPM free limit. Fits
+  one message a minute. Cutting the 3,645 tokens of tool schemas or paying for a
+  tier without the ceiling both solve it.
+- **The model.** Qwen3.6 has documented tool-calling failures matching the
+  observed "said it closed the apps, called nothing" incident exactly.
+- **Charlie's objection, which stands:** the freezing predates the Qwen swap, so
+  neither explains everything. He is right that this was diagnosed with too much
+  confidence once already.
+
+**Settle it with logs, not argument.** After a normal session:
+`grep -c '\[provider\]'` (rate limits), `grep '\[honesty\]'` (phantom
+actions), `grep '\[timing\] turn to first output'` (where the wait is). Those
+three numbers decide it.
 
 ### 8.1 `core/app.py` is 126 KB and the decomposition never happened — **the central debt**
 
@@ -1108,8 +1205,9 @@ this repo — read `docs/AI_WORKFLOW.md` before editing. If `git status` shows
 files you did not modify, someone else is mid-task; say so rather than editing
 them.
 
-**Then read, in this order:** the generated block in `CLAUDE.md` (current
-facts, refreshed by the commit hook) → `docs/DECISION_FLOW.md` (how it thinks,
+**Then read, in this order:** §Phase 7 and §8.0 of this document (what a day
+of real use exposed, and what is still unresolved) → the generated block in
+`CLAUDE.md` (current facts, refreshed by the commit hook) → `docs/DECISION_FLOW.md` (how it thinks,
 updated Aug 13) → `README.md` (what it does) → `core/providers.py` (small, and
 it is the door every thought goes through) → `core/app.py::_respond` top to
 bottom.
@@ -1120,9 +1218,10 @@ Where they disagree, the script is right and this file needs fixing.
 
 **Highest-value actions available right now, in order:**
 
-1. **Verify the daemon on the Mac** — `docs/DAEMON_HANDOFF.md`. It is written and
-   unit-tested and has never run on macOS. This is the last thing between Charlie
-   and proactive class reminders, and the semester starts Aug 25.
+1. **Find out whether Ted is usable now.** Six mechanical causes of freezing
+   were fixed on Aug 14 and none of them have been observed in real use since.
+   Have Charlie hold one ordinary conversation, then read the three log numbers
+   in §8.0. Everything else on this list is guesswork until that is known.
 2. **Watch one real Groq→Ollama handover** (§8.2). A 180-second cold load that
    nobody has timed is the difference between a fallback and a hang.
 3. **Verify barge-in** with `TED_DEBUG_BARGE=1`, including the sentence-boundary
@@ -1144,5 +1243,5 @@ document — including this one — without re-checking the repo first.
 
 *End of handoff. Compiled from the repo, git history, in-repo docs, Google Drive
 documents, and persistent memory. Revised Aug 14, 2026 against the working tree
-at `3f5d2ac`. Past chat transcripts were not machine-readable; where a claim
+at `bac0155`, after a day of real use rather than testing. Past chat transcripts were not machine-readable; where a claim
 comes only from conversation it is marked [stated].*
