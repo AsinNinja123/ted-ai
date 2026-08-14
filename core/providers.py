@@ -38,7 +38,16 @@ except Exception:
     OLLAMA_URL = "http://127.0.0.1:11434"
 
 
-_groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+# max_retries=0 is deliberate. The SDK defaults to retrying twice, silently,
+# with backoff — and its timeout is PER ATTEMPT, so one "30 second" request can
+# take well over a minute while the user sees nothing at all. A real log shows
+# `request accepted after 40939ms (groq)`: forty-one seconds inside a single
+# create() call, no error, no output, no way to tell it apart from a hang.
+#
+# Retrying is still fine — but it belongs where it can say what it is doing.
+# Below, a rate limit falls through to the local brain, and failing that
+# surfaces as an error the user can read within a second or two.
+_groq = Groq(api_key=GROQ_API_KEY, max_retries=0) if GROQ_API_KEY else None
 _active_provider = "none"
 _last_cloud_error = ""
 
@@ -290,7 +299,12 @@ def chat_create(**kwargs):
         except Exception as exc:
             cloud_error = exc
             _last_cloud_error = str(exc)
-            print(f"[provider] Groq unavailable ({str(exc)[:100]}) — using local {LOCAL_CHAT_MODEL}")
+            if "429" in str(exc) or "rate limit" in str(exc).lower():
+                print(f"[provider] RATE LIMITED on {CLOUD_CHAT_MODEL} — "
+                      f"trying local {LOCAL_CHAT_MODEL}")
+            else:
+                print(f"[provider] Groq unavailable ({str(exc)[:100]}) — "
+                      f"using local {LOCAL_CHAT_MODEL}")
 
     try:
         result = _ollama_create(**kwargs)

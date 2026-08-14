@@ -2706,6 +2706,29 @@ class TedApi:
         self.interrupt_speech = True
         engine.stop_playback()
         print(f"[input] typed request received: {text!r}", flush=True)
+
+        # STOP MUST NEVER QUEUE BEHIND THE THING IT IS STOPPING.
+        #
+        # Every typed turn used to wait up to 8s for the busy lock, stop
+        # included — so the one command whose entire purpose is escaping a stuck
+        # turn was the one command a stuck turn could block. In a real log: a
+        # request hung for 41 seconds and three separate "stop" attempts were
+        # answered with "the previous request is still finishing". There is no
+        # way out of that from the text box, which is what being frozen means.
+        #
+        # Only when the lock is actually held. Otherwise stop behaves normally
+        # and keeps its usual job of pausing music when Ted is not speaking.
+        if _is_stop_command(text) and self.busy:
+            self._pending_msg = None
+            self._pending_compose = None
+            self._pending_disambig_compose = None
+            self._pending_tool_confirmation = None
+            print("[input] stop accepted while busy — cancelling in flight",
+                  flush=True)
+            add_message(self.window, "ted", "Stopped.")
+            set_state(self.window, "idle")
+            return True
+
         def flow():
             if not self._busy.acquire(timeout=8.0):
                 reply = ("The previous request is still finishing, so I did not run this one. "

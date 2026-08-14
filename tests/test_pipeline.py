@@ -636,5 +636,37 @@ check("a local-brain turn that died says so",
 llm.providers.active_provider = _orig_active
 llm.providers.last_cloud_error = _orig_err
 
+print("\n— stop is never blocked by the thing it is stopping —")
+
+# Regression, from a real log: a turn hung for 41 seconds and three separate
+# "stop" attempts were each answered with "the previous request is still
+# finishing". The one command whose job is escaping a stuck turn was the one
+# command a stuck turn could block. From the text box there was no way out.
+api = make_api()
+api._pending_tool_confirmation = {"name": "send_message", "args": {}}
+api._busy.acquire()                       # a turn is in flight and wedged
+try:
+    check("Ted reports busy", api.busy)
+    SPOKEN.clear()
+    api.window.js.clear()
+    accepted = api.ask("stop")
+    check("stop is accepted", accepted is True)
+    check("…and clears anything left armed",
+          api._pending_tool_confirmation is None)
+    # ask() always returns fast because it hands off to a thread; what matters
+    # is what the USER is told. Under the old code that thread sat on the lock
+    # for 8 seconds and then said the previous request was still finishing.
+    time.sleep(0.4)
+    _js = " ".join(api.window.js)
+    check("…and the user is told it stopped, not that Ted is busy",
+          "Stopped." in _js and "still finishing" not in _js)
+finally:
+    api._busy.release()
+
+# Not busy: stop keeps its normal behaviour and goes through _respond, where it
+# also pauses the music when Ted is not the one talking.
+api = make_api()
+check("with nothing running, stop is handled normally", not api.busy)
+
 print(f"\n{'=' * 50}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
