@@ -96,6 +96,21 @@ for phrase in ("open Notes",
     check(f"real action still qualifies: {phrase!r}",
           routing.likely_action_request(phrase))
 
+# Aug 14, from a real session: "play a different one" arrived with an empty
+# menu because the music family regex wanted the literal words song/music/
+# spotify and "play" was not one of them. Ted burned a find_tools round trip,
+# hit the free-tier rate limit mid-recovery, fell through to the local brain,
+# and took 7.8 seconds to change a song.
+_LAST_PLAY = ("Recent verified actions: play_music({'query': 'Let It Go'}) "
+              "-> Playing Let It Go.")
+for phrase in ("play a different one", "ok play another disney song",
+               "play something else", "its not playing", "it's not playing",
+               "skip this one", "play the next one"):
+    check(f"music request reaches the music tools: {phrase!r}",
+          "play_music" in names(routing.select_tool_schemas(phrase, _LAST_PLAY)))
+check("a non-music turn is not given music tools by the continuation words",
+      "play_music" not in names(routing.select_tool_schemas("how are you", _LAST_PLAY)))
+
 check("an action turn still gets no episodic recall",
       routing.memory_scope_for("open Notes", []) == "none")
 check("a conversational verb keeps its ordinary memory scope",

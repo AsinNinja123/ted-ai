@@ -56,7 +56,11 @@ _FAMILIES = (
      ("open_app", "close_app")),
     (r"\b(?:website|browser|browse|navigate|url|\.com\b|youtube|reddit|github|google)\b",
      ("browse_to", "open_app")),
-    (r"\b(?:song|music|spotify|playlist|album|artist|pause|resume|skip|previous track)\b",
+    # "play" itself was missing here, so "play a different one" arrived with an
+    # empty menu, burned a find_tools round trip, hit the rate limit and fell
+    # through to the local brain — 7.8 seconds to change a song.
+    (r"\b(?:play(?:ing|ed|s)?|song|music|spotify|playlist|album|artist|track|listen|"
+     r"pause|resume|skip|next song|previous track|volume)\b",
      ("play_music", "play_playlist", "spotify_control")),
     (r"\b(?:message|text|imessage|send .*? to|tell .*? that)\b",
      ("send_message",)),
@@ -129,7 +133,11 @@ def select_tool_schemas(text, recent_action_text=""):
     names = _family_names(text)
     # Pronouns such as "close it" benefit from the last structured action, but
     # only use it to choose a family; the model still resolves the actual target.
-    if re.search(r"\b(?:it|that|those|them|again|same)\b", text or "", re.I):
+    # "another", "a different one" and "next" are continuations too — they point
+    # at the last action just as hard as "it" does, and leaving them out is what
+    # sent "play a different one" to the model with no music tools loaded.
+    if re.search(r"\b(?:it|its|it's|that|those|them|again|same|one|ones|"
+                 r"another|different|next|else|instead)\b", text or "", re.I):
         names.extend(_family_names(recent_action_text))
     chosen = []
     seen = set()

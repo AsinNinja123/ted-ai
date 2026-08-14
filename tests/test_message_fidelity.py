@@ -106,12 +106,25 @@ print("\n— the persona stops second-guessing the user's own wording —")
 
 llm_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "core", "llm.py"), encoding="utf-8").read()
-check("Ted is told the words are the user's to choose",
-      "Do not improve the grammar" in llm_src)
+# These check the RULES survive, not their wording. The persona was rewritten
+# on Aug 14 (~1,120 tokens down to ~560) and these three assertions caught it,
+# which is exactly their job — but matching one phrase each made them fail on a
+# rewrite that kept every rule intact. Import the prompt and check the
+# behaviour it describes rather than grepping the source for a sentence.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.llm import SYSTEM_PROMPT as _PERSONA
+
+_p = _PERSONA.lower()
+check("Ted is told to send the user's words unchanged",
+      "send them exactly" in _p
+      and "no fixed grammar" in _p and "no added greeting" in _p)
 check("…and not to argue about tone or jokes",
-      "too casual" in llm_src or "misread" in llm_src)
+      ("too blunt" in _p or "too casual" in _p)
+      and ("land wrong" in _p or "misread" in _p))
 check("…while still refusing slurs and abuse",
-      "slurs" in llm_src)
+      "slurs" in _p and "abuse" in _p)
+check("…and the honesty rule is still stated in the persona",
+      "only through tools" in _p and "saying it is not doing it" in _p)
 
 print("\n— Ted only says 'playing' when something is actually playing —")
 

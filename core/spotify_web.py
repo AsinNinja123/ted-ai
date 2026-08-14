@@ -308,9 +308,18 @@ def play_track(query, artist=None):
     items = []
     for q in searches:
         try:
-            res = sp.search(q=q, type="track", limit=1)
+            # limit=1 took whatever Spotify's relevance ranking put first, which
+            # answered "Let It Go" with a Jordan Davis country song instead of
+            # the Frozen one. Asking for several and keeping the most popular
+            # picks the track a person means by a bare title. When the caller
+            # named an artist, relevance already did the disambiguating and
+            # Spotify's own order is left alone.
+            res = sp.search(q=q, type="track", limit=1 if artist else 8)
             items = res.get("tracks", {}).get("items", [])
             if items:
+                if not artist and len(items) > 1:
+                    items = sorted(
+                        items, key=lambda t: t.get("popularity", 0), reverse=True)
                 break
         except Exception as e:
             print("[spotify] search:", e)

@@ -47,25 +47,33 @@ MAX_HISTORY = 20        # messages sent to LLM per turn
 MAX_CONV_MESSAGES = 40  # hard cap on stored conversation length (keeps system msg at [0])
 
 
+# "should i" and "what do you think" were removed Aug 14. Both open ordinary
+# conversation far more often than analysis — "should i go to bed", "what do you
+# think of this song" — and every turn that reasons costs a bigger token budget
+# against an 8,000-per-minute ceiling, plus the risk of spending the whole
+# budget thinking and answering with nothing. What is left is unambiguous.
 _DEEP_REQUEST_RE = re.compile(
     r"\b(?:why|how does|how do|explain|analy[sz]e|compare|evaluate|research|"
-    r"investigate|reason|figure out|debug|design|architect|plan|prove|solve|"
-    r"what do you think|should i|pros and cons|step[- ]by[- ]step)\b",
+    r"investigate|figure out|debug|design|architect|prove|solve|"
+    r"pros and cons|step[- ]by[- ]step|trade[- ]?offs?)\b",
     re.I,
 )
 
 
 def reasoning_effort_for(text):
-    """Choose thinking depth from request complexity, not command phrases.
+    """Choose thinking depth from what the request ASKS FOR, not how long it is.
 
-    Short, single-clause turns do not need hidden chain-of-thought just to pick
-    a tool or answer a greeting. Longer, chained, explanatory, and analytical
-    requests retain Qwen's normal reasoning mode. The model still sees the same
-    complete tool menu in both modes and remains the sole intent router.
+    The word-count trigger is gone. It fired on "I game on my xbox occasionally,
+    not super serious just for fun, but I will be going to college soon and will
+    be doing a lot of schoolwork" — 28 words of small talk answering a question
+    Ted had just asked — and that turn was the only one in a twelve-message
+    session that failed. Twice. Length is not complexity; a long message is
+    usually a chatty one, and chatty messages are exactly what must not pay for
+    hidden chain-of-thought.
+
+    What remains is the explicit shape of a hard request: an analytical verb, or
+    a chained multi-step instruction.
     """
-    words = re.findall(r"[A-Za-z0-9']+", text or "")
-    if len(words) > 12:
-        return "default"
     if re.search(r"\b(?:and then|then|after that|before you|followed by)\b", text or "", re.I):
         return "default"
     if _DEEP_REQUEST_RE.search(text or ""):
@@ -141,99 +149,61 @@ def groq_ok():
 
 # ---------- persona ----------
 SYSTEM_PROMPT = (
-    f"You are Ted, {OWNER_NAME}'s personal AI chatbot — his primary AI, the one "
-    "he talks to all day in a chat window. You know him, remember him, and are "
-    "proactively involved in his daily life: classes, schedule, to-dos, ideas. "
+    # Trimmed Aug 14 from ~1,120 tokens to ~470. Every behavioural rule below
+    # survived; what went was the same rule stated three ways, and the
+    # formatting rules, which now live in the per-turn mode line so a chat turn
+    # does not pay for the voice rules and vice versa. The static prefix is
+    # billed against the tokens-per-minute limit on every single request
+    # whether or not the provider serves it from its prefix cache — caching is
+    # a latency win, not a rate-limit one. This block is the floor under every
+    # turn, so it is the one place where cutting words is worth real money.
+    #
+    # Also removed: a "capabilities" paragraph that offered to "relay hard
+    # questions to Claude". That relay was deleted in 9de0075. The prompt had
+    # been advertising a feature that no longer existed.
+    f"You are Ted, {OWNER_NAME}'s personal AI — the one he talks to all day. You "
+    "know him, remember him, and stay involved in his classes, schedule and to-dos.\n"
 
-    # Brevity — still the most important rule
-    "Default to short and direct: a sentence or two for simple things. "
-    "Go longer when the question deserves it — explanations, how-tos, working "
-    "through a problem — but never pad. Never recap what was just said. "
-    "Never summarise your own answer. "
+    "VOICE: confident, direct, dry. A sharp colleague who respects his time, not a "
+    "chatty assistant. Contractions fine. No emojis. Use his name rarely.\n"
 
-    # Openers — hard ban
-    "Never open with: 'Got it', 'Sure', 'Of course', 'Certainly', 'Absolutely', "
-    "'Great', 'Sounds good', 'Happy to', 'No problem', 'I'd be happy to'. "
-    "Just answer. The first word out of your mouth should be useful. "
+    "LENGTH: a sentence or two for simple things. Go long only when the question "
+    "earns it. Never pad, never recap, never summarise yourself.\n"
 
-    # Hedging — hard ban
-    "Never hedge: no 'I think', 'it seems like', 'you might want to', 'perhaps', "
-    "'it could be'. State the answer. If you're genuinely uncertain, say 'Not sure — "
-    "double-check that' and move on. One sentence, not a paragraph of caveats. "
+    "BANNED OPENERS: Got it, Sure, Of course, Certainly, Absolutely, Great, Sounds "
+    "good, Happy to, No problem, I'd be happy to. The first word should be useful.\n"
 
-    # Tone — confident, dry, slightly formal
-    "You're confident and direct, with a dry wit. Not warm and chatty — more like a "
-    "brilliant, efficient colleague who respects your time. Occasional dry humour is "
-    "fine, never forced. Contractions are fine. Don't be stiff. "
+    "NO HEDGING: not 'I think', 'it seems', 'perhaps', 'you might want to'. State it. "
+    "Genuinely unsure: 'Not sure — double-check that', then move on. Asked for a "
+    "favourite, a best, a worst, or what you think — pick one and say why in a line. "
+    "'I don't have opinions' is a hedge like any other. If he's wrong, say so.\n"
 
-    # Pushback
-    "If something seems off, say so plainly: 'That doesn't add up.' or 'I'd push back "
-    "on that.' You don't just confirm whatever you're told. "
+    # The one rule the persona never breaks. See README 5.3 — do not remove.
+    "ACTIONS — the rule you never break: you act ONLY through tools. Never write "
+    "'Closed VS Code', 'Sent it' or 'Playing that' unless the tool call is in this "
+    "same reply and came back successful. Saying it is not doing it, and he cannot "
+    "tell the difference until he looks. Before claiming you cannot do something, "
+    "check your tool list — and find_tools loads more.\n"
 
-    # Name use
-    f"Use {OWNER_NAME}'s name sparingly — once every several exchanges at most. "
+    "HIS WORDS ARE HIS: messages, emails and notes go out from his device, in his "
+    "name, to people he chose. Given the words, send them exactly — no fixed "
+    "grammar, no added greeting, no softened tone. His typos and slang are how he "
+    "talks. Don't argue that a message is too blunt or that a joke might land wrong; "
+    "that is his call and his friend knows him. Slurs and abuse you still refuse, "
+    "in one line.\n"
 
-    # Chat format
-    "Replies appear in a chat window. Write naturally: plain sentences and short "
-    "paragraphs. Light formatting (a short list, `code`) only when it truly helps. "
-    "ALWAYS wrap code in fenced blocks with the language name, like "
-    "```python ... ``` — never paste code as plain text. "
-    "No emojis. If voice mode is on your words are also spoken aloud, so keep "
-    "sentences readable out loud. "
+    "GAPS: never freeze, never list every interpretation, never say you're confused. "
+    "Either assume the most reasonable thing, act, and name the assumption — or ask "
+    "ONE short question, and only when the choice actually changes the outcome.\n"
 
-    # Memory
-    "You remember this conversation and facts about the user. Reference them naturally "
-    "when relevant — never announce it with phrases like 'according to my memory'. "
+    "INTENT: he types fast and sometimes dictates. 'klose', 'moive', dropped words — "
+    "read what he means, not what he typed.\n"
 
-    # Capabilities
-    "You can set timers and reminders, give a morning briefing, read and add "
-    "calendar events, control Spotify, and relay hard questions to Claude. Nudge "
-    "toward clear phrasing if needed — 'set a timer for ten minutes', 'remind me "
-    "to call back in an hour'. "
+    "MEMORY: you remember him and this conversation. Use it naturally; never "
+    "announce it with 'according to my memory'.\n"
 
-    # Honesty about actions — the one rule you never break
-    "NEVER write a sentence like 'Closed VS Code' or 'Sent it' unless the tool "
-    "call for it is in this same reply. If you intend to do something, call the "
-    "tool — saying it is not doing it, and the user cannot tell the difference "
-    "until they look. If you are unsure whether a tool exists for something, "
-    "check your tool list before saying you cannot: close_app, open_app and the "
-    "rest are always available to you. "
-    "You can ONLY perform actions through your tools. Never claim to have opened, "
-    "closed, sent, set, scheduled, added, played, typed, or done anything unless a "
-    "tool actually ran and confirmed it. If you can't run the tool or aren't sure it "
-    "worked, say what you need or that you couldn't — never pretend it's done. "
-    "Describing an action is not the same as doing it. "
-
-    # Intent over literal words
-    "The user speaks naturally — sometimes with filler words, imperfect phrasing, or "
-    "speech recognition artifacts (e.g. 'klose' means 'close', 'spotify' misspelled). "
-    "Always interpret intent rather than requiring exact or perfect wording. "
-
-    # Handling gaps — never be confused, always have a move
-    "When a request is ambiguous or missing a detail, you have exactly two moves: "
-    "(1) make the most reasonable assumption, act on it, and say which assumption "
-    "you made — 'Assuming you meant tomorrow's 9am class…'; or (2) if the choice "
-    "genuinely changes the outcome, ask ONE short question. Never say you're "
-    "confused, never list every interpretation, never freeze. A wrong-but-stated "
-    "assumption beats a stalled conversation — the user will just correct you. "
-
-    # Whose words these are
-    "Messages, emails and notes you write are sent BY the user, from the user's "
-    "own device, to people the user chose. When they give you the words, send "
-    "those words. Do not improve the grammar, do not add a greeting, do not "
-    "soften the tone, and do not append anything. Their slang and their typos "
-    "are how they talk. "
-    "Do not argue about whether a message is a good idea, whether it is too "
-    "blunt, too casual, or too silly, and do not object that a joke between the "
-    "user and their friend might be misread — that is theirs to judge, and the "
-    "friend knows them. You are drafting on their behalf, not approving them. "
-    "You still don't write slurs or abuse at anyone, and you still say so "
-    "plainly in one line if asked to. Everything short of that, just send. "
-
-    # Knowing your limits
-    "If a question needs deeper reasoning than you can give — hard math, tricky "
-    "code, multi-step analysis — give your best take and be honest about how "
-    "confident you are, rather than bluffing."
+    "LIMITS: hard maths, tricky code, multi-step analysis — give your best take and "
+    "say how confident you are. Don't bluff."
 )
 
 THINKING_CONTEXT = (
@@ -535,21 +505,15 @@ class ToolRuntime:
 # (appended to the persona once, identically every turn) rather than in the
 # per-turn context block, so they stay inside the cacheable prefix.
 TOOL_GUIDANCE = (
-    "\n\nYou have tools. Understand the user's whole outcome, not just the first "
-    "verb. Use tools when they want something done; answer directly when they "
-    "only want conversation. For multi-step work, call every independent tool "
-    "together, then use returned results to choose the next dependent tool. "
-    "Continue until the complete outcome is reached. Never claim an action "
-    "happened unless its tool returned success, and never repeat an action that "
-    "already succeeded. Use web_search whenever an answer depends on current or "
-    "changing information, or when the user asks you to search or verify. Base "
-    "current claims on its results and include the relevant source URLs in the answer. Input "
-    "may contain speech-recognition errors or unusual phrasing: infer intent over "
-    "literal words. The initial menu is intentionally small: if it lacks a needed "
-    "capability, call find_tools, then use the tools it loads. Use known preferences "
-    "and reasonable low-risk defaults. Ask "
-    "one short question only when a missing value materially changes the result "
-    "or makes an action unsafe."
+    "\n\nTOOLS: aim at the whole outcome, not the first verb. Act when he wants "
+    "something done; just answer when he wants conversation. Fire every independent "
+    "call together, then use the results to pick the next one, and keep going until "
+    "the outcome is actually reached. Never claim an action that no tool confirmed, "
+    "and never repeat one that already worked. The menu starts small — if it is "
+    "missing something, call find_tools and then use what it loads. Use web_search "
+    "for anything current or changing, and cite the URLs. Prefer known preferences "
+    "and low-risk defaults; ask one short question only when a missing value "
+    "changes the result or makes an action unsafe."
 )
 
 MAX_TOOL_ROUNDS = 5
@@ -571,10 +535,15 @@ def _multi_step_request(text):
 _TOOL_DECIDE_CHARS = 40
 
 
-def _stream_turn(resp, calls, suppress_text=False):
+def _stream_turn(resp, calls, suppress_text=False, reasoned=None):
     """Consume ONE streamed completion. Yields text deltas to the caller and
     fills `calls` (index -> {id, name, args}) with any tool calls the model
     emitted. Returns the text it yielded.
+
+    `reasoned` is an optional one-element list; if given, element 0 accumulates
+    how many characters of hidden reasoning arrived. A stream that produced
+    reasoning and nothing else is a model that ran out of budget thinking, not
+    a connection that died, and the caller treats those differently.
 
     Content is held back for the first few tokens on purpose. If the model is
     calling a tool its tool-call deltas arrive first, but it sometimes emits a
@@ -590,10 +559,23 @@ def _stream_turn(resp, calls, suppress_text=False):
     buf = ""
     out = ""
     committed = False
+    reasoned = reasoned if reasoned is not None else [0]
     t0 = time.time()
     try:
         for chunk in resp:
             delta_obj = chunk.choices[0].delta
+            # Qwen in reasoning mode streams its thinking in a SEPARATE field.
+            # Nothing here read it, so a turn that spent its budget thinking
+            # arrived as zero content deltas and came out as "Something cut
+            # out — ask me again." Count it so an empty stream can be told
+            # apart from a silent one: reasoning tokens are never shown, but a
+            # turn that produced only reasoning is a budget problem, not a
+            # dropped connection, and the retry below can act on that.
+            for _field in ("reasoning", "reasoning_content"):
+                _r = getattr(delta_obj, _field, None)
+                if _r:
+                    reasoned[0] += len(_r)
+                    break
             tcs = getattr(delta_obj, "tool_calls", None)
             if tcs:
                 for t in tcs:
@@ -792,8 +774,10 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             "answer is CHAT — anything said about modes earlier in this "
             "conversation is outdated; trust only this line. Answer properly "
             "and completely like a modern AI chat assistant: full explanations "
-            "when the question deserves them, fenced code blocks for any code, "
-            "short paragraphs. Still no padding or filler."
+            "when the question deserves them, short paragraphs, light "
+            "formatting only where it genuinely helps. ALWAYS put code in a "
+            "fenced block with the language name (```python), never as plain "
+            "text. Still no padding or filler."
         )
 
     context = "(Context: " + " ".join(context_parts) + ")"
@@ -805,7 +789,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # caching skips reprocessing it, which directly cuts time-to-first-token.
     # (Putting instructions closest to the user message also makes the model
     # follow them more reliably — recency wins in attention.)
-    history_limit = MAX_HISTORY if context_scope == "full" else (8 if context_scope == "relevant" else 4)
+    # An operational turn gets no episodic retrieval, which makes history the
+    # ONLY place "we were doing Disney songs" can live. At 4 messages — two
+    # exchanges — "play a different one" had already lost the thread and
+    # replayed the first song. 8 is two more exchanges and, now that the
+    # persona is ~660 tokens lighter, affordable.
+    history_limit = (MAX_HISTORY if context_scope == "full"
+                     else 10 if context_scope == "relevant" else 8)
     recent = stable_window(conversation[1:], history_limit)
     # Tool guidance is concatenated onto the persona rather than sent as its own
     # message: it is byte-identical every turn, so it stays in the cached prefix.
@@ -841,20 +831,25 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
           f"{len(tool_runtime.schemas) if tool_runtime else 0} "
           f"~{max(1, round(_prompt_chars / 4))} input tokens")
 
-    def _do_groq_call(msgs=None, force_tool=False):
+    def _do_groq_call(msgs=None, force_tool=False, effort=None):
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the primary → availability fallback internally."""
         tool_kwargs = dict(_tools_kw)
         if force_tool and tool_runtime is not None:
             tool_kwargs["tool_choice"] = "required"
+        _effort = effort or reasoning_effort_for(user_input)
+        # Reasoning and the answer share this budget. At 1200 a thinking turn
+        # can spend the lot before it says a word, so thinking turns get more
+        # room; everything else keeps the tighter cap.
+        _cap = 250 if voice_mode else (2000 if _effort == "default" else 1200)
         return chat_create(
             messages=messages if msgs is None else msgs,
             # Voice keeps the old tight cap; chat gets room for real answers —
             # 250 was silently truncating anything longer than a short paragraph.
-            max_tokens=250 if voice_mode else 1200,
+            max_tokens=_cap,
             stream=True,
             timeout=12.0 if voice_mode else 30.0,
-            reasoning_effort=reasoning_effort_for(user_input),
+            reasoning_effort=_effort,
             **tool_kwargs,
         )
 
@@ -949,6 +944,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     tool_retry_used = False
     stream_retry_used = False
     completion_retry_used = False
+    thinking_retry_used = False
     completed_tool_calls = 0
     try:
         msgs = messages
@@ -964,10 +960,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             # "write me a poem" come back silent. Withheld text is not thrown
             # away — if no tool call materialises it is released below.
             expecting_tool = (require_tool or tool_retry_used) and total_calls == 0
+            reasoned = [0]
             try:
                 turn_text = yield from _stream_turn(
                     resp, calls,
-                    suppress_text=bool(action_results) or expecting_tool)
+                    suppress_text=bool(action_results) or expecting_tool,
+                    reasoned=reasoned)
             except Exception as e:
                 # Groq can accept a completion and only report malformed tool
                 # JSON while the stream is being consumed. Required-action text
@@ -1006,6 +1004,23 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             # so there is nothing to capture once action_results is non-empty.
             if calls and turn_text and not action_results:
                 full_reply += turn_text
+
+            # The model thought and never spoke. Reasoning shares the same
+            # max_tokens budget as the answer, so a turn that thinks hard enough
+            # can spend all of it and emit nothing — which reached Charlie as
+            # "Something cut out — ask me again." twice on one message. Retry
+            # once with thinking off: an immediate plain answer beats a second
+            # invitation to repeat himself.
+            if (not calls and not turn_text.strip() and reasoned[0]
+                    and not thinking_retry_used and rounds < MAX_TOOL_ROUNDS):
+                thinking_retry_used = True
+                print(f"[thinking] {reasoned[0]} chars of reasoning, no answer — "
+                      f"retrying without it", flush=True)
+                try:
+                    resp = _do_groq_call(msgs, effort="none")
+                    continue
+                except Exception as e:
+                    print(f"[thinking] retry failed: {e}")
 
             # Prose that CLAIMS a completed action while calling nothing is a
             # model-routing failure, not a reason to make the user repeat
