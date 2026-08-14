@@ -49,6 +49,38 @@ _lock = threading.Lock()
 _conn = None
 _failed = False
 
+# Tokens spent by calls that are not conversation turns — fact extraction,
+# session summaries, message composition. They bill against the same ceiling
+# and had no representation at all. Kept in memory as (epoch, tokens) and
+# trimmed to the last few minutes; this is a rate gauge, not a ledger.
+_side_usage = []
+
+
+def note_side_usage(prompt_tokens, completion_tokens):
+    """Record a non-turn call's tokens. Never raises."""
+    try:
+        total = int(prompt_tokens or 0) + int(completion_tokens or 0)
+        if total <= 0:
+            return
+        now = time.time()
+        with _lock:
+            _side_usage.append((now, total))
+            cutoff = now - 300
+            while _side_usage and _side_usage[0][0] < cutoff:
+                _side_usage.pop(0)
+    except Exception:
+        pass
+
+
+def side_token_rate(window=60.0):
+    """Tokens spent by background calls in the last `window` seconds."""
+    try:
+        cutoff = time.time() - window
+        with _lock:
+            return sum(n for ts, n in _side_usage if ts >= cutoff)
+    except Exception:
+        return 0
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS turn_log (
@@ -243,7 +275,9 @@ def token_rate(window=60.0):
             cur = conn.execute(
                 "SELECT COALESCE(SUM(total_tokens), 0) FROM turn_log "
                 "WHERE epoch >= ?", (time.time() - window,))
-            return int(cur.fetchone()[0] or 0)
+            turns = int(cur.fetchone()[0] or 0)
+        # Background calls count against the same ceiling.
+        return turns + side_token_rate(window)
     except Exception:
         return 0
 

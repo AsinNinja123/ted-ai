@@ -196,6 +196,36 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #remlist div{font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--line)}
 #remlist div:last-child{border:none}
 
+/* live token budget + which brain answered */
+#budget{display:flex;align-items:center;gap:7px;margin-right:10px;font-size:11px;
+  color:var(--dim)}
+#bud-bar{width:66px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);
+  overflow:hidden;display:inline-block}
+#bud-bar i{display:block;height:100%;width:0;background:#3ecf8e;
+  transition:width .5s ease,background .5s ease}
+#bud-bar.warn i{background:#e0b341}
+#bud-bar.bad i{background:#e0685f}
+#bud-txt{font-variant-numeric:tabular-nums;min-width:76px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;
+  background:#4a453f;transition:background .3s,box-shadow .3s}
+.dot.cloud {background:#3ecf8e;box-shadow:0 0 6px rgba(62,207,142,.6)}
+.dot.local {background:#e0b341;box-shadow:0 0 6px rgba(224,179,65,.6)}
+.dot.reflex{background:#8fb8e0;box-shadow:0 0 6px rgba(143,184,224,.55)}
+.dot.dead  {background:#e0685f;box-shadow:0 0 6px rgba(224,104,95,.6)}
+/* Cloud dropped to the local brain on this turn: pulse so it is noticed
+   without a toast interrupting the conversation. */
+.dot.fell{animation:fellback 1s ease-out 3}
+@keyframes fellback{
+  0%{transform:scale(1);box-shadow:0 0 0 0 rgba(224,179,65,.75)}
+  50%{transform:scale(1.55);box-shadow:0 0 0 7px rgba(224,179,65,0)}
+  100%{transform:scale(1);box-shadow:0 0 0 0 rgba(224,179,65,0)}
+}
+/* per-reply footer: how long it took, what it cost, who answered */
+.meta{font-size:10.5px;color:var(--dim);opacity:.62;margin:3px 0 0 2px;
+  font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.meta .sep{opacity:.45;margin:0 5px}
+.meta .warn{color:#e0b341}
+
 /* memory overlay */
 #mempanel{position:fixed;inset:0;z-index:40;background:#0f1115;display:none;flex-direction:column}
 #mempanel.open{display:flex}
@@ -235,6 +265,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="clk-sub"><span id="clk-date"></span><span id="clk-wx" class="wx"></span></div>
     </div>
     <div id="topright">
+      <!-- The number that decides whether the next message gets answered by
+           the cloud at all. It was only visible in the diagnostics panel,
+           which is the one place you are not looking while typing. -->
+      <span id="budget" title="Tokens used this minute against your account's limit">
+        <span id="brain" class="dot" title="Which brain answered last"></span>
+        <span id="bud-bar"><i style="width:0"></i></span>
+        <span id="bud-txt" class="mono">–</span>
+      </span>
       <span id="status"><i></i><span id="status-t"></span></span>
       <button class="hbtn" id="clk-toggle" title="Show / hide clock &amp; weather">&#9716;</button>
       <button class="hbtn" id="apps-toggle" title="Apps Ted has used">&#8862;</button>
@@ -407,6 +445,83 @@ function legacyCopy(text,done){
   try{ document.execCommand('copy'); if(done) done(); }catch(e){}
   ta.remove();
 }
+/* ── what that reply cost ──────────────────────────────────────
+   Wall-clock is measured here in the window, because only the window knows
+   when he actually pressed Enter. Tokens and the brain come from the turn log
+   a moment later — they are not known until the turn is written. */
+var turnT0=0, lastBrain='';
+
+function attachMeta(bubble, seconds){
+  if(!bubble) return null;
+  var m=document.createElement('div');
+  m.className='meta';
+  m.textContent=seconds.toFixed(1)+'s';
+  if(bubble.parentNode) bubble.parentNode.appendChild(m);
+  scrollDown();
+  return m;
+}
+
+/* The turn row is written after the reply finishes streaming, so give the
+   writer a beat rather than racing it. One retry, then give up quietly — a
+   missing footnote is not worth an error in a chat window. */
+function fillMeta(metaEl, tries){
+  if(!metaEl) return;
+  fetch('http://127.0.0.1:5175/api/diagnostics/turns?limit=1')
+    .then(function(r){ return r.json(); })
+    .then(function(rows){
+      var t=rows&&rows[0]; if(!t) throw 0;
+      var who=t.provider==='groq'?'cloud':(t.provider||'—');
+      var tok=t.total_tokens?(t.total_tokens.toLocaleString()
+              +(t.tokens_estimated?'~':'')+' tok'):'';
+      var bits=[metaEl.textContent];
+      if(tok) bits.push(tok);
+      bits.push(who);
+      metaEl.innerHTML=bits.join('<span class="sep">·</span>')
+        + (t.rate_limited?'<span class="sep">·</span>'
+           +'<span class="warn">rate limited</span>':'');
+      setBrain(t);
+    })
+    .catch(function(){ if(tries>0) setTimeout(function(){ fillMeta(metaEl,tries-1); },700); });
+}
+
+function setBrain(t){
+  var d=$('brain'); if(!d) return;
+  var cls = t.provider==='groq' ? 'cloud'
+          : t.provider==='ollama' ? 'local'
+          : t.provider==='reflex' ? 'reflex' : 'dead';
+  d.className='dot '+cls;
+  d.title = 'Answered by '+(cls==='cloud'?'the cloud model'
+           : cls==='local'?'the local model'
+           : cls==='reflex'?'a local shortcut (no model)':'nothing — the turn failed');
+  /* Only animate the TRANSITION to local, and only when it was not chosen. */
+  if(cls==='local' && lastBrain!=='local' && t.forced==='auto'){
+    d.classList.add('fell');
+    setTimeout(function(){ d.classList.remove('fell'); },3200);
+    $('bud-txt').classList.add('warn');
+  }
+  if(cls==='cloud') $('bud-txt').classList.remove('warn');
+  lastBrain=cls;
+}
+
+function refreshBudget(){
+  fetch('http://127.0.0.1:5175/api/diagnostics/stats')
+    .then(function(r){ return r.json(); })
+    .then(function(s){
+      var lim=s.tpm_limit||8000;
+      var used=(s.tpm_limit_source==='provider'&&typeof s.tpm_remaining==='number')
+        ? Math.max(0,lim-s.tpm_remaining) : (s.tpm||0);
+      var pct=Math.min(100,Math.round(used/lim*100));
+      var bar=$('bud-bar');
+      bar.className=pct>=90?'bad':pct>=65?'warn':'';
+      bar.firstElementChild.style.width=pct+'%';
+      $('bud-txt').textContent=used.toLocaleString()+' / '+lim.toLocaleString();
+      $('budget').title='Tokens used this minute: '+used.toLocaleString()+' of '
+        +lim.toLocaleString()+(s.tpm_limit_source==='provider'
+          ?' (reported by the provider)':' (assumed — provider did not report)');
+    })
+    .catch(function(){});
+}
+
 function addBubble(role,text){
   hideEmpty();
   var d=document.createElement('div');
@@ -615,9 +730,19 @@ var tedHud={
         lastStreamText=null;
       }
     }
-    addBubble(role,text);
+    var el=addBubble(role,text);
     recordTurn(role,text);
-    if(role==='ted') maybeSummarize();
+    if(role==='ted'){
+      maybeSummarize();
+      /* The reflex lane and the deterministic commands never stream, so they
+         reach here instead of endTedReply. They are the fastest turns Ted has
+         and deserve to be seen as such. */
+      if(turnT0){
+        fillMeta(attachMeta(el,(Date.now()-turnT0)/1000), 4);
+        turnT0=0;
+      }
+      refreshBudget();
+    }
   },
   streamTedText:function(piece){
     if(!streamEl){ streamEl=addBubble('ted',''); streamBuf=''; }
@@ -629,10 +754,16 @@ var tedHud={
     if(streamEl){
       var text=streamBuf;
       streamEl.innerHTML=mdlite(text);   // final render (closes any open code fence)
+      var done=streamEl;
       streamEl=null; streamBuf='';
       lastStreamText=text;
       recordTurn('ted',text);
       maybeSummarize();
+      if(turnT0){
+        fillMeta(attachMeta(done,(Date.now()-turnT0)/1000), 4);
+        turnT0=0;
+      }
+      refreshBudget();
     }
   },
   showIssue:function(text){
@@ -773,6 +904,10 @@ function sendMsg(){
   var input=$('input');
   var txt=input.value.trim(); if(!txt) return;
   input.value=''; input.style.height='auto';
+  /* Timed from the keypress, not from when the request was accepted — the
+     second number flatters itself by excluding retrieval, retries and the
+     entire local-brain attempt, which is exactly where the waiting was. */
+  turnT0=Date.now();
   addBubble('user',txt);
   recordTurn('user',txt);
   tedHud.setState('thinking');
@@ -829,6 +964,11 @@ document.addEventListener('mousedown',function(e){
   if(!$('ctxmenu').contains(e.target)) $('ctxmenu').classList.remove('open');
 });
 setInterval(function(){ if($('apps').classList.contains('open')) renderApps(); },60000);
+/* The minute window slides whether or not he is typing, so the bar has to move
+   on its own. 10s is often enough to watch it recover after a rate limit and
+   cheap enough to ignore. */
+setInterval(refreshBudget, 10000);
+refreshBudget();
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&$('mempanel').classList.contains('open')) tedHud.hideMemory();
   if(e.key==='Escape'&&$('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();

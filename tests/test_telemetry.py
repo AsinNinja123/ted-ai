@@ -313,5 +313,58 @@ check("a chat turn does not carry the tool rules",
       "TOOL_RULES + TOOL_GUIDANCE if _real_tools else DISCOVERY_GUIDANCE" in llm_src2)
 
 
+print("\n— the panel must not under-report the ceiling —")
+
+_pv._last_fallback = ""
+check("no fallback reason when the cloud served the turn",
+      _pv.last_fallback_reason() == "")
+
+# The bug: fourteen rate limits reported as zero. chat_create catches the
+# exception and answers locally, so llm.py never saw a RateLimitError to
+# record, and the gauge told Charlie the ceiling was fine while the ceiling
+# was the whole reason his replies had gone from 600ms to 8 seconds.
+class _Limited:
+    class chat:
+        class completions:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("Error code: 429 - rate limit reached")
+
+
+_sg, _so = _pv._groq, _pv._ollama_create
+_pv._groq = _Limited
+_pv._ollama_create = lambda **kw: "local"
+_pv.set_provider_mode("auto")
+_pv.chat_create(messages=[], stream=True)
+check("a rate limit is recorded as a rate limit", _pv.last_fallback_reason() == "rate_limit")
+
+_pv._groq = type("X", (), {"chat": type("c", (), {"completions": type("d", (), {
+    "create": staticmethod(lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("connection reset")))})()})()})
+_pv.chat_create(messages=[], stream=True)
+check("an outage is recorded as an outage", _pv.last_fallback_reason() == "unavailable")
+_pv._groq, _pv._ollama_create = _sg, _so
+
+# Background calls spend the same budget and had no representation at all.
+before = telemetry.side_token_rate()
+telemetry.note_side_usage(410, 90)
+check("a background call's tokens are counted",
+      telemetry.side_token_rate() == before + 500)
+check("…and land in the same per-minute figure the gauge draws",
+      telemetry.token_rate() >= 500)
+telemetry.note_side_usage(0, 0)
+check("a zero-token call is not recorded", telemetry.side_token_rate() == before + 500)
+
+hud2 = open(os.path.join(_root, "ui", "ted_hud.html"), encoding="utf-8").read()
+check("the chat window shows the token budget", 'id="bud-bar"' in hud2)
+check("…with a light for which brain answered", 'id="brain"' in hud2)
+check("…that pulses only on an UNCHOSEN drop to local",
+      "cls==='local' && lastBrain!=='local' && t.forced==='auto'" in hud2)
+check("each reply is timed from the keypress, not from the request",
+      "turnT0=Date.now();" in hud2 and "(Date.now()-turnT0)/1000" in hud2)
+check("…and shows what that reply cost underneath it",
+      "class='meta'" in hud2 or 'className=\'meta\'' in hud2)
+
+
 print("\n" + "=" * 50)
 print(f"{_checks[0] - _fails[0]} passed, {_fails[0]} failed")

@@ -66,6 +66,19 @@ _USAGE_SUPPORTED = [True]
 # nicety must never be able to take the cloud offline. That already happened
 # once this week.
 _HEADERS_SUPPORTED = [True]
+
+# Why the last call did not use the cloud. The dashboard reported "0 rate
+# limited" through fourteen consecutive rate limits, because the exception is
+# caught HERE and turned into a local answer — llm.py never saw a
+# RateLimitError to record. The panel was therefore telling Charlie the ceiling
+# was fine while the ceiling was the entire reason his replies had gone from
+# 600ms to 8 seconds. A diagnostics panel that under-reports is worse than none.
+_last_fallback = ""
+
+
+def last_fallback_reason() -> str:
+    """`rate_limit`, `unavailable`, or '' if the last call used the cloud."""
+    return _last_fallback
 _rate_limit = {"limit_tokens": 0, "remaining_tokens": 0,
                "limit_requests": 0, "remaining_requests": 0, "reset": ""}
 
@@ -73,6 +86,31 @@ _rate_limit = {"limit_tokens": 0, "remaining_tokens": 0,
 def rate_limit_status():
     """The provider's own view of the budget, or zeros if never reported."""
     return dict(_rate_limit)
+
+
+def _note_usage(result):
+    """Record token usage for NON-streamed calls.
+
+    Fact extraction, session summaries, message composition and web synthesis
+    all go through chat_create too. They are not conversation turns, so they
+    never appear in turn_log — but they spend the same tokens against the same
+    per-minute ceiling. Charlie's gauge was summing turns only and therefore
+    always read low, which is part of why the limit kept arriving unannounced.
+
+    Streamed turns are skipped here: their usage arrives in the stream and is
+    already recorded by llm.py, and counting it twice would swap one wrong
+    number for another.
+    """
+    try:
+        usage = getattr(result, "usage", None)
+        if usage is None:
+            return
+        from core import telemetry
+        telemetry.note_side_usage(
+            int(getattr(usage, "prompt_tokens", 0) or 0),
+            int(getattr(usage, "completion_tokens", 0) or 0))
+    except Exception:
+        pass
 
 
 def _read_rate_headers(headers):
@@ -398,7 +436,7 @@ def chat_create(**kwargs):
     for the local fallback.  If both providers fail, the local exception is
     raised with the cloud failure chained for logs.
     """
-    global _active_provider, _last_cloud_error, _last_model
+    global _active_provider, _last_cloud_error, _last_model, _last_fallback
     cloud_error = None
     mode = get_provider_mode()
     if mode == "local":
@@ -465,10 +503,16 @@ def chat_create(**kwargs):
                 result = _groq.chat.completions.create(**params)
             _active_provider, _last_model = "groq", CLOUD_CHAT_MODEL
             _last_cloud_error = ""
+            _last_fallback = ""
+            _note_usage(result)
             return result
         except Exception as exc:
             cloud_error = exc
             _last_cloud_error = str(exc)
+            _last_fallback = ("rate_limit"
+                              if "429" in str(exc)
+                              or "rate limit" in str(exc).lower()
+                              else "unavailable")
             if "429" in str(exc) or "rate limit" in str(exc).lower():
                 print(f"[provider] RATE LIMITED on {CLOUD_CHAT_MODEL} — "
                       f"trying local {LOCAL_CHAT_MODEL}")

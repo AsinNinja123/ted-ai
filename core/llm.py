@@ -872,7 +872,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # Provider tokenizers differ, so this is intentionally a stable estimate,
     # not fake precision. It makes prompt regressions visible in the same launch
     # log as latency and rate-limit failures.
-    _prompt_chars = len(json.dumps(messages, ensure_ascii=False, separators=(",", ":")))
+    # Count the TEXT, not the JSON around it. Measuring len(json.dumps(...))
+    # charged every message for its braces, quotes and "role"/"content" keys —
+    # roughly a 20-30% overstatement, which is why local turns kept reading
+    # ~2,100 tokens when the same prompt on the cloud measured ~1,600. Only the
+    # local brain relies on this now, and an estimate that is reliably high is
+    # its own kind of wrong number.
+    _prompt_chars = sum(len(str(m.get("content", "") or "")) for m in messages)
     if tool_runtime is not None:
         _prompt_chars += len(json.dumps(tool_runtime.schemas, ensure_ascii=False,
                                         separators=(",", ":")))
@@ -1000,6 +1006,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         _turn.ms_accepted = _req_ms
         _turn.provider = _providers.active_provider()
         _turn.model = _providers.active_model()
+        # Ask the provider why, rather than inferring from an exception that
+        # was handled two layers down and never reached here.
+        _why = _providers.last_fallback_reason()
+        if _why == "rate_limit":
+            _turn.rate_limited = True
+            _turn.error = _turn.error or (
+                "cloud rate limit — answered by the local brain")
+        elif _why == "unavailable":
+            _turn.error = _turn.error or (
+                "cloud unavailable — answered by the local brain: "
+                + (_providers.last_cloud_error() or "")[:200])
         print(f"[timing] request accepted after {_req_ms}ms "
               f"({providers.active_provider()})")
 
