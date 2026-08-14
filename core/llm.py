@@ -10,7 +10,7 @@ import time
 import traceback
 from datetime import date
 
-from core import features, intents
+from core import features, intents, providers as _providers, telemetry
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
@@ -535,10 +535,14 @@ def _multi_step_request(text):
 _TOOL_DECIDE_CHARS = 40
 
 
-def _stream_turn(resp, calls, suppress_text=False, reasoned=None):
+def _stream_turn(resp, calls, suppress_text=False, reasoned=None,
+                 usage=None):
     """Consume ONE streamed completion. Yields text deltas to the caller and
     fills `calls` (index -> {id, name, args}) with any tool calls the model
     emitted. Returns the text it yielded.
+
+    `usage` is an optional dict that receives the provider's own token counts
+    when the stream carries a usage chunk.
 
     `reasoned` is an optional one-element list; if given, element 0 accumulates
     how many characters of hidden reasoning arrived. A stream that produced
@@ -560,9 +564,21 @@ def _stream_turn(resp, calls, suppress_text=False, reasoned=None):
     out = ""
     committed = False
     reasoned = reasoned if reasoned is not None else [0]
+    usage = usage if usage is not None else {}
     t0 = time.time()
     try:
         for chunk in resp:
+            # The usage chunk that stream_options asks for arrives LAST and
+            # carries an EMPTY choices list. Indexing choices[0] unguarded
+            # would turn "we now measure tokens" into an IndexError on every
+            # single turn.
+            _u = getattr(chunk, "usage", None)
+            if _u is not None:
+                usage["prompt"] = getattr(_u, "prompt_tokens", 0) or 0
+                usage["completion"] = getattr(_u, "completion_tokens", 0) or 0
+                usage["exact"] = True
+            if not getattr(chunk, "choices", None):
+                continue
             delta_obj = chunk.choices[0].delta
             # Qwen in reasoning mode streams its thinking in a SEPARATE field.
             # Nothing here read it, so a turn that spent its budget thinking
@@ -831,6 +847,19 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
           f"{len(tool_runtime.schemas) if tool_runtime else 0} "
           f"~{max(1, round(_prompt_chars / 4))} input tokens")
 
+    # One row per turn, written at the end. Everything below fills it in.
+    _turn = telemetry.Turn(user_input, source="voice" if voice_mode else "chat")
+    _turn.context_scope = context_scope
+    _turn.history_msgs = len(recent)
+    _turn.forced = _providers.get_provider_mode()
+    _turn.reasoning = reasoning_effort_for(user_input)
+    _turn.prompt_tokens = max(1, round(_prompt_chars / 4))
+    _turn.ms_retrieval = _ctx_ms
+    if tool_runtime is not None:
+        _turn.tools_offered = [
+            (sc.get("function") or {}).get("name", "") for sc in tool_runtime.schemas]
+    _usage = {}
+
     def _do_groq_call(msgs=None, force_tool=False, effort=None):
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the primary → availability fallback internally."""
@@ -863,11 +892,14 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         resp = _do_groq_call()
     except _groq_mod.RateLimitError:
         print("[groq] rate limited — waiting 3s then retrying")
+        _turn.rate_limited = True
+        _turn.note_retry("rate-limit")
         time.sleep(3)
         try:
             resp = _do_groq_call()
         except _groq_mod.RateLimitError:
             print("[groq] still rate limited — waiting 5s")
+            _turn.note_retry("rate-limit")
             time.sleep(5)
             try:
                 resp = _do_groq_call()
@@ -916,6 +948,9 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # the local-brain attempt; the [timing] first token line below is the model.
     _req_ms = int((time.time() - _req_t0) * 1000)
     if _req_ms > 400:
+        _turn.ms_accepted = _req_ms
+        _turn.provider = _providers.active_provider()
+        _turn.model = _providers.active_model()
         print(f"[timing] request accepted after {_req_ms}ms "
               f"({providers.active_provider()})")
 
@@ -965,7 +1000,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 turn_text = yield from _stream_turn(
                     resp, calls,
                     suppress_text=bool(action_results) or expecting_tool,
-                    reasoned=reasoned)
+                    reasoned=reasoned, usage=_usage)
             except Exception as e:
                 # Groq can accept a completion and only report malformed tool
                 # JSON while the stream is being consumed. Required-action text
@@ -977,6 +1012,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 if (incomplete_required_action and not stream_retry_used
                         and rounds < MAX_TOOL_ROUNDS):
                     stream_retry_used = True
+                    _turn.note_retry("stream")
                     print(f"[tools] provider stream failed before an action — "
                           f"retrying once: {str(e)[:120]}", flush=True)
                     msgs = msgs + [{"role": "system", "content": (
@@ -1011,11 +1047,23 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             # "Something cut out — ask me again." twice on one message. Retry
             # once with thinking off: an immediate plain answer beats a second
             # invitation to repeat himself.
-            if (not calls and not turn_text.strip() and reasoned[0]
+            # NOTE reasoned[0] is often 0 here even when the model thought hard:
+            # providers.py sends reasoning_format="hidden", so Groq strips the
+            # thinking from the stream while still billing it and still spending
+            # max_tokens on it. Visible reasoning is therefore a sufficient
+            # signal, not a necessary one — a turn that asked for thinking and
+            # produced nothing at all is the same failure whether or not we got
+            # to watch it happen.
+            _thought_and_said_nothing = (
+                not calls and not turn_text.strip()
+                and (reasoned[0] or _turn.reasoning == "default"))
+            if (_thought_and_said_nothing
                     and not thinking_retry_used and rounds < MAX_TOOL_ROUNDS):
                 thinking_retry_used = True
-                print(f"[thinking] {reasoned[0]} chars of reasoning, no answer — "
-                      f"retrying without it", flush=True)
+                _turn.note_retry("thinking")
+                print(f"[thinking] no answer after "
+                      f"{reasoned[0] or 'hidden'} reasoning — retrying without it",
+                      flush=True)
                 try:
                     resp = _do_groq_call(msgs, effort="none")
                     continue
@@ -1035,6 +1083,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     and (expecting_tool or claimed_without_tool)
                     and not tool_retry_used and rounds < MAX_TOOL_ROUNDS):
                 tool_retry_used = True
+                _turn.note_retry("honesty")
                 print("[honesty] action request returned no tool — retrying automatically",
                       flush=True)
                 if not expecting_tool and turn_text:
@@ -1059,6 +1108,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     and completed_tool_calls < effective_min_action_calls
                     and not completion_retry_used and rounds < MAX_TOOL_ROUNDS):
                 completion_retry_used = True
+                _turn.note_retry("complete")
                 print(f"[tools] outcome incomplete ({completed_tool_calls}/"
                       f"{effective_min_action_calls} actions) — continuing", flush=True)
                 msgs = msgs + [
@@ -1190,6 +1240,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     # Never turn that into a cheerful "Done." — report the truth.
                     result = "That didn't go through — something failed on my end."
                 print(f"[tools] {c['name']}({args}) → {str(result)[:80]}")
+                _turn.note_tool(c["name"])
                 results.append(result)
                 if c["name"] != "find_tools":
                     completed_tool_calls += 1
@@ -1251,11 +1302,18 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     except Exception as e:
         print(f"[groq] stream error mid-response: {e}")
         error_log.error(f"Groq stream error: {e}\n{traceback.format_exc()}")
+        _turn.error = f"{type(e).__name__}: {e}"
     finally:
         # One exit for every path above. A turn that ran tools but produced no
         # sentence says what the tools returned; a turn that produced nothing at
         # all says so honestly. Never silence.
         if closing:
+            # Interrupted, not finished. Still recorded — a turn Charlie killed
+            # because it was taking too long is exactly the turn worth seeing
+            # in the diagnostics panel, and dropping it would make the log
+            # quietly flattering.
+            _turn.error = _turn.error or "interrupted"
+            _log_turn(_turn, full_reply, _usage, total_calls, rounds)
             return
         if not full_reply.strip():
             if last_results:
@@ -1263,8 +1321,34 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 full_reply = final
                 yield final
             else:
+                _turn.error = _turn.error or "empty stream — no text, no tool call"
                 yield "Something cut out — ask me again."
+        _log_turn(_turn, full_reply, _usage, total_calls, rounds)
         _remember_exchange(user_input, full_reply, conversation)
+
+
+def _log_turn(turn, reply, usage, total_calls, rounds):
+    """Close out the telemetry row. Never raises into the reply path."""
+    try:
+        turn.tool_rounds = max(0, rounds - 1) if total_calls else 0
+        if usage.get("exact"):
+            # The provider's own count. Prefer it over our character estimate
+            # always — the estimate exists only for the local brain, which
+            # does not report usage.
+            turn.prompt_tokens = usage.get("prompt", 0)
+            turn.completion_tokens = usage.get("completion", 0)
+            turn.tokens_estimated = False
+        else:
+            turn.completion_tokens = max(1, round(len(reply or "") / 4))
+            turn.tokens_estimated = True
+        if not turn.provider:
+            turn.provider = _providers.active_provider()
+            turn.model = _providers.active_model()
+        if not turn.error and _providers.active_provider() == "none":
+            turn.error = _providers.last_cloud_error() or "no provider served this turn"
+        turn.finish(reply=reply)
+    except Exception as e:                                   # pragma: no cover
+        print(f"[telemetry] {e}")
 
 # ---------- composition helpers (messages / email) ----------
 def generate_message_text(instruction, contact):

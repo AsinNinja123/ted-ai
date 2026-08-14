@@ -10,6 +10,7 @@ vision all share the same fallback behavior.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from types import SimpleNamespace
@@ -50,6 +51,60 @@ except Exception:
 _groq = Groq(api_key=GROQ_API_KEY, max_retries=0) if GROQ_API_KEY else None
 _active_provider = "none"
 _last_cloud_error = ""
+_last_model = ""
+
+# ---------- which brain, on purpose ----------
+#
+# "auto" is the shipping behaviour: cloud first, local when the cloud fails.
+# The other two exist for testing, and they deliberately do NOT fall back —
+# the whole point of pinning a brain is to see what THAT brain does. A forced
+# mode that quietly failed over would report the other model's behaviour under
+# the label of the one you selected, which is the exact class of lie this
+# project keeps having to fix.
+#
+# Stored on disk rather than in module state because the dashboard can run as
+# a separate process (`python -m dashboard`) as well as in Ted's own thread.
+_MODE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "data", "runtime.json")
+_VALID_MODES = ("auto", "cloud", "local")
+_mode_cache = {"mtime": -1.0, "value": "auto"}
+
+
+def get_provider_mode() -> str:
+    """Return ``auto``, ``cloud``, or ``local``. Cheap enough for every call."""
+    try:
+        mtime = os.path.getmtime(_MODE_PATH)
+    except OSError:
+        return "auto"
+    if mtime != _mode_cache["mtime"]:
+        try:
+            with open(_MODE_PATH, encoding="utf-8") as fh:
+                value = (json.load(fh) or {}).get("provider_mode", "auto")
+        except Exception:
+            value = "auto"
+        _mode_cache["mtime"] = mtime
+        _mode_cache["value"] = value if value in _VALID_MODES else "auto"
+    return _mode_cache["value"]
+
+
+def set_provider_mode(mode: str) -> str:
+    """Pin the brain. Returns the mode actually in force."""
+    if mode not in _VALID_MODES:
+        raise ValueError(f"mode must be one of {_VALID_MODES}")
+    os.makedirs(os.path.dirname(_MODE_PATH), exist_ok=True)
+    data = {}
+    try:
+        with open(_MODE_PATH, encoding="utf-8") as fh:
+            data = json.load(fh) or {}
+    except Exception:
+        pass
+    data["provider_mode"] = mode
+    tmp = _MODE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, _MODE_PATH)
+    _mode_cache["mtime"] = -1.0
+    return mode
 
 
 def active_provider() -> str:
@@ -57,8 +112,29 @@ def active_provider() -> str:
     return _active_provider
 
 
+def active_model() -> str:
+    """The model name that actually served the most recent call."""
+    return _last_model
+
+
 def last_cloud_error() -> str:
     return _last_cloud_error
+
+
+def local_model_ready() -> bool:
+    """True when Ollama answers and has the configured model pulled.
+
+    Used by the dashboard so switching to the local brain can say up front
+    whether it will work, instead of pinning a mode that then fails on the
+    next message.
+    """
+    try:
+        res = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.5)
+        names = [m.get("name", "") for m in (res.json() or {}).get("models", [])]
+        base = LOCAL_CHAT_MODEL.split(":")[0]
+        return any(n == LOCAL_CHAT_MODEL or n.split(":")[0] == base for n in names)
+    except Exception:
+        return False
 
 
 def groq_client():
@@ -279,11 +355,24 @@ def chat_create(**kwargs):
     for the local fallback.  If both providers fail, the local exception is
     raised with the cloud failure chained for logs.
     """
-    global _active_provider, _last_cloud_error
+    global _active_provider, _last_cloud_error, _last_model
     cloud_error = None
+    mode = get_provider_mode()
+    if mode == "local":
+        # Pinned. No cloud attempt at all, so what comes back is unambiguously
+        # the local brain's own behaviour and its own latency.
+        result = _ollama_create(**kwargs)
+        _active_provider, _last_model = "ollama", LOCAL_CHAT_MODEL
+        return result
     if _groq is not None:
         params = dict(kwargs)
         params["model"] = CLOUD_CHAT_MODEL
+        # Ask Groq to append a final usage chunk to the stream. Without this a
+        # streamed turn reports no token counts at all and the dashboard is
+        # left estimating from character length — which is close enough to be
+        # believed and wrong enough to matter next to an 8,000/minute ceiling.
+        if params.get("stream"):
+            params.setdefault("stream_options", {"include_usage": True})
         # Tool-bearing foreground turns get Qwen's thinking mode. Tiny helper
         # calls (titles, JSON extraction, short compositions) do not: otherwise
         # their small output budget can be consumed entirely by hidden reasoning
@@ -293,7 +382,7 @@ def chat_create(**kwargs):
         params.setdefault("reasoning_format", "hidden")
         try:
             result = _groq.chat.completions.create(**params)
-            _active_provider = "groq"
+            _active_provider, _last_model = "groq", CLOUD_CHAT_MODEL
             _last_cloud_error = ""
             return result
         except Exception as exc:
@@ -306,12 +395,19 @@ def chat_create(**kwargs):
                 print(f"[provider] Groq unavailable ({str(exc)[:100]}) — "
                       f"using local {LOCAL_CHAT_MODEL}")
 
+    if mode == "cloud":
+        # Pinned to the cloud: surface the real cloud failure instead of
+        # quietly answering as a different model.
+        _active_provider, _last_model = "none", ""
+        raise cloud_error if cloud_error is not None else RuntimeError(
+            "Cloud brain pinned but no Groq API key is configured.")
+
     try:
         result = _ollama_create(**kwargs)
-        _active_provider = "ollama"
+        _active_provider, _last_model = "ollama", LOCAL_CHAT_MODEL
         return result
     except Exception as local_error:
-        _active_provider = "none"
+        _active_provider, _last_model = "none", ""
         if cloud_error is not None:
             raise RuntimeError(
                 f"Both brains failed; Groq: {cloud_error}; Ollama: {local_error}"

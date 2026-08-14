@@ -10,6 +10,7 @@ table, shown in the History tab.
 """
 
 import os
+import sys
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, send_file
@@ -92,7 +93,8 @@ def ted_map():
 def api_version():
     """Lets the HUD (and hud.py) verify the server on this port speaks the
     chat API — an older dashboard process holding the port 404s this."""
-    return jsonify({"version": 3, "chats": True, "map": True})
+    return jsonify({"version": 4, "chats": True, "map": True,
+                    "diagnostics": True})
 
 
 _weather_cache = {"ts": 0.0, "data": None}
@@ -290,6 +292,84 @@ def api_chat_summarize(chat_id):
         title = user_turns[0]["content"][:48] + ("…" if len(user_turns[0]["content"]) > 48 else "")
     db.set_chat_meta(chat_id, title=title, summary=summary)
     return jsonify({"title": title, "summary": summary or chat["summary"]})
+
+
+# `python -m dashboard` runs with the repo root on sys.path already, but the
+# same module is imported from hud.py's thread and, in tests, directly. Make
+# `core` importable either way rather than assuming a working directory.
+_PROJECT_ROOT = os.path.dirname(_HERE)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+
+# ─── diagnostics: what Ted actually did, per turn ──────────────────────────
+#
+# This exists because Charlie was reading Ted's behaviour out of a terminal.
+# Everything here is recorded by core/telemetry.py on the reply path and only
+# read back here, so a broken dashboard cannot affect a conversation.
+
+@app.get("/diagnostics")
+def diagnostics_page():
+    return send_file(os.path.join(_HERE, "diagnostics.html"))
+
+
+@app.get("/api/diagnostics/turns")
+def api_diag_turns():
+    from core import telemetry
+    limit = min(int(request.args.get("limit", 60)), 500)
+    offset = max(int(request.args.get("offset", 0)), 0)
+    return jsonify(telemetry.recent(limit, offset))
+
+
+@app.get("/api/diagnostics/stats")
+def api_diag_stats():
+    from core import telemetry
+    window = float(request.args.get("window", 3600))
+    return jsonify(telemetry.stats(window))
+
+
+@app.get("/api/diagnostics/report")
+def api_diag_report():
+    """Plain text, for pasting somewhere else. The way this project is
+    actually debugged is Charlie handing a session to another model."""
+    from core import telemetry
+    from flask import Response
+    limit = min(int(request.args.get("limit", 25)), 200)
+    return Response(telemetry.as_report(limit), mimetype="text/plain")
+
+
+@app.post("/api/diagnostics/clear")
+def api_diag_clear():
+    from core import telemetry
+    return jsonify({"cleared": telemetry.clear()})
+
+
+@app.get("/api/provider")
+def api_provider_get():
+    """Which brain is pinned, which one answered last, and whether the local
+    one would actually work if selected."""
+    from core import providers
+    return jsonify({
+        "mode": providers.get_provider_mode(),
+        "active": providers.active_provider(),
+        "active_model": providers.active_model(),
+        "cloud_model": providers.CLOUD_CHAT_MODEL,
+        "local_model": providers.LOCAL_CHAT_MODEL,
+        "cloud_configured": providers.groq_client() is not None,
+        "local_ready": providers.local_model_ready(),
+        "last_cloud_error": providers.last_cloud_error(),
+    })
+
+
+@app.post("/api/provider")
+def api_provider_set():
+    from core import providers
+    mode = (request.get_json(silent=True) or {}).get("mode", "")
+    try:
+        providers.set_provider_mode(mode)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"mode": providers.get_provider_mode()})
 
 
 @app.get("/api/meta")

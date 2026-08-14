@@ -14,7 +14,7 @@ set -euo pipefail
 
 PROJECT="$HOME/ted-ai"
 APP="$PROJECT/Ted.app"
-ICONSET="$(mktemp -d)/Ted.iconset"
+ICON_TMP="$(mktemp -d)"
 
 if [ ! -f "$PROJECT/hud.py" ]; then
     echo "error: $PROJECT/hud.py not found — is the project somewhere else?" >&2
@@ -24,105 +24,34 @@ fi
 echo "Building Ted.app…"
 
 # ── 1. Icon ───────────────────────────────────────────────────────────────────
-# Generated with pure stdlib Python (no Pillow) so this has no dependencies:
-# a dark squircle with Ted's green orb, matching the HUD sphere.
-mkdir -p "$ICONSET"
-BASE_PNG="$ICONSET/../base.png"
+# Built by tools/make_icon.py, which writes the .icns itself. This used to
+# generate a PNG, resample it with `sips`, and package it with `iconutil` —
+# that chain broke, and because the failure was caught and reduced to a one-line
+# warning inside an otherwise-successful build, Ted.app ran for days wearing the
+# generic blank-page icon with Contents/Resources/ completely empty.
+#
+# Nothing external is involved now, so there is nothing to be missing. If it
+# fails anyway the build stops and says why, because a warning nobody reads is
+# the same as no warning at all.
 
-/usr/bin/python3 - "$BASE_PNG" <<'PY'
-import math, struct, sys, zlib
-
-S = 1024
-OUT = sys.argv[1]
-
-def smoothstep(e0, e1, x):
-    if e1 == e0:
-        return 0.0 if x < e0 else 1.0
-    t = (x - e0) / (e1 - e0)
-    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
-    return t * t * (3 - 2 * t)
-
-def squircle(dx, dy, half, r):
-    """Signed distance to a rounded square centred at 0. Negative = inside."""
-    qx, qy = abs(dx) - (half - r), abs(dy) - (half - r)
-    ox, oy = max(qx, 0.0), max(qy, 0.0)
-    return math.hypot(ox, oy) + min(max(qx, qy), 0.0) - r
-
-AA   = S / 512.0          # antialias width, scales with size
-HALF = S / 2.0
-CORNER = S * 0.2237       # macOS-ish corner radius
-R_RING = S * 0.300        # orb radius
-W_RING = S * 0.026        # ring thickness
-
-# HUD palette
-BG_TOP, BG_BOT = (0x12, 0x17, 0x20), (0x07, 0x0A, 0x0F)
-GREEN          = (0x3E, 0xCF, 0x8E)
-
-rows = []
-for y in range(S):
-    row = bytearray([0])                     # PNG filter byte: none
-    dy = y - HALF + 0.5
-    fy = y / (S - 1)
-    bg = tuple(int(BG_TOP[i] + (BG_BOT[i] - BG_TOP[i]) * fy) for i in range(3))
-    for x in range(S):
-        dx = x - HALF + 0.5
-
-        # Background plate
-        inside = 1.0 - smoothstep(-AA, AA, squircle(dx, dy, HALF, CORNER))
-        if inside <= 0.001:
-            row += b'\x00\x00\x00\x00'
-            continue
-        r, g, b = bg
-
-        dist = math.hypot(dx, dy)
-
-        # Soft outer glow
-        glow = (1.0 - smoothstep(0.0, R_RING * 1.75, dist)) ** 2.4 * 0.42
-        # Faint filled orb so it reads as a sphere, not a hoop
-        body = (1.0 - smoothstep(0.0, R_RING, dist)) * 0.16
-        # Equator ellipse — the "sphere" cue that survives 16px
-        ed = (math.hypot(dx / R_RING, dy / (R_RING * 0.34)) - 1.0) * R_RING * 0.34
-        equator = 1.0 - smoothstep(W_RING * 0.42, W_RING * 0.42 + AA * 1.6, abs(ed))
-        # The ring itself
-        ring = 1.0 - smoothstep(W_RING * 0.5, W_RING * 0.5 + AA * 1.4, abs(dist - R_RING))
-
-        lit = min(1.0, glow + body + equator * 0.70 + ring)
-        if lit > 0:
-            r = int(r + (GREEN[0] - r) * lit)
-            g = int(g + (GREEN[1] - g) * lit)
-            b = int(b + (GREEN[2] - b) * lit)
-
-        a = int(255 * inside)
-        row += bytes((min(r, 255), min(g, 255), min(b, 255), a))
-    rows.append(bytes(row))
-
-def chunk(tag, data):
-    return (struct.pack(">I", len(data)) + tag + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-png = (b'\x89PNG\r\n\x1a\n'
-       + chunk(b'IHDR', struct.pack(">IIBBBBB", S, S, 8, 6, 0, 0, 0))
-       + chunk(b'IDAT', zlib.compress(b''.join(rows), 9))
-       + chunk(b'IEND', b''))
-with open(OUT, "wb") as f:
-    f.write(png)
-print(f"  icon rendered ({S}x{S})")
-PY
-
-# iconutil wants these exact filenames.
-for spec in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" \
-            "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" \
-            "512 512x512" "1024 512x512@2x"; do
-    set -- $spec
-    /usr/bin/sips -z "$1" "$1" "$BASE_PNG" --out "$ICONSET/icon_$2.png" >/dev/null 2>&1
-done
+echo "  building icon…"
+if ! /usr/bin/python3 "$PROJECT/tools/make_icon.py" "$ICON_TMP/Ted.icns"; then
+    echo "error: could not build the icon — see the output above." >&2
+    exit 1
+fi
 
 # ── 2. Bundle skeleton ────────────────────────────────────────────────────────
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-if ! /usr/bin/iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Ted.icns"; then
-    echo "  warning: macOS rejected the generated icon; building Ted.app without it"
+cp "$ICON_TMP/Ted.icns" "$APP/Contents/Resources/Ted.icns"
+
+# Trust nothing: confirm the icon is actually in the bundle rather than assuming
+# the copy worked. This is the exact check whose absence hid the original bug.
+if [ ! -s "$APP/Contents/Resources/Ted.icns" ]; then
+    echo "error: Ted.icns did not land in the bundle." >&2
+    exit 1
 fi
+echo "  icon installed ($(wc -c < "$APP/Contents/Resources/Ted.icns" | tr -d ' ') bytes)"
 
 # ── 3. Info.plist ─────────────────────────────────────────────────────────────
 # The usage-description strings matter: without NSMicrophoneUsageDescription
@@ -205,7 +134,7 @@ chmod +x "$APP/Contents/MacOS/Ted"
 
 # Make Finder pick up the new icon immediately instead of caching the generic one.
 touch "$APP"
-rm -rf "$(dirname "$ICONSET")"
+rm -rf "$ICON_TMP"
 
 echo
 echo "Built $APP"

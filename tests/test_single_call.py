@@ -23,6 +23,9 @@ Run with the venv python:  python tests/test_single_call.py
 """
 
 import os
+# Drive the real ask_streaming() without writing turns into the live
+# memory.db — the diagnostics panel must only ever show real sessions.
+os.environ["TED_DB"] = ""
 import sys
 import types
 from types import SimpleNamespace

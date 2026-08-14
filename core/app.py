@@ -16,7 +16,8 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import features, llm, music, routing, tool_handlers as th, voice
+from core import (features, llm, music, routing, telemetry,
+                  tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
 from core.hud_bridge import js, set_state, add_message, show_issue
@@ -528,7 +529,16 @@ class TedApi:
         # match declines the whole turn and reaches the reasoner below.
         reflex = routing.plan_reflex(text)
         if reflex is not None:
+            # Logged like any other turn. A reflex hit costs zero tokens and no
+            # model call, which is the whole point of the lane — but if it is
+            # never recorded the diagnostics panel makes it look like Ted
+            # simply did less work that minute.
+            _rturn = telemetry.Turn(text, source="reflex")
+            _rturn.provider = "reflex"
+            _rturn.forced = "n/a"
             results = self._execute_reflex(reflex)
+            for _name, _ in reflex.calls:
+                _rturn.note_tool(_name)
             # Same as every other early return below: the barge-in detector has
             # to be cleared before Ted speaks, or the tail of the user's own
             # request counts as an interruption of the reply to it.
@@ -536,8 +546,10 @@ class TedApi:
             reply = " ".join(results)
             self.last_reply = reply
             add_message(w, "ted", reply)
-            if any(th.looks_like_failure(result) for result in results):
+            _failed = [r for r in results if th.looks_like_failure(r)]
+            if _failed:
                 show_issue(w, reply)
+            _rturn.finish(reply=reply, error="; ".join(_failed))
             speak(w, reply, self)
             return False
 
