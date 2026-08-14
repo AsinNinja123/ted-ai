@@ -680,11 +680,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     def _load_know():
         if features.HAS_KNOWLEDGE:
             _ctx["know"] = features.knowledge.search(user_input, k=3)
-    loaders = []
+    # Facts load on EVERY turn, including operational ones. They are one local
+    # SQLite read, capped at 1200 characters downstream, and they are exactly
+    # what makes an action honor a standing preference — "open YouTube in Brave
+    # from now on" is stored as a fact, and the turn that needs it is an action
+    # turn. Scoping them out re-broke that (see the handoff, §7.4). Episodic
+    # retrieval is the expensive part and stays scoped.
+    loaders = [_load_facts]
     if context_scope in ("relevant", "full"):
         loaders.extend((_load_mem, _load_know))
     if context_scope == "full":
-        loaders.extend((_load_facts, _load_sessions))
+        loaders.append(_load_sessions)
     _lk_threads = [threading.Thread(target=f, daemon=True) for f in loaders]
     _ctx_t0 = time.time()
     for _t in _lk_threads: _t.start()
@@ -814,8 +820,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # Schemas still make one request do the old probe + response job, but they
     # are real input tokens and the free tier bills them. Routing therefore
     # supplies a focused initial menu instead of the complete catalog.
-    _tools_kw = ({"tools": tool_runtime.schemas,
-                  "tool_choice": "required" if require_tool else "auto"}
+    #
+    # tool_choice stays "auto" on the first call even for an obvious action.
+    # Forcing it removes the model's only honest escape route: a turn that
+    # cannot be satisfied by any loaded tool has nowhere to go but a wrong call
+    # or a dead end, and the classifier deciding "this is an action" is a
+    # regex. The recovery path below already forces tool choice on the retry —
+    # after the model has demonstrably narrated an action instead of taking
+    # one, which is evidence rather than a guess.
+    _tools_kw = ({"tools": tool_runtime.schemas, "tool_choice": "auto"}
                  if tool_runtime is not None else {})
     # Provider tokenizers differ, so this is intentionally a stable estimate,
     # not fake precision. It makes prompt regressions visible in the same launch
@@ -944,6 +957,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         while True:
             rounds += 1
             calls = {}
+            # Hold back prose on a turn that is unmistakably a Mac command, so
+            # a fake "Opened it" never reaches the user ahead of the real tool
+            # result. This is only safe because require_tool is now a narrow
+            # device-verb test; when it covered write/check/show/tell it made
+            # "write me a poem" come back silent. Withheld text is not thrown
+            # away — if no tool call materialises it is released below.
             expecting_tool = (require_tool or tool_retry_used) and total_calls == 0
             try:
                 turn_text = yield from _stream_turn(
@@ -988,10 +1007,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             if calls and turn_text and not action_results:
                 full_reply += turn_text
 
-            # A required-action turn that came back as prose is a model-routing
-            # failure, not a reason to make the user repeat himself. Retry once
-            # with an explicit correction and required tool choice. The first
-            # prose was held back above, so a fake "Opened it" never reaches him.
+            # Prose that CLAIMS a completed action while calling nothing is a
+            # model-routing failure, not a reason to make the user repeat
+            # himself: retry once with tool choice forced. The trigger is the
+            # claim itself, not a guess about intent — a turn that simply
+            # answers in words is a legitimate answer and is left alone.
             claimed_without_tool = (
                 not calls and tool_runtime is not None and total_calls == 0
                 and claims_completed_action(turn_text)
@@ -1055,10 +1075,30 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     yield final
                 else:
                     if expecting_tool:
-                        correction = ("I couldn't turn that request into a real action, "
-                                      "so nothing ran.")
-                        full_reply += correction
-                        yield correction
+                        # An action turn ended with no tool call and no retry
+                        # left. The withheld text is released rather than
+                        # replaced by a canned line: "Notes isn't installed" is
+                        # a real answer and throwing it away to say "I couldn't
+                        # turn that into an action" loses the only useful part.
+                        # If it also CLAIMED to have acted, it gets corrected.
+                        full_reply += turn_text
+                        if turn_text:
+                            yield turn_text
+                        if claims_completed_action(turn_text):
+                            print("[honesty] action turn claimed an outcome with "
+                                  "no tool call", flush=True)
+                            error_log.error(
+                                "Action turn claimed an outcome with no tool call: "
+                                f"{turn_text.strip()[:200]}")
+                            correction = ("\n\n(Correction: I didn't actually run "
+                                          "anything just then.)")
+                            full_reply += correction
+                            yield correction
+                        elif not turn_text.strip():
+                            fallback = ("I couldn't turn that into an action, "
+                                        "so nothing ran.")
+                            full_reply += fallback
+                            yield fallback
                         break
                     full_reply += turn_text
                     # No tool ran this turn. If the model nonetheless said it

@@ -529,6 +529,10 @@ class TedApi:
         reflex = routing.plan_reflex(text)
         if reflex is not None:
             results = self._execute_reflex(reflex)
+            # Same as every other early return below: the barge-in detector has
+            # to be cleared before Ted speaks, or the tail of the user's own
+            # request counts as an interruption of the reply to it.
+            engine.reset_barge_in()
             reply = " ".join(results)
             self.last_reply = reply
             add_message(w, "ted", reply)

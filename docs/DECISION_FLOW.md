@@ -80,8 +80,14 @@ without hard-coding broader language understanding.
 ### Gate 7 — One reasoning and tool loop
 The normal path is one streamed request carrying a small capability menu selected
 in **`core/routing.py`**. `find_tools` can add schemas during the same turn when
-the initial menu is insufficient. Action requests force tool choice; fake action
-prose and provider stream failures are automatically retried once. Calls are
+the initial menu is insufficient. Tool choice is always `auto` on the first call —
+only the recovery retry forces it, after the model has demonstrably narrated an
+action instead of taking one. On an unmistakable device command (`open`, `close`,
+`play`, `text <person>` — see `likely_action_request`) prose is held back until
+the turn resolves, so a fake "Opened it" cannot outrun the real result; if no
+tool call ever arrives the withheld text is released rather than discarded.
+Fake action prose and provider stream failures are automatically retried once.
+Calls are
 schema-validated before dispatch, invalid arguments are repaired without running,
 and explicit multi-target requests continue until their minimum completion count
 is reached. The loop remains capped at five rounds/ten calls and blocks duplicates.

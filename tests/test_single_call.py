@@ -180,9 +180,14 @@ out, _ = run("open Notes somehow", runtime(
     lambda n, a: "Notes opened.", action_tools={"open_app"}),
     context_scope="none", require_tool=True,
     operational_context="Recent verified actions: close_app({'name': 'Notes'}) -> Closed Notes.")
-check("operational turns skip all episodic memory reads", memory_reads == [])
-check("unmistakable actions require a tool from the provider",
-      llm.chat_create.kwargs[0]["tool_choice"] == "required")
+# Facts are one capped local read and are exactly what makes an action honor a
+# standing preference ("open YouTube in Brave from now on"). Only the expensive
+# episodic sources — FTS5 exchanges, session summaries, the knowledge base —
+# are scoped out of an operational turn.
+check("operational turns skip episodic memory but keep facts",
+      memory_reads == ["facts"])
+check("the first call never forces tool choice",
+      llm.chat_create.kwargs[0]["tool_choice"] == "auto")
 check("compact operational turn still executes normally", out == "Notes opened.")
 llm.get_memory = lambda q: ""
 llm.get_facts_about = lambda who: ""
@@ -540,6 +545,29 @@ check("the fake action prose is held back during recovery",
       out == "Closed VS Code. Closed Notes.")
 check("the recovery explicitly requires tool use",
       llm.chat_create.kwargs[1]["tool_choice"] == "required")
+
+# An action turn that ends with no tool call must not swallow what the model
+# said. Prose is held back on these turns so a fake "Opened it" cannot outrun
+# the real result — but if no tool call ever arrives, the withheld text is a
+# real answer ("Notes isn't installed") and is released rather than replaced
+# by a canned line. Only a genuinely empty turn gets the canned line.
+llm.chat_create = scripted(
+    FakeStream([text_chunk("Notes isn't installed on this Mac.")]),
+)
+out, _ = run("open Notes", runtime(
+    lambda n, a: "unused", action_tools={"open_app"}),
+    require_tool=True, context_scope="none")
+check("withheld prose is released when no tool call ever arrives",
+      out == "Notes isn't installed on this Mac.")
+check("an honest explanation is not corrected as a phantom action",
+      "Correction" not in out)
+
+llm.chat_create = scripted(FakeStream([]))
+out, _ = run("open Notes", runtime(
+    lambda n, a: "unused", action_tools={"open_app"}),
+    require_tool=True, context_scope="none")
+check("a genuinely empty action turn says so",
+      "couldn't turn that into an action" in out)
 
 llm.chat_create = scripted(FakeStream([text_chunk(
     "You closed that tab yourself a minute ago, so it should be gone.")]))

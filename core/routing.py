@@ -81,11 +81,33 @@ _FAMILIES = (
      ("search_knowledge", "add_knowledge")),
 )
 
+# Verbs that can only mean "do something to my Mac or my accounts". Anything a
+# person also says to a chatbot in ordinary conversation is deliberately absent.
+#
+# The earlier list included write, create, check, show, find, read, tell, search
+# and remove. Every one of those opens a normal request — "write me a poem",
+# "check my code for bugs", "tell me what you think" — and classifying them as
+# actions suppressed the prose answer and forced a tool call that did not exist.
+# A verb missing from this list is not a failure: the turn simply goes to the
+# model with tool_choice="auto", which is the behaviour that already worked.
 _ACTION_WORDS = re.compile(
-    r"^(?:open|close|quit|launch|play|pause|send|message|text|email|set|add|"
-    r"create|write|copy|paste|type|delete|flag|mark|change|turn|search|find|"
-    r"look up|show|hide|read|check|log|calculate|browse|navigate|remove|tell)\b",
+    r"^(?:open|close|quit|launch|relaunch|reopen|browse|navigate|"
+    r"play|pause|resume|skip|mute|unmute|"
+    r"imessage|paste|screenshot)\b",
     re.I,
+)
+
+# The remaining verbs are actions only when they carry an unmistakable target:
+# a person to message, a device surface to change, or an explicit destination.
+_TARGETED_ACTIONS = (
+    (re.compile(r"^(?:text|message|send|email)\b", re.I),
+     re.compile(r"\b(?:to|for)\s+\w|^(?:text|message|email)\s+\w+\s+\w", re.I)),
+    (re.compile(r"^(?:set|add|log)\b", re.I),
+     re.compile(r"\b(?:reminder|timer|alarm|calendar|event|meeting|appointment|"
+                r"note|notes|habit|streak|volume|brightness|workout|exercise|"
+                r"gym|run|lift)\b", re.I)),
+    (re.compile(r"^(?:copy|type)\b", re.I),
+     re.compile(r"\b(?:clipboard|to my clipboard|into|out loud)\b", re.I)),
 )
 
 
@@ -160,7 +182,10 @@ def likely_action_request(text):
     t = re.sub(
         r"^(?:(?:can|could|would|will)\s+you|i\s+(?:want|need|would like)\s+you\s+to)\s+",
         "", t, flags=re.I)
-    return bool(_ACTION_WORDS.match(t))
+    if _ACTION_WORDS.match(t):
+        return True
+    return any(verb.match(t) and target.search(t)
+               for verb, target in _TARGETED_ACTIONS)
 
 
 _SEQUENCE_SEP = re.compile(

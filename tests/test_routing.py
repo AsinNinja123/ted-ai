@@ -53,7 +53,8 @@ check("two target groups across two stages require four calls",
       routing.expected_action_calls(
           "open Notes and Messages, then close both") == 4)
 check("dependent non-app stages are counted",
-      routing.expected_action_calls("copy this, then read it back") == 2)
+      routing.expected_action_calls(
+          "copy this to my clipboard, then read it back") == 2)
 check("two different capabilities joined by and are both required",
       routing.expected_action_calls(
           "open Notes and send a message to Gavin") == 2)
@@ -61,7 +62,44 @@ check("discussion containing an action verb does not force execution",
       not routing.likely_action_request(
           "I wonder whether I should remove that from my workflow"))
 check("a polite direct request still requires execution",
-      routing.likely_action_request("Could you remove that from my notes?"))
+      routing.likely_action_request("Could you pause the music?"))
+
+# Regression: the first version of this classifier matched any sentence opening
+# with write/check/show/find/read/tell/create/search/remove. Every line below
+# is an ordinary chatbot request that was being treated as a Mac command —
+# memory withheld, prose suppressed, and a tool call forced with no tool that
+# could satisfy it. A verb that is also conversational must not qualify here;
+# missing a real action only costs tool_choice="auto", which already works.
+for phrase in ("write me a poem about fall",
+               "tell me what you think of this design",
+               "check my code for bugs",
+               "show me an example of a decorator",
+               "find the bug in this function",
+               "read this back to me and summarize it",
+               "create a function that reverses a string",
+               "search for a better approach",
+               "remove the third paragraph",
+               "send me your best guess"):
+    check(f"conversation is not an action: {phrase!r}",
+          not routing.likely_action_request(phrase))
+
+for phrase in ("open Notes",
+               "close VS Code and Notes",
+               "open youtube.com in Brave",
+               "play the song Maine",
+               "pause the music",
+               "text Gavin that I'm running late",
+               "set a timer for ten minutes",
+               "add it to my calendar",
+               "log my workout",
+               "copy this to my clipboard"):
+    check(f"real action still qualifies: {phrase!r}",
+          routing.likely_action_request(phrase))
+
+check("an action turn still gets no episodic recall",
+      routing.memory_scope_for("open Notes", []) == "none")
+check("a conversational verb keeps its ordinary memory scope",
+      routing.memory_scope_for("write me a poem about fall", []) == "relevant")
 
 
 print("\n— dynamic capability menus —")

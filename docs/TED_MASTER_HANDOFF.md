@@ -364,6 +364,31 @@ for latency; local remains the availability fallback. Required actions retry one
 phantom narration or malformed provider stream automatically, and explicit
 multi-target requests are not considered complete after only the first action.
 
+**And it is still not known whether Ted holds a conversation.** The prompt-weight
+number is real and measured. Everything else on this page is code review and unit
+tests: nobody has used Ted since Aug 14. The three log numbers below are still the
+thing that settles it, and the routing change added a fourth. Do not let a
+benchmark of three cases stand in for a day of use — that substitution has already
+been made once on this project, in the section this paragraph replaced.
+
+**Correction, Aug 14 (later).** The first version of this routing layer shipped
+three defects that a review caught before real use:
+
+- `likely_action_request` matched any sentence opening with `write`, `check`,
+  `show`, `find`, `read`, `tell`, `create`, `search` or `remove`. "Write me a
+  poem", "check my code for bugs" and "tell me what you think" were all
+  classified as Mac commands. It is now a narrow device-verb test; conversational
+  verbs count only with an unmistakable target ("text Gavin", "set a timer").
+- `tool_choice="required"` on the first call left a misclassified turn with no
+  honest exit. It is `auto` on round one now; only the recovery retry forces it.
+- Memory scope `none` withheld the `facts` table from action turns, which
+  re-broke §7.4 — the fix that makes "open YouTube in Brave from now on" work.
+  Facts now load on every turn.
+
+The lesson is the one already in §12 principle 5, pointed the other way: moving
+a decision from the model back into a regex is cheap to write and expensive to
+be wrong about, because the regex cannot tell you it guessed.
+
 ---
 
 ## 4. Current architecture
@@ -444,12 +469,17 @@ it is not a supported mode.
 
 1. **Select capabilities** in `core/routing.py`; begin with only relevant schemas
    plus `find_tools`, which can expand the menu during the same turn.
-2. **Select memory scope:** none for operations, related exchanges/knowledge for
-   ordinary chat, full facts/session memories only for explicit personal recall.
+2. **Select memory scope:** facts load on *every* turn (one capped local read,
+   and the thing that makes an action honor a standing preference — see §7.4).
+   Episodic retrieval is what gets scoped: none for operations, related
+   exchanges/knowledge for ordinary chat, full session memories only for
+   explicit personal recall.
 3. **Add structured recent actions** so pronouns and references can resolve from
    verified state rather than a transcript guess.
 4. **Assemble the prompt** — order matters for speed, see §7.2.
-5. **Require tools for clear actions.** Multi-target/stage requests carry a minimum
+5. **Hold prose on clear device commands, never force the first call.** Tool
+   choice is `auto` on round one; only the recovery retry forces it, and only
+   after a phantom action claim. Multi-target/stage requests carry a minimum
    completion count; phantom narration and malformed provider streams retry once.
 6. **Stream** tokens to the HUD; sentence-by-sentence to the speaker if voice is on.
    Tool results feed the next bounded round and remain the user-visible truth.
