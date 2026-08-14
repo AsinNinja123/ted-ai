@@ -52,6 +52,13 @@ rm -rf "$APP/Contents"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ICON_TMP/Ted.icns" "$APP/Contents/Resources/Ted.icns"
 
+# PkgInfo. Eight bytes, technically optional since forever, and its absence is
+# the classic reason a structurally-correct bundle is not treated as an
+# application — Finder falls back to opening Contents/MacOS/Ted as a document,
+# which is why double-clicking Ted.app was launching Script Editor instead of
+# Ted. Costs nothing to write and removes the ambiguity.
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+
 # Trust nothing: confirm the icon is actually in the bundle rather than assuming
 # the copy worked. This is the exact check whose absence hid the original bug.
 if [ ! -s "$APP/Contents/Resources/Ted.icns" ]; then
@@ -152,6 +159,17 @@ LAUNCH
 
 chmod +x "$APP/Contents/MacOS/Ted"
 
+# Confirm macOS agrees this is an application before claiming success. Opening
+# the bundle in Script Editor is what "not an application" looks like from the
+# outside, and the build should notice that rather than the user.
+if /usr/bin/mdls -name kMDItemContentType "$APP" 2>/dev/null \
+        | grep -q "com.apple.application-bundle"; then
+    echo "  macOS recognises Ted.app as an application"
+else
+    echo "  note: Spotlight has not indexed the bundle yet — if double-clicking"
+    echo "        opens the wrong app, log out and back in once."
+fi
+
 # ── 5. Make macOS actually show the icon ──────────────────────────────────────
 # A `touch` alone is not enough and never was. macOS caches an app's icon per
 # bundle, and Ted.app spent days with NO icon — so what is cached is "this app
@@ -160,9 +178,18 @@ chmod +x "$APP/Contents/MacOS/Ted"
 # Three steps, cheapest first. All are safe to re-run and none need sudo.
 touch "$APP"
 
+# Strip quarantine and any stale Finder metadata. A bundle rebuilt underneath
+# a registration macOS already holds is exactly the state that produces
+# "opens in the wrong app".
+/usr/bin/xattr -cr "$APP" >/dev/null 2>&1 || true
+
 LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks"
 LSREG="$LSREG/LaunchServices.framework/Versions/A/Support/lsregister"
 if [ -x "$LSREG" ]; then
+    # Unregister BEFORE registering. `-f` alone updates a record that may
+    # already describe this path as something other than an application, and
+    # updating a wrong record leaves it wrong.
+    "$LSREG" -u "$APP" >/dev/null 2>&1 || true
     "$LSREG" -f "$APP" >/dev/null 2>&1 || true
     echo "  re-registered with LaunchServices"
 fi

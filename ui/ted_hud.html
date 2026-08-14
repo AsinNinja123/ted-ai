@@ -63,8 +63,8 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .cm{font-size:11px;color:var(--dim);margin-top:1px}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn{cursor:pointer;padding:6px 0;color:var(--dim);transition:color .2s}
-#membtn:hover{color:var(--text)}
+#membtn,#diagbtn{cursor:pointer;padding:6px 0;color:var(--dim);transition:color .2s}
+#membtn:hover,#diagbtn:hover{color:var(--text)}
 .hd{display:flex;align-items:center;gap:4px;font-size:10px;letter-spacing:.08em}
 .hd i{width:6px;height:6px;border-radius:50%;background:var(--dim);display:inline-block}
 .hd i.on{background:var(--ok)}
@@ -203,6 +203,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
 #mempanel header .x{cursor:pointer;font-size:15px;color:var(--text);letter-spacing:0}
 #memframe{flex:1;border:none;width:100%;background:#0f1115}
+
+/* diagnostics overlay — same shell as memory, so the two behave identically */
+#diagpanel{position:fixed;inset:0;z-index:40;background:#171614;display:none;flex-direction:column}
+#diagpanel.open{display:flex}
+#diagpanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:var(--dim);
+  display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
+#diagpanel header .x{cursor:pointer;font-size:15px;color:var(--text);letter-spacing:0}
+#diagframe{flex:1;border:none;width:100%;background:#171614}
 </style>
 </head>
 <body>
@@ -213,6 +221,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   <div id="chats"></div>
   <div id="sidefoot">
     <div id="membtn" title="Ted's memory">&#9783; Memory</div>
+    <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
   </div>
 </div>
 
@@ -271,6 +280,11 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 <div id="mempanel">
   <header>TED'S MEMORY <span class="x" onclick="tedHud.hideMemory()">×</span></header>
   <iframe id="memframe"></iframe>
+</div>
+
+<div id="diagpanel">
+  <header>DIAGNOSTICS <span class="x" onclick="tedHud.hideDiagnostics()">×</span></header>
+  <iframe id="diagframe"></iframe>
 </div>
 
 <script>
@@ -723,7 +737,26 @@ var tedHud={
   hideMemory:function(){ $('mempanel').classList.remove('open'); },
   toggleMemory:function(){
     if($('mempanel').classList.contains('open')) tedHud.hideMemory();
-    else tedHud.showMemory();
+    else { tedHud.hideDiagnostics(); tedHud.showMemory(); }
+  },
+
+  /* diagnostics overlay */
+  showDiagnostics:function(){
+    var f=$('diagframe');
+    /* Reload on every open rather than only on first open: unlike the memory
+       tables, this page is about what just happened, and a stale one is
+       actively misleading. It self-refreshes every 2s once loaded. */
+    f.src='http://127.0.0.1:5175/diagnostics?t='+Date.now();
+    $('diagpanel').classList.add('open');
+  },
+  hideDiagnostics:function(){
+    $('diagpanel').classList.remove('open');
+    /* Drop the frame so its 2-second polling loop stops while hidden. */
+    var f=$('diagframe'); if(f) f.src='about:blank';
+  },
+  toggleDiagnostics:function(){
+    if($('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();
+    else { tedHud.hideMemory(); tedHud.showDiagnostics(); }
   },
 
   /* compat stubs — Python still calls these; nothing to show in chat mode */
@@ -759,6 +792,7 @@ $('mic').onclick=function(){
 };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
+$('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
 $('clk-toggle').onclick=function(){ tedHud.toggleClock(); };
 $('side-toggle').onclick=toggleSide;
 $('apps-toggle').onclick=toggleApps;
@@ -797,6 +831,7 @@ document.addEventListener('mousedown',function(e){
 setInterval(function(){ if($('apps').classList.contains('open')) renderApps(); },60000);
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&$('mempanel').classList.contains('open')) tedHud.hideMemory();
+  if(e.key==='Escape'&&$('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();
 });
 
 /* ── boot ─────────────────────────────────────────────────── */

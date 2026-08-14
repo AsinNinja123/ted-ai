@@ -29,9 +29,11 @@ os.environ["TED_DB"] = os.path.join(tempfile.mkdtemp(), "telemetry_test.db")
 from core import telemetry                                    # noqa: E402
 
 _fails = [0]
+_checks = [0]
 
 
 def check(label, ok):
+    _checks[0] += 1
     print(("  ✓ " if ok else "  ✗ ") + label)
     if not ok:
         _fails[0] += 1
@@ -188,6 +190,34 @@ check("…and the corners stay transparent (no dark halo)",
 check("…while the centre is opaque", small[(8 * 16 + 8) * 4 + 3] > 200)
 
 
+print("\n— the HUD can actually reach the diagnostics panel —")
+
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+hud = open(os.path.join(_root, "ui", "ted_hud.html"), encoding="utf-8").read()
+check("there is a Diagnostics button in the sidebar, next to Memory",
+      'id="diagbtn"' in hud and 'id="membtn"' in hud)
+check("…wired to a toggle", "tedHud.toggleDiagnostics()" in hud)
+check("…that loads the dashboard page, not the memory one",
+      "127.0.0.1:5175/diagnostics" in hud)
+check("opening one overlay closes the other — both are full-screen",
+      "tedHud.hideMemory(); tedHud.showDiagnostics()" in hud
+      and "tedHud.hideDiagnostics(); tedHud.showMemory()" in hud)
+check("closing it stops the 2s polling loop",
+      "about:blank" in hud)
+
+build = open(os.path.join(_root, "tools", "make_app.sh"), encoding="utf-8").read()
+check("the bundle gets a PkgInfo — without it Finder may not see an app",
+      "APPL????" in build)
+check("the bundle keeps its inode so a Dock tile survives a rebuild",
+      'rm -rf "$APP/Contents"' in build and 'rm -rf "$APP"\n' not in build)
+check("LaunchServices is unregistered before being re-registered",
+      '"$LSREG" -u' in build and '"$LSREG" -f' in build)
+
+app = open(os.path.join(_root, "dashboard", "app.py"), encoding="utf-8").read()
+check("the dashboard serves /diagnostics", '"/diagnostics"' in app)
+check("…and advertises the capability so the HUD can detect an old server",
+      '"diagnostics": True' in app)
+
+
 print("\n" + "=" * 50)
-total = 33
-print(f"{total - _fails[0]} passed, {_fails[0]} failed")
+print(f"{_checks[0] - _fails[0]} passed, {_fails[0]} failed")
