@@ -115,9 +115,28 @@ def add_text(text: str, source: str = "voice", metadata: dict = None) -> int:
         return 0
 
 
+# Cosine distance (the collection is created with hnsw:space=cosine), so 0 is
+# identical and 2 is opposite. With BAAI/bge-small-en-v1.5 a genuinely related
+# chunk lands below roughly 0.45; unrelated prose sits around 0.6-0.9. Anything
+# above the cutoff is dropped rather than injected.
+try:
+    from config import KNOWLEDGE_MAX_DISTANCE
+except Exception:
+    KNOWLEDGE_MAX_DISTANCE = 0.45
+
+
 def search(query: str, k: int = 4) -> str:
-    """Return the most relevant stored text for a query, joined as a single string.
-    Returns '' if nothing is found or the store is unavailable."""
+    """Return RELEVANT stored text for a query, or '' when nothing is relevant.
+
+    A vector store always has a nearest neighbour. It returned the closest four
+    chunks for every question ever asked, including "how are you", and that was
+    ~375 tokens of unrelated text on turns that could not use it. Nearest is not
+    the same as relevant, and the distance needed to be read rather than
+    ignored.
+
+    Distances are logged when something is dropped, so the cutoff can be tuned
+    against real queries instead of guessed at.
+    """
     col = _get_collection()
     if col is None or not query.strip():
         return ""
@@ -131,10 +150,21 @@ def search(query: str, k: int = 4) -> str:
         results = col.query(
             query_embeddings=emb,
             n_results=min(k, total),
-            include=["documents"],
+            include=["documents", "distances"],
         )
         docs = results.get("documents", [[]])[0]
-        return "\n".join(d for d in docs if d) if docs else ""
+        dists = (results.get("distances") or [[]])[0]
+        if not docs:
+            return ""
+        if not dists:                      # older Chroma: keep the old behaviour
+            return "\n".join(d for d in docs if d)
+        kept = [d for d, dist in zip(docs, dists)
+                if d and dist <= KNOWLEDGE_MAX_DISTANCE]
+        if len(kept) < len(docs):
+            print(f"[knowledge] {len(kept)}/{len(docs)} chunks above the "
+                  f"relevance bar (nearest {min(dists):.3f}, "
+                  f"cutoff {KNOWLEDGE_MAX_DISTANCE})")
+        return "\n".join(kept)
     except Exception as e:
         print(f"[knowledge] search failed: {e}")
         return ""

@@ -785,15 +785,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         )
     else:
         context_parts.append(
-            "CURRENT MODE: CHAT (right now, this reply appears as text in the "
-            "chat window; the mic is off). If asked which mode you're in, the "
-            "answer is CHAT — anything said about modes earlier in this "
-            "conversation is outdated; trust only this line. Answer properly "
-            "and completely like a modern AI chat assistant: full explanations "
-            "when the question deserves them, short paragraphs, light "
-            "formatting only where it genuinely helps. ALWAYS put code in a "
-            "fenced block with the language name (```python), never as plain "
-            "text. Still no padding or filler."
+            # Trimmed Aug 14: 134 tokens on every turn is a lot for a line
+            # whose job is "you are in chat mode". The mode-conflict warning
+            # stays because Charlie flips modes mid-conversation and stale
+            # claims genuinely confused the model; everything else was the
+            # persona repeated in a second place.
+            "CURRENT MODE: CHAT — text in a window, mic off. Trust this line "
+            "over anything said about modes earlier. Answer fully when the "
+            "question deserves it, short paragraphs, code always in a fenced "
+            "block with its language."
         )
 
     context = "(Context: " + " ".join(context_parts) + ")"
@@ -855,6 +855,22 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     _turn.reasoning = reasoning_effort_for(user_input)
     _turn.prompt_tokens = max(1, round(_prompt_chars / 4))
     _turn.ms_retrieval = _ctx_ms
+    # Where the prompt actually went. Computing this per turn is the difference
+    # between "how are you cost 1,782 tokens" and knowing which block to cut.
+    _turn.ctx_breakdown = ";".join(
+        f"{k}={max(0, round(len(v) / 4))}" for k, v in (
+            ("persona", _system["content"]),
+            ("facts", known_facts),
+            ("recall", past_memory),
+            ("knowledge", knowledge_ctx),
+            ("history", "".join(str(m.get("content", "")) for m in recent)),
+            ("tools", json.dumps(tool_runtime.schemas) if tool_runtime else ""),
+            # Whatever else the context block carries — the mode line, the
+            # date, operational actions, web snippets — as one figure, so the
+            # named parts above always add up to the whole.
+            ("other", " " * max(0, len(context) - len(known_facts)
+                                - len(past_memory) - len(knowledge_ctx))),
+        ) if v)
     if tool_runtime is not None:
         _turn.tools_offered = [
             (sc.get("function") or {}).get("name", "") for sc in tool_runtime.schemas]

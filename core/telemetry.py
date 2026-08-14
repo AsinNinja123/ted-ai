@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS turn_log (
     retries           TEXT    NOT NULL DEFAULT '',
     rate_limited      INTEGER NOT NULL DEFAULT 0,
     error             TEXT    NOT NULL DEFAULT '',
+    ctx_breakdown     TEXT    NOT NULL DEFAULT '',
     ok                INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_turn_log_epoch ON turn_log(epoch);
@@ -95,6 +96,12 @@ def _connect():
         conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=5.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        # Existing installs already have turn_log without this column.
+        try:
+            conn.execute("ALTER TABLE turn_log ADD COLUMN "
+                         "ctx_breakdown TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass                     # already there
         conn.commit()
         _conn = conn
     except Exception as e:                                   # pragma: no cover
@@ -124,7 +131,7 @@ class Turn:
                  "tokens_estimated", "reasoning", "context_scope",
                  "history_msgs", "tools_offered", "tools_called", "tool_rounds",
                  "ms_retrieval", "ms_accepted", "ms_first_token", "retries",
-                 "rate_limited", "error", "written")
+                 "rate_limited", "error", "ctx_breakdown", "written")
 
     def __init__(self, user_text="", source="chat"):
         self.t0 = time.time()
@@ -149,6 +156,7 @@ class Turn:
         self.retries = []
         self.rate_limited = False
         self.error = ""
+        self.ctx_breakdown = ""
         self.written = False
 
     # -- collection ------------------------------------------------------
@@ -183,8 +191,8 @@ class Turn:
                     "total_tokens, tokens_estimated, reasoning, context_scope, "
                     "history_msgs, tools_offered, tools_called, tool_rounds, "
                     "ms_retrieval, ms_accepted, ms_first_token, ms_total, "
-                    "retries, rate_limited, error, ok) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "retries, rate_limited, error, ctx_breakdown, ok) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(timespec="seconds"), self.t0,
                      self.source, _trim(self.user_text, 2000),
                      _trim(self.reply, 4000), self.provider, self.model,
@@ -195,7 +203,8 @@ class Turn:
                      self.tool_rounds, self.ms_retrieval, self.ms_accepted,
                      self.ms_first_token, self.elapsed_ms(),
                      ",".join(self.retries), 1 if self.rate_limited else 0,
-                     _trim(self.error, 1000), 0 if self.error else 1))
+                     _trim(self.error, 1000), self.ctx_breakdown,
+                     0 if self.error else 1))
                 conn.commit()
         except Exception as e:                               # pragma: no cover
             print(f"[telemetry] write failed — {e}")

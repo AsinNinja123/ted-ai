@@ -99,6 +99,10 @@
   .pill.none   { color: var(--bad); border-color: rgba(224, 104, 95, .45); }
   .pill.retry  { color: var(--warn); border-color: rgba(224, 179, 65, .45); }
   .est { color: var(--dimmer); }
+  .ctx { margin-top: 4px; font-family: ui-monospace, monospace; font-size: 10.5px;
+         color: var(--dim); }
+  .ctx-k { color: var(--dimmer); margin-right: 2px; }
+  .ctx-k::after { content: ":"; }
   .empty { padding: 40px 18px; color: var(--dim); }
   footer { padding: 14px 18px 30px; color: var(--dimmer); font-size: 11.5px; }
 </style>
@@ -159,6 +163,16 @@ const $ = s => document.querySelector(s);
 const esc = s => (s ?? "").toString().replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const clip = (s, n) => { s = s ?? ""; return s.length > n ? s.slice(0, n) + "…" : s; };
+
+// Where the prompt went, per turn. "how are you cost 1,782 tokens" is a
+// complaint; "persona=576 facts=234 recall=300 knowledge=375" is a to-do list.
+function ctxBars(spec) {
+  if (!spec) return "";
+  return spec.split(";").filter(Boolean).map(part => {
+    const [k, v] = part.split("=");
+    return `<span class="ctx-k">${esc(k)}</span>${esc(v)}`;
+  }).join(" ");
+}
 
 function timeOf(ts) {
   const d = new Date(ts);
@@ -244,6 +258,7 @@ async function loadTurns() {
         <div class="note">${offered.length ? offered.length + " offered" : ""}
           ${r.context_scope ? " · " + esc(r.context_scope) : ""}
           ${r.reasoning === "default" ? " · thinking" : ""}</div>
+        <div class="note ctx">${ctxBars(r.ctx_breakdown)}</div>
       </td>
     </tr>`;
   }).join("");

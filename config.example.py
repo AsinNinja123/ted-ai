@@ -55,3 +55,10 @@ REMOTE_TOKEN = ""          # required for LAN/iPhone access; blank disables the 
 SPOTIFY_CLIENT_ID = ""
 SPOTIFY_CLIENT_SECRET = ""
 SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8888/callback"
+
+# How close a knowledge-base chunk has to be before it is worth spending tokens
+# on. Cosine distance: 0 is identical, 2 is opposite. A vector store always has
+# a nearest neighbour, so without a cutoff every question — including "how are
+# you" — pulled in the closest four chunks whether or not they were related.
+# Raise it to retrieve more eagerly, lower it to retrieve only strong matches.
+KNOWLEDGE_MAX_DISTANCE = 0.45

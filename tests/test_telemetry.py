@@ -219,5 +219,64 @@ check("…and advertises the capability so the HUD can detect an old server",
       '"diagnostics": True' in app)
 
 
+print("\n— retrieval that finds nothing must COST nothing —")
+
+from core import memory as _mem                                # noqa: E402
+import tempfile as _tf                                         # noqa: E402
+
+_mem.DB_PATH = os.path.join(_tf.mkdtemp(), "recall_test.db")
+_mem._conn = None
+_mem.save_memory("what is the FTS5 ranking function", "It is bm25.")
+_mem.save_memory("remind me about the calculus midterm", "Noted.")
+
+hit = _mem.get_memory("tell me about fts5 ranking")
+check("a real keyword match is still retrieved", "bm25" in hit)
+
+miss = _mem.get_memory("how are you")
+check("an unmatched turn retrieves nothing at all", miss == "")
+check("…so it costs zero tokens, not ~300", len(miss) == 0)
+check("the old recency fallback is still available on request",
+      _mem.get_memory("how are you", fallback_recent=True) != "")
+
+# The reason the fallback was wrong: it returned the SAME recent exchanges the
+# prompt already carries as conversation history.
+recent_fallback = _mem.get_memory("zzzz", fallback_recent=True)
+check("…and what it returned duplicated the history block",
+      "calculus midterm" in recent_fallback)
+
+import core.knowledge as _kn                                   # noqa: E402
+check("the knowledge base has a relevance cutoff at all",
+      hasattr(_kn, "KNOWLEDGE_MAX_DISTANCE"))
+check("…set where a bge-small match is genuinely related",
+      0.2 <= _kn.KNOWLEDGE_MAX_DISTANCE <= 0.7)
+
+
+class _FakeCol:
+    """Chroma always has a nearest neighbour. That was the whole bug."""
+    def __init__(self, dists): self.dists = dists
+    def count(self): return 4
+    def query(self, **kw):
+        return {"documents": [["chunk %d" % i for i in range(len(self.dists))]],
+                "distances": [self.dists]}
+
+
+_saved_col, _saved_emb = _kn._get_collection, _kn._embed
+_kn._embed = lambda xs: [[0.0]]
+_kn._get_collection = lambda: _FakeCol([0.82, 0.88, 0.91, 0.95])
+check("four unrelated chunks are dropped, not injected",
+      _kn.search("how are you") == "")
+_kn._get_collection = lambda: _FakeCol([0.11, 0.30, 0.79, 0.88])
+got = _kn.search("what did I write about fts5")
+check("…while genuine matches are kept", got == "chunk 0\nchunk 1")
+_kn._get_collection = lambda: {"documents": [["a"]], "distances": [[]]}
+_kn._get_collection, _kn._embed = _saved_col, _saved_emb
+
+llm_src = open(os.path.join(_root, "core", "llm.py"), encoding="utf-8").read()
+check("the per-turn context breakdown is recorded",
+      "_turn.ctx_breakdown" in llm_src)
+diag = open(os.path.join(_root, "dashboard", "diagnostics.html"), encoding="utf-8").read()
+check("…and shown in the panel", "ctxBars" in diag)
+
+
 print("\n" + "=" * 50)
 print(f"{_checks[0] - _fails[0]} passed, {_fails[0]} failed")

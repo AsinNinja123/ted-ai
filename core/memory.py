@@ -196,11 +196,26 @@ def save_memory(user_input, ted_reply, who="ted"):
           (who, user_input, ted_reply, _now()))
 
 
-def get_memory(query, limit=3, who="ted"):
-    """Return a short string of relevant past exchanges, or '' if none.
+def get_memory(query, limit=3, who="ted", fallback_recent=False):
+    """Return a short string of RELEVANT past exchanges, or '' if none.
 
-    Keyword search first (FTS5 when available); if nothing matches, returns the
-    most recent exchanges so the prompt always has some grounding context.
+    This used to end with "if nothing matched, return the most recent exchanges
+    so the prompt always has some grounding context", and that fallback was
+    costing about 300 tokens on every turn whose words matched nothing — which
+    is most greetings and most short replies. Two problems with it:
+
+    * The prompt already carries the last several messages as conversation
+      history. "Recent exchanges" and "history" are the same information from
+      two places, which is the duplication this codebase keeps getting bitten
+      by, only here it is paid for in tokens on an 8,000-per-minute ceiling.
+    * Irrelevant retrieved text is not neutral. It is context the model has to
+      read, and it competes with the part of the prompt that matters.
+
+    Returning nothing is now a valid, common, and cheap answer. The caller drops
+    an empty block entirely, so an unmatched turn costs zero.
+
+    ``fallback_recent=True`` restores the old behaviour for any caller that
+    genuinely wants recency rather than relevance.
     """
     keywords = _keywords(query)
     rows = []
@@ -218,7 +233,7 @@ def get_memory(query, limit=3, who="ted"):
             f"SELECT question, answer FROM exchanges WHERE who = ? AND ({like}) "
             "ORDER BY ts DESC LIMIT ?",
             (who, *[f"%{k}%" for k in keywords], limit))
-    if not rows:
+    if not rows and fallback_recent:
         rows = _query("SELECT question, answer FROM exchanges WHERE who = ? "
                       "ORDER BY ts DESC LIMIT ?", (who, limit))
     return "\n".join(f"{OWNER_NAME} said: {q} — Ted replied: {a}" for q, a in rows)
