@@ -32,6 +32,26 @@ from datetime import datetime, timedelta
 
 HOME = os.path.expanduser("~/ted-ai")
 TRIGGERS_FILE = os.path.join(HOME, "data", "proactive_triggers.json")
+HEARTBEAT_FILE = os.path.join(HOME, "data", "daemon_heartbeat")
+
+# A heartbeat older than this means the daemon is not running, so the
+# in-process scheduler takes the calendar watch back. Three missed 60 s polls.
+HEARTBEAT_STALE_SECONDS = 195
+
+
+def daemon_alive() -> bool:
+    """True if ted_daemon.py has written a heartbeat recently.
+
+    When it has, the daemon owns calendar alerts and this scheduler must not
+    also post them — otherwise every event fires twice, once as a macOS
+    notification and once out loud. Triggers are unaffected: the daemon does
+    not fire those.
+    """
+    try:
+        with open(HEARTBEAT_FILE, encoding="utf-8") as f:
+            return (time.time() - float(f.read().strip())) < HEARTBEAT_STALE_SECONDS
+    except Exception:
+        return False
 
 
 # ── Calendar ──────────────────────────────────────────────────────────────────
@@ -260,7 +280,13 @@ class ProactiveScheduler:
     # ── monitors ──────────────────────────────────────────────────────────────
 
     def _check_calendar(self) -> None:
-        """Alert for events starting within the next ~15 minutes."""
+        """Alert for events starting within the next ~15 minutes.
+
+        No-op while ted_daemon.py is alive — it posts these as notifications
+        whether or not the HUD is open, and two watchers means two alerts.
+        """
+        if daemon_alive():
+            return
         try:
             events = get_upcoming_events(lookahead_minutes=16)
         except Exception:

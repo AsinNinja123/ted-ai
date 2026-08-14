@@ -1,10 +1,17 @@
 # TED — MASTER HANDOFF
 
-**Written:** August 12, 2026
+**Written:** August 12, 2026 · **Revised:** August 14, 2026
 **Written for:** another AI model picking up this project cold, with no prior context
 **Subject:** "Ted" — Charlie Rowenhorst's personal AI assistant
 **Repo:** `~/ted-ai` on `charlies-macbook-pro-local` (macOS, Apple Silicon, 48 GB / 2 TB)
 **Owner:** Charlie Rowenhorst — CS sophomore at Northwest Christian College (NWC), Iowa
+
+> **Aug 14 revision.** Between Aug 12 and Aug 14 the model layer was rebuilt twice
+> and the two-call ladder became one streamed call. Three things this document
+> previously asserted are now false and were rewritten, not annotated: the model
+> stack (§4.1), "no local model now or planned" (§11.3), and the gate structure
+> (§4.2). If you are diffing against an older copy, those are the sections that
+> moved.
 
 ---
 
@@ -70,7 +77,7 @@ The reason is practical: Charlie is back at college surrounded by people, and ta
 loud to a computer is socially unusable most of the time. Voice is now a rare use case,
 not the primary interface.
 
-The evidence this is real and not aspirational, all in the current uncommitted working tree:
+The evidence this is real and not aspirational:
 
 - `core/app.py`: `self.muted = True` at startup — **Ted now boots silent**. The mic button
   turns voice on. [code]
@@ -92,7 +99,7 @@ docs, and variable names.**
 
 > Ted is Charlie's own AI chatbot: it knows him from a persistent editable memory database,
 > answers in a desktop chat window, can speak and listen when asked to, can operate his Mac
-> and his accounts through ~30 tools, and is meant to eventually replace the Claude app and
+> and his accounts through 32 tools, and is meant to eventually replace the Claude app and
 > ChatGPT as his daily driver.
 
 ---
@@ -234,12 +241,51 @@ the restored path uses macOS 14's minimum other-audio ducking setting.
 | Aug 9 | `905d9f8` | **`Ted.app`** — double-clickable launcher. Opening a terminal was enough friction that Ted only got launched when he was the thing being worked on. Pure-stdlib PNG icon generator, `sips`/`iconutil`, refuses a second instance, rotates `data/ted_launch.log`, `osascript` alert on failure. `Info.plist` carries `NSMicrophoneUsageDescription` and `NSAppleEventsUsageDescription` — without them macOS kills the process the moment it opens the mic. |
 | Aug 9 | `381e4c9` | Docs commit: `ROADMAP.md`, `TIMELINE.html`, `VERIFY_MEMORY_AND_APP.md`; README rewritten |
 
-### Phase 5 — The chat-first pivot (Aug 10 – Aug 12, **uncommitted**)
+### Phase 5 — The chat-first pivot (Aug 10 – Aug 12)
 
-This is live work in the working tree. `git status` shows 8 modified files and 3 untracked
-paths; ~1,100 insertions / ~544 deletions. **None of it is committed.** See §7 for detail.
+Startup muted, chatbot persona, inverted formatting rules, prompt-cache work, the
+memory dashboard. **Committed Aug 12–13** on branch `arch/single-call`; it is no
+longer at risk. §7 describes what it contains.
 
-`data/memory.db` was last written **Aug 12, 02:36** — Ted is being run daily right now.
+### Phase 6 — One call, one brain, and a daemon (Aug 12 – Aug 14)
+
+Three days that closed the two largest items on the old roadmap. All committed
+on `arch/single-call`, pushed to `origin`.
+
+| Commit | What |
+|---|---|
+| `6779aa1` | Repair `test_pipeline.py` — it had not run since the chat-first pivot |
+| `b1b2762` | **One streamed call per turn instead of two**, plus the data to gut gate 5 |
+| `4ac858f` | `docs/VERIFY_SINGLE_CALL.md` — the hands-on checklist for the above |
+| `9de0075` | **Five reasoning models down to one** |
+| `1135ebe` | Never end a turn silent; stop re-running an identical tool call |
+| `535324a` | `CLAUDE.md`, `AGENTS.md`, `docs/AI_WORKFLOW.md` — how two AIs share this repo |
+| `36a091f` | **Rebuild the reasoning and tool path on Qwen**, with a local Ollama fallback |
+| `436079f` | Let the local HUD save chat history |
+| `3f5d2ac` | Four bugs where two places disagreed about one fact (Aug 14) |
+
+**`b1b2762` — the merge.** Gates 6 and 8 were two LLM calls per message: a probe
+that asked "does this need a tool?", then a separate streaming call that
+composed the answer. They are now one streamed call that can emit text *or* a
+tool call. This was named in the Aug 12 draft as "the highest-value change
+left." `TED_LEGACY_LADDER=1` still selects the old two-call path; the legacy
+code is intact behind that flag.
+
+**`9de0075` — the collapse.** Ted had been thinking with four models plus a dead
+relay. `groq/compound-mini` (live web), `llama-3.1-8b-instant` (fact extraction
+and summaries), Llama-4-Scout (vision), and an inert `claude-sonnet-5` relay all
+went. Everything that thinks now goes through one function.
+
+**`36a091f` — the swap.** Cloud reasoning moved to Qwen, and the availability
+twin stopped being a second Groq model and became **a local model running under
+Ollama**. That reverses §11.3 of the Aug 12 draft.
+
+**Aug 14 (`3f5d2ac`).** Four disagreements between two places that each thought
+they owned one fact: a shortcut gate matching by substring while the dispatch it
+guarded matched by prefix; arithmetic falling through to the model after gate 5
+was gutted; text streamed alongside a tool call missing from the stored turn, so
+Ted remembered saying something different from what he said; and `groq_ok()`
+reporting an outage at boot because "no provider yet" was read as "cloud down."
 
 ---
 
@@ -249,67 +295,77 @@ paths; ~1,100 insertions / ~544 deletions. **None of it is committed.** See §7 
 
 | Layer | Current | Replaced |
 |---|---|---|
-| **Main LLM** | Free-tier Groq `qwen/qwen3.6-27b` → local Ollama `qwen3.5:35b-a3b` on any cloud/key/network failure | GPT-OSS 120B + hosted fallback |
-| **Vision** | Same Qwen provider route — hosted 3.6, local 3.5 fallback | separate Groq-only vision call |
-| **Live info** | Model-selected `web_search` tool over DuckDuckGo (`ddgs`) | keyword injection before reasoning |
-| **STT** | Groq Whisper cloud (`USE_GROQ_STT = True`) with automatic local `openai-whisper` fallback | cloud failure ended capture |
-| **TTS** | **Kokoro** ONNX local, voice `am_michael` (325 MB model + 28 MB voices); ElevenLabs optional | ElevenLabs "Daniel" |
-| **Audio** | native Swift `ted_audio` binary (full-duplex + Apple Voice Processing AEC) over stdio, or `sounddevice` fallback; webrtcvad + pitch barge-in | fixed 5-second recording |
+| **Reasoning — all of it** | `qwen/qwen3.6-27b` on Groq's free tier. Chat, tool calling, fact extraction, session summaries, vision, and web synthesis all go through this one model | four Groq models + a dead Claude relay |
+| **Fallback** | `qwen3.5:35b-a3b` on **local Ollama**, tried automatically when Groq is absent, down, or rate limited | `llama-3.3-70b-versatile`, a second cloud model |
+| **Live info** | DuckDuckGo (`ddgs`) snippets dropped into the context block; the same streamed call answers from them. Also exposed to the model as a `web_search` tool | `groq/compound-mini`, which decided by keyword before the model saw the message |
+| **Vision** | the primary model, via `chat_create` | Llama-4-Scout |
+| **STT** | Groq Whisper (`whisper-large-v3-turbo`); local `openai-whisper` as fallback | local Whisper only |
+| **TTS** | **Kokoro** ONNX local, voice `am_michael`; ElevenLabs optional | ElevenLabs "Daniel" |
+| **Audio** | native Swift `ted_audio` binary (full-duplex, **no AEC**) over a Unix socket, or `sounddevice` fallback; webrtcvad + pitch barge-in | fixed 5-second recording |
 | **Wake** | none required — attention window + "Hey Ted" from standby | OpenWakeWord `"hey jarvis"` |
 | **Memory** | SQLite `data/memory.db` | Neo4j ← ChromaDB |
 | **Knowledge base** | ChromaDB + fastembed, PDF intake from `inbox/` | — |
 | **UI** | pywebview + `ui/ted_hud.html` | Streamlit |
 | **Dashboard** | Flask on `127.0.0.1:5175`, auto-started from `hud.py` in a daemon thread | — |
-| **Remote** | Flask on `:5150`; disabled without a token, authenticated LAN access for iOS Shortcuts when `REMOTE_TOKEN` is set | — |
-| **Tests** | 10 suites, including provider, single-call, safety, and pipeline coverage | none |
+| **Proactive** | `ted_daemon.py` under launchd, outside the HUD process | in-process thread that died with the window |
+| **Remote** | Flask on `:5150`, GET `/ask?token=…&text=…` for iOS Shortcuts | — |
+| **Tests** | 11 suites, **353 checks** | none |
 
-Ted's normal fast path is hosted on Groq's free tier, but the complete reasoning,
-tool-calling, and vision path can fail over to the downloaded 24 GB Qwen model on
-the Mac. Kokoro, memory, knowledge retrieval, and local Whisper are also offline.
+**One place a model name enters a request.** `core/providers.py` is new and owns
+provider routing: `chat_create()` tries Groq, and on *any* cloud failure —
+missing key, rate limit, 5xx, lost connection — retries the identical request
+against local Ollama. Callers never classify the error. `active_provider()`
+reports `groq`, `ollama`, or `none` for the last call, and the HUD's health dot
+reads it.
 
-### 4.2 The decision ladder — how a message becomes an answer
+**Ted is no longer fully broken offline.** With Ollama installed and the model
+pulled, reasoning survives without a network. Hearing (Groq Whisper) and live
+web do not, and `USE_GROQ_STT = False` is the switch for the first of those.
 
-This is the most important thing to understand about the codebase. It lives in
-`TedApi._respond()` in `core/app.py`. Full write-up in `docs/DECISION_FLOW.md`. [doc, Aug 11]
+### 4.2 The ladder — how a message becomes an answer
 
-Every message falls down **eight gates**, cheapest first. Each asks "is this mine?" and
-either handles it and stops, or passes it down. **The first gate that claims a message
-wins, and there is no appeal.**
+Lives in `TedApi._respond()` in `core/app.py`. Full write-up in
+`docs/DECISION_FLOW.md` (updated Aug 13, and more current than this summary).
 
-| Gate | What it is | File |
+**This changed shape on Aug 12.** The old design had eight gates and made two
+LLM calls per message. It now has a short run of cheap local controls, then
+**one streamed reasoning call** with the whole tool menu attached.
+
+| Step | What it is | Why it stays ahead of the model |
 |---|---|---|
-| 0 | Input arrives — typed (`ask()`) or spoken (`conversation_loop()` → `capture()` → wake-strip). Both converge on `_respond()`. | `app.py`, `audio.py`, `voice.py` |
-| 1 | Mute / unmute — literal phrase match, no LLM | `app.py` |
-| 2 | Stop / cancel — `_is_stop_command()`; if Ted wasn't talking, pauses Spotify instead | `app.py`, `intents.py` |
-| 3 | UI commands — "open chat log", "repeat that", "speak faster" | `app.py` |
-| 4 | Pending multi-turn flows — if Ted asked a question last turn, your answer routes to that flow | `app.py` |
-| 5 | **Deterministic assistant commands** — `_assistant_command()`, ~746 lines, ~50 regexes, ~64 branches | `app.py` |
-| 6 | **The tool loop** — `_try_tools()`, real LLM reasoning with ~30 tool schemas | `app.py`, `tools.py`, `tool_handlers.py` |
-| 7 | Built-in actions — `detect_action()` runs *inside* `ask_streaming()`: dates, location, app launches | `actions.py` |
-| 8 | **Streaming conversation** — `ask_streaming()`, Ted-as-chatbot | `llm.py` |
+| 0 | Input arrives — typed (`ask()`) or spoken (`conversation_loop()` → `capture()` → wake-strip). Both converge on `_respond()` | — |
+| 1 | Mute / unmute | must be instant, and the model must not "discuss" being muted |
+| 2 | Stop / cancel | latency-critical; also pauses Spotify if Ted wasn't talking |
+| 3 | UI commands — "open chat log", "repeat that", "speak faster" | drives the window, never a thought |
+| 4 | Pending flows — a question Ted asked last turn, or a confirmation awaiting yes/no | conversational state, not a new request |
+| 5 | **What's left of the old regex dispatch**, guarded by `_use_deterministic_command()` | see below |
+| 6 | **One streamed call** — text or tool calls, chained, with the full menu | everything else |
 
-**The two things Charlie considers wrong with this design** (his words, captured in
-`DECISION_FLOW.md`):
+**Gate 5 has been gutted, not deleted.** `_use_deterministic_command()` now
+admits only five kinds of message: the voice shortcuts in `shortcuts.json`;
+timers, reminders, corrections and cancellations; explicit memory edits
+("remember that…", "what do you know about me"); mic recalibration and voice
+enrollment; and **arithmetic**. Everything the regexes used to steal — apps,
+screen, calendar, notes, web, computer control — now reaches the model.
 
-1. **Gate 5 is the biggest liability in the codebase.** It's "hardcode every scenario" in
-   literal form. It runs *before* the model gets a say, so any phrasing its regexes catch is
-   decided without intelligence, and any phrasing they miss falls through to a model that
-   may not have the matching tool. A regex written for one intent can swallow a message
-   meant for another. **The fix is to delete regexes, not add them** — shrink Gate 5 to only
-   what must be deterministic (stop, mute, timers) and let the tool loop own the rest.
-2. **Gates 6 and 8 are two separate LLM calls for every single message.** Real chat
-   assistants use one streamed call that can emit text *or* a tool call. Merging them halves
-   per-turn latency and eliminates the discarded probe. This is the highest-value change
-   left, and it's a rebuild-era change because it means rewriting `_respond`.
+Arithmetic is the one that looks out of place and is not. A language model doing
+"8 percent of 250" fails *silently*: a wrong number reads exactly like a right
+one, there is nothing to log and nothing to notice. That is the whole reason for
+principle 1 in §12.
 
-Also noted: **four different files can independently decide "this is a command"** —
-`_respond`, `_assistant_command`, `detect_action`, `_try_tools`. In the event-bus rebuild
-this should be exactly one stage emitting one decision event.
+**The Aug 12 draft's two complaints are both resolved.** Gates 6 and 8 are one
+call (`b1b2762`). Gate 5 is a short allowlist instead of ~50 regexes and ~64
+branches. The remaining structural note stands: `_respond` is still the only
+place that decides, and it is still inside the 126 KB monolith.
 
-### 4.3 Gate 8 in detail — what `ask_streaming` does per turn
+**The legacy path is still there.** `TED_LEGACY_LADDER=1` restores the old
+two-call ladder and the full regex dispatch. Useful for bisecting a regression;
+it is not a supported mode.
 
-1. **Tool selection** — current or explicitly searched information is handled by
-   the model-selected `web_search` tool and returned to the same reasoning loop
+### 4.3 What the streamed call does per turn
+
+1. **Web check** — `_needs_web()`; if live info is needed, DuckDuckGo snippets
+   go into the context block. The model can also call `web_search` itself
 2. **Parallel memory retrieval on four threads** (4 s join):
    - recent related exchanges — FTS5 keyword search (`memory.py`)
    - known facts about Charlie (`facts` table)
@@ -317,7 +373,8 @@ this should be exactly one stage emitting one decision event.
    - past session + chat-thread summaries (`memory.py`)
 3. **Assemble the prompt** — order matters for speed, see §7.2
 4. **Mode line** — `CURRENT MODE: VOICE` or `CURRENT MODE: CHAT`, regenerated every turn
-5. **Stream** tokens to the HUD; sentence-by-sentence to the speaker if voice is on
+5. **Stream** tokens to the HUD; sentence-by-sentence to the speaker if voice is on.
+   Tool calls arrive in the same stream; results feed the next round, bounded
 6. **Background threads afterwards** — save the exchange, extract facts, log topic patterns
 
 ### 4.4 File map
@@ -325,69 +382,81 @@ this should be exactly one stage emitting one decision event.
 | File | Role | Size / risk |
 |---|---|---|
 | `hud.py` | Entry point; window creation; teardown; starts the dashboard thread | 5.6 KB |
-| `core/app.py` | **The monolith.** The ladder, tool dispatch, every deterministic command | **118 KB.** Highest-risk file in the project |
-| `core/llm.py` | Prompts, streaming, memory assembly, fact extraction, web search | 43 KB. Second most important |
+| `ted_daemon.py` | **New.** Calendar watch under launchd, outside the HUD process | 7.7 KB |
+| `core/app.py` | **The monolith.** The ladder, tool dispatch, what remains of the regex dispatch | **126 KB, 2,686 lines.** Highest-risk file in the project |
+| `core/llm.py` | Prompts, the streamed turn, memory assembly, fact extraction, web search | 53 KB. Second most important |
+| `core/providers.py` | **New.** Groq → Ollama routing; the only place a model name enters a request | 9 KB. Clean seam |
 | `core/tools.py` | The tool *menu* the model sees (schemas only) | 24 KB. Safe to edit |
 | `core/tool_handlers.py` | What each tool actually does | 12 KB |
 | `core/memory.py` | SQLite: exchanges, facts, sessions, habits, patterns, FTS5 | 21 KB. Clean, well-bounded |
 | `core/intents.py` | Pure phrase-matching helpers, unit-tested | 32 KB. Safe |
-| `core/actions.py` | App/URL/Spotify launchers, contacts, iMessage, `detect_action` | 22 KB |
+| `core/actions.py` | App/URL/Spotify launchers, contacts, iMessage | 22 KB |
 | `core/voice.py` | STT, TTS, capture gates, streaming speech | 27 KB |
 | `core/audio.py` | Audio engine, playback, barge-in, sounddevice fallback | 30 KB |
 | `core/assistant.py` | Reminders, timers, duration/time parsing, weather, location | 16 KB |
-| `core/proactive.py` | Calendar alerts + user-defined scheduled triggers. **In-process — dies with the window.** | 13 KB |
+| `core/proactive.py` | Trigger schedules + `daemon_alive()`; hands the calendar watch to the daemon | 15 KB |
 | `core/spotify_web.py` / `music.py` | Spotify Web API / spoken routing | 12 KB / 2.8 KB |
 | `core/email.py` | Outlook IMAP/SMTP | 8 KB |
 | `core/knowledge.py` | ChromaDB knowledge base, `inbox/` PDF intake | 8 KB |
 | `core/calendar_app.py` / `notes.py` | Calendar.app / Apple Notes via AppleScript | 5.6 KB / 3.2 KB |
-| `core/screen.py` | Screenshot + Groq vision description (in-memory, no disk write) | 2.5 KB |
+| `core/screen.py` | Screenshot + vision description (in-memory, no disk write) | 2.5 KB |
 | `core/computer.py` | Type text, press keys, clipboard | 2.8 KB |
 | `core/speaker.py` | Voice lock: enroll/verify owner's voice (resemblyzer, opt-in) | 3 KB |
 | `core/remote.py` | Flask `:5150` for iOS Shortcuts | 3.3 KB |
-| `core/features.py`, `paths.py`, `logs.py`, `hud_bridge.py` | Plumbing | small |
-| `dashboard/` | **New, untracked.** Memory dashboard + chat-session storage | 1,158 lines |
+| `dashboard/` | Memory dashboard + chat-session storage | ~1,200 lines |
 | `native/ted_audio.swift` + `build.sh` | Swift full-duplex audio engine | — |
-| `ui/ted_hud.html` | The live HUD (heavily rewritten Aug 10–12) | 37 KB |
-| `ui/ted_hud_orb.html` | **Untracked.** The orb-style HUD kept alongside the new chat HUD | 26 KB |
-| `ui/ted_hud_legacy.html` | Retired. Nothing imports it. | 52 KB |
+| `ui/ted_hud.html` | The live HUD | 37 KB |
+| `ui/ted_hud_orb.html` | The orb variant, kept | 26 KB |
 | `tools/make_app.sh` | Builds `Ted.app` | — |
+| `tools/install_daemon.sh` + `com.charlie.ted-daemon.plist` | **New.** Installs the launchd agent | — |
+| `CLAUDE.md`, `AGENTS.md`, `docs/AI_WORKFLOW.md` | **New.** How Claude and ChatGPT share this repo without clobbering each other | — |
 
 ---
 
 ## 5. What Ted can do today
 
-### 5.1 The tool menu (~30 schemas in `core/tools.py`) [code, Aug 12]
+### 5.1 The tool menu (32 schemas in `core/tools.py`) [code, Aug 14]
 
 ```
-open_app          close_app         browse_to         play_music
-play_playlist     spotify_control   send_message      set_reminder
-set_timer         get_reminders     toggle_clock      get_weather
-get_emails        read_email        email_action      send_email
-search_knowledge  add_knowledge     calendar_get      calendar_add
-notes_add         notes_get         clipboard_read    clipboard_write
-system_volume     system_brightness screen_describe   type_text
-log_habit         get_habit_streak
+web_search        open_app          close_app         browse_to
+play_music        play_playlist     spotify_control   send_message
+set_reminder      set_timer         get_reminders     toggle_clock
+get_weather       get_emails        read_email        email_action
+send_email        search_knowledge  add_knowledge     calendar_get
+calendar_add      notes_add         notes_get         clipboard_read
+clipboard_write   system_volume     system_brightness screen_describe
+type_text         log_habit         get_habit_streak  calculate
 ```
 
 Notes:
-- `browse_to` gained an optional `browser` parameter in the uncommitted work — Charlie can
-  say "open YouTube in Brave" and it honors it.
-- `toggle_clock` is new — it drives a HUD widget, not an OS action.
-- `list_add` / `list_get` were **removed 2026-08 — feature retired** (built, never used;
-  `data/assistant.json` showed `"lists": {}`).
+- `web_search` and `calculate` are new. Both exist to move a decision the code
+  used to make by keyword into the model's hands, while keeping the *execution*
+  deterministic — the model chooses to search or compute; Python does the
+  searching and the arithmetic.
+- `browse_to` takes an optional `browser`, so "open YouTube in Brave" is honored.
+- `toggle_clock` drives a HUD widget, not an OS action.
+- `list_add` / `list_get` were **removed 2026-08 — feature retired** (built,
+  never used; `data/assistant.json` showed `"lists": {}`).
 
 ### 5.2 Beyond the tool menu
 
-- **Deterministic commands** (Gate 5): timers, reminders, habits, "remember that…", calendar
-  phrasing, email setup, math ("total on 3 at 45", "8 percent of 250"), mute, stop, recalibrate
+- **Deterministic commands** (what's left of gate 5): timers, reminders,
+  corrections, "remember that…", "what do you know about me", math ("total on 3
+  at 45", "8 percent of 250"), mic recalibration, voice enrollment, mute, stop.
+  Everything else — apps, calendar, notes, screen, web, computer control — now
+  goes to the model
 - **Voice shortcuts** (`shortcuts.json`): `briefing` / `morning briefing` → morning rundown;
   `think` / `thinking partner` → Socratic mode (`THINKING_CONTEXT` — no advice, only questions)
 - **Daily briefing** — set `DAILY_BRIEFING_TIME = "7:30am"`, Ted speaks weather/calendar/reminders unprompted
 - **Knowledge base** — drop PDFs into `inbox/`, say "index my documents"
 - **Remote** — `http://<mac-ip>:5150/ask?token=…&text=…`; README has the Siri Shortcut recipe
-- **HUD health indicator** — particle sphere: green = fine, yellow = something failed
-  (Groq unreachable or an action failed), red = Python side stopped sending heartbeats.
-  GROQ / MEMORY / SPOTIFY dots bottom-left; MEMORY and SPOTIFY down don't yellow the sphere.
+- **HUD health indicator** — particle sphere: green = fine, yellow = something
+  failed (a real fall back to local Ollama, or a failed action), red = Python
+  side stopped sending heartbeats. GROQ / MEMORY / SPOTIFY dots bottom-left;
+  MEMORY and SPOTIFY down don't yellow the sphere. Note `groq_ok()` means "the
+  last call was not served locally," not "Groq was reached" — a fresh session
+  with no completions yet reports healthy, which is deliberate (it used to cry
+  wolf at boot).
 
 ### 5.3 The honesty rule (do not remove this)
 
@@ -399,23 +468,24 @@ It is stated as the one rule the persona never breaks. Any refactor must preserv
 
 ## 6. The memory system
 
-### 6.1 Live table counts — `data/memory.db`, Aug 12 2026
+### 6.1 Live table counts — `data/memory.db`, Aug 13 2026
 
 | Table | Rows | Meaning |
 |---|---|---|
-| `facts` | **19** | Injected into *every* prompt. Was 1 during the silent-bug month. |
-| `session_summaries` | **3** | Was 0 for weeks; the Aug 9 fix works. |
-| `exchanges` (+ FTS5) | 33 | Voice/HUD turn log, FTS5-searchable |
-| `chat_sessions` | 13 | New — dashboard chat threads |
-| `chat_turns` | **237** | New — the real conversation volume now lives here, not in `exchanges` |
-| `patterns` | 117 | Topic patterns. **Accumulating; nothing reads them.** |
-| `memory_audit` | 336 | New — SQLite-trigger audit log of every memory write |
+| `facts` | **21** | Injected into *every* prompt. Was 1 during the silent-bug month. |
+| `session_summaries` | 3 | Deliberately selective; see §6.3. |
+| `exchanges` (+ FTS5) | 60 | Voice/HUD turn log, FTS5-searchable |
+| `chat_sessions` | 38 | Dashboard chat threads |
+| `chat_turns` | **340** | Where the real conversation volume lives |
+| `patterns` | 122 | Topic patterns. **Accumulating; nothing reads them.** |
+| `memory_audit` | 365 | SQLite-trigger audit log of every memory write |
 | `audit_context` | 1 | One-row actor-attribution table (`ted` vs `user`) |
 | `goals` | 0 | Dead table from the deleted fireworks feature. Should be dropped. |
 | `habit_logs` | 0 | Built, never used |
 
-The `chat_turns` (237) vs `exchanges` (33) gap is the clearest single number showing the
-chat-first pivot is real usage, not a plan.
+`chat_turns` (340) against `exchanges` (60) is the clearest single number showing
+the chat-first pivot is real usage, not a plan. Both roughly doubled between
+Aug 12 and Aug 13 — Ted is in daily use.
 
 ### 6.2 Facts
 
@@ -428,7 +498,7 @@ your age) a new value replaces the old one. When two versions differ only in spe
 "Spirit Lake" vs "Spirit Lake, Iowa" — the more specific one wins. This is preference-drift
 handling, solved.
 
-**The Aug 2026 anti-trivia gate** (uncommitted): the fast model kept harvesting world
+**The Aug 2026 anti-trivia gate:** the fact-extraction pass kept harvesting world
 knowledge out of Ted's *own replies* — it saved "bananas are berries" as a fact about
 Charlie. Two defenses now: a hard prompt rule, plus a Python gate that rejects any fact
 whose subject never appeared in what the *user* said and isn't Charlie himself.
@@ -478,19 +548,11 @@ read/write/edit dashboard**, plus Claude-style session recording. It is largely 
 
 ---
 
-## 7. Where the project is *right now* (Aug 12, 2026)
+## 7. The chat-first pivot, in detail (Aug 10 – Aug 12)
 
-**All of the following is in the working tree and uncommitted.** `git stash` or
-`git checkout -- .` would destroy several days of work. The last commit, `381e4c9`, is clean.
-
-```
- M core/app.py           |  106 ++-      M hud.py          |   37 +-
- M core/llm.py           |  183 ++-      M ui/ted_hud.html | 1184 ++++----
- M core/memory.py        |   35 +-      ?? dashboard/
- M core/tool_handlers.py |   30 +-      ?? docs/DECISION_FLOW.md
- M core/tools.py         |   41 +-      ?? ui/ted_hud_orb.html
- M core/voice.py         |   26 +-
-```
+Everything in this section was uncommitted when this document was first written
+and is now committed on `arch/single-call`. It is kept because it explains *why*
+the current code looks the way it does.
 
 ### 7.1 The chat-first conversion
 
@@ -502,38 +564,32 @@ added to the chat transcript, and only *spoken* if unmuted.
 
 ### 7.2 Latency work — the prompt-cache fixes
 
-This is the most technically interesting recent work and it's worth understanding before
-touching prompt assembly.
+The most technically interesting recent work; understand it before touching
+prompt assembly.
 
 **`stable_window()` in `core/llm.py`** — replaces `items[-N:]` for history trimming:
 
-> A sliding window shifts by one every turn, which changes the prompt prefix every call and
-> kills the provider's prefix cache — every turn reprocesses the whole prompt (system, tool
-> schemas, history) from scratch. This was the "fast for four replies, then slow" cliff: the
-> tool probe's 8-message window filled after four exchanges and started sliding. Chunked
-> trimming keeps the prefix byte-identical for whole stretches.
+> A sliding window shifts by one every turn, which changes the prompt prefix every
+> call and kills the provider's prefix cache — every turn reprocesses the whole
+> prompt from scratch. This was the "fast for four replies, then slow" cliff.
+> Chunked trimming keeps the prefix byte-identical for whole stretches.
 
 It returns a recent suffix whose *start* only moves once every 8 appends.
 
 **Message order changed** from `[system, context, ...history, user]` to
-`[static system, ...history, context, user]`. Two reasons: the per-turn context block
-changes every turn, so putting it last keeps the static prefix byte-identical and cacheable;
-and instructions closest to the user message are followed more reliably (recency wins in
-attention).
+`[static system, ...history, context, user]`. The per-turn context block changes
+every turn, so putting it last keeps the static prefix cacheable; and
+instructions closest to the user message are followed more reliably.
 
-**Context caps** — `_cap()` truncates retrieved context: web 2000 chars, facts 1200,
-past exchanges 1200, knowledge 1500, past sessions 1200. Without these the block grows with
-the database and every turn pays to reprocess it. This is the "slow creep after the database
-has been in use a while" fix.
+**Context caps** — `_cap()` truncates retrieved context: web 2000 chars, facts
+1200, past exchanges 1200, knowledge 1500, past sessions 1200. Without these the
+block grows with the database and every turn pays to reprocess it.
 
-**Probe optimization in `_try_tools`** — round 1 is now an explicit cheap probe:
-`max_tokens=120` (down from 300), `timeout=6.0s` (down from 12.0), and an injected
-instruction to reply with exactly `CHAT` if no tool is needed. Without this, conversational
-turns made the model compose a full answer that was then thrown away — doubling response
-time for plain chat. Probe latency is now logged: `[timing] tool probe 815ms`.
-
-**Tool-loop system prompt shrunk** — deliberately *not* the full persona, because every
-token is re-read on the probe that runs before every reply.
+**The probe is gone.** The Aug 12 draft described tuning round 1 of `_try_tools`
+down to `max_tokens=120` and a 6-second timeout. `b1b2762` deleted the probe
+outright — there is one streamed call now, so there is no discarded first answer
+to optimize. **`[timing] tool probe …` should never appear in the log again; if
+it does, you are on the legacy path.**
 
 ### 7.3 The keyword gate is gone — this is a philosophy change, not a tweak
 
@@ -568,8 +624,11 @@ Two additions to `SYSTEM_PROMPT` that encode how Charlie wants Ted to behave:
   conversation — the user will just correct you."*
 - **Knowing your limits.** On questions needing deeper reasoning, give a best take and be
   honest about confidence rather than bluffing.
-- The "Want me to ask Claude?" offer is now **conditionally appended only if
-  `ANTHROPIC_API_KEY` is set** — otherwise Ted was offering a phone that isn't plugged in.
+- The "Want me to ask Claude?" offer was conditional on `ANTHROPIC_API_KEY`
+  being set. **The whole relay was deleted in `9de0075`** — it never had a key,
+  so every path through it answered "I'd need an Anthropic API key." Better gone
+  than pretending. If difficulty-based escalation (§9.1) is built, it starts from
+  nothing here.
 
 ### 7.6 HUD rebuild
 
@@ -587,91 +646,122 @@ can be copied. `ui/ted_hud_orb.html` is kept as the orb variant.
 
 ## 8. Open problems, ranked
 
-### 8.1 `core/app.py` is 118 KB and the decomposition never happened — **the central debt**
+Reordered Aug 14. Two of the Aug 12 entries are closed; one is closed pending
+verification on the Mac.
 
-Scoped **June 28**. Untouched for six weeks. Stage 1 (characterization tests) landed
-**Aug 6**. **No code has moved yet.** It was ~103 KB when scoped; it grew to 118 KB while
-waiting.
+### 8.1 `core/app.py` is 126 KB and the decomposition never happened — **the central debt**
 
-The planned decomposition is event-bus + contracts + stages. The mechanical first step,
-from `ROADMAP.md`: the seam is `_assistant_command` — a long dispatch chain whose branches
-can each move into the module they already delegate to (email → `email.py`, reminders →
-`assistant.py`, music → `music.py`). `test_pipeline.py` is the safety net. **One domain per
-commit, green before the next.**
+Scoped **June 28**. Stage 1 (characterization tests) landed **Aug 6**. **No code
+has moved yet**, seven weeks on. It was ~103 KB when scoped, 118 KB on Aug 12,
+and **126 KB today** — it is growing faster than it is being cleaned.
 
-Every other subsystem on the roadmap — daemon, email, todo, coding loop — reaches into this
-same class. [stated] Claude has recommended finishing this refactor before expanding Ted
-further; Charlie has repeatedly chosen features instead. That's a real decision he keeps
-making, not an oversight.
+The planned decomposition is event-bus + contracts + stages. The mechanical
+first step, from `ROADMAP.md`: the seam is the old `_assistant_command` dispatch
+chain, whose branches can each move into the module they already delegate to
+(email → `email.py`, reminders → `assistant.py`, music → `music.py`).
+`test_pipeline.py` is the safety net. **One domain per commit, green before the
+next.**
 
-### 8.2 No background daemon — this blocks every proactive feature
+Gutting gate 5 made this *smaller* — most of that chain is now unreachable in
+the default path — but it did not delete it, and every other subsystem still
+reaches into this class.
 
-`core/proactive.py` exists but runs **in-process**. It dies when the HUD window closes.
-No `launchd` plist. Charlie's stated goal of proactive class reminders and nudges
-**cannot work** until this is solved.
+[stated] Claude has recommended finishing this refactor before expanding Ted
+further; Charlie has repeatedly chosen features instead. That's a real decision
+he keeps making, not an oversight, and 11 days before a semester starts is not
+the moment to overturn it.
 
-Note that `Ted.app` (Aug 9) was the *launcher* fix, not the daemon fix. Different problem.
+### 8.2 The Ollama fallback works, but the *handover* has never been watched
 
-### 8.3 The uncommitted work is at risk
+§11.3 records that `qwen3.5:35b-a3b` (Q4_K_M, ~24 GB, 262K context) was pulled
+and verified on the Mac, so the local brain itself is real. What has not been
+observed is the moment of handover — Groq failing mid-use and `chat_create`
+retrying locally. Two things to check before trusting it:
 
-Several days of real work — the chat pivot, the latency fixes, the whole dashboard — sits
-uncommitted with no branch. Highest-value five-minute action available on this project:
-`git add -A && git commit`.
+1. Force a real fallback (blank the Groq key, or pull the network) and time it.
+   `_ollama_create` allows a **180-second** timeout for a cold model load. If the
+   model has to load from disk, Ted goes quiet for minutes and reads as a crash.
+   There is no "switching to the local brain" message; there probably should be.
+2. Confirm the HUD's health dot follows. `groq_ok()` was fixed on Aug 14 to
+   report an outage only on a real fall back to Ollama, and that fix has only
+   been unit-tested.
+
+### 8.3 The daemon is built but unverified on macOS
+
+`ted_daemon.py` + `tools/install_daemon.sh` were written Aug 14 in the Linux
+sandbox. Logic is unit-tested (`tests/test_daemon.py`, 15 checks); **nothing has
+run on macOS.** The likely failure is permissions: macOS gates AppleEvents per
+calling binary, and a launchd-spawned python is a different caller from your
+terminal, so Calendar access and notifications may both need granting by hand.
+Checklist in `docs/DAEMON_HANDOFF.md`.
+
+Until that passes, "proactive class reminders" is still blocked — just for a
+different reason than in the Aug 12 draft.
 
 ### 8.4 Barge-in has never been verified since the fix
 
-The Aug 5–6 overhaul was written and unit-tested, but `ROADMAP.md` flagged that Ted hadn't
-been launched since four minutes *before* the commit containing it. He has been run many
-times since (launch log, Aug 12), but there's no record of the specific test being done:
-interrupt mid-sentence, interrupt *at* a sentence pause (the case that was broken), confirm
-typing still interrupts, and confirm he doesn't interrupt *himself* on speakers now that AEC
-is gone. Run with `TED_DEBUG_BARGE=1`.
+The Aug 5–6 overhaul was written and unit-tested; there is still no record of
+the specific test: interrupt mid-sentence, interrupt *at* a sentence pause (the
+case that was broken), confirm typing still interrupts, and confirm Ted doesn't
+interrupt *himself* on speakers now that AEC is gone. Run with
+`TED_DEBUG_BARGE=1`. This has been outstanding for nine days.
 
-### 8.5 Email password in cleartext
+### 8.5 Keys are in a Google Doc, and the email password is cleartext
 
-`~/.ted_email_config.json` holds the Outlook password in plain text. The Microsoft Graph
-path is **90% done and one line from working**: drop `offline_access` from the scopes list
-(MSAL adds it automatically and rejects the request if you name it) → `['Mail.ReadWrite',
-'Mail.Send']`. **Check admin consent on the school tenant before investing more time** —
-that's the thing most likely to kill it.
+The Drive doc `Ted Keys` contains **live API keys in plain text** — Groq,
+ElevenLabs, and multiple Airtable tokens including production ones for the
+dispatch app. One bad share link from public. Rotate and move to a password
+manager. **No keys are reproduced in this document.**
 
-### 8.6 No confirmation gate on agentic actions
+`~/.ted_email_config.json` holds the Outlook password in plain text. The
+Microsoft Graph path is **90% done and one line from working**: drop
+`offline_access` from the scopes (MSAL adds it automatically and rejects the
+request if you name it) → `['Mail.ReadWrite', 'Mail.Send']`. **Check admin
+consent on the school tenant before investing more time** — that is the thing
+most likely to kill it.
 
-Ted can type keystrokes, drive the clipboard, and send email with no confirmation step. Low
-risk today because there's no browser automation. It becomes a real problem the moment DOM
-automation lands.
+### 8.6 The confirmation gate is partial
 
-Related: `VOICE_LOCK = True` gates **everything**, not just destructive actions. Voice is
-replayable and clonable — if voice lock is ever turned on and treated as security, that's
-the mismatch to fix. Gate destructive tools specifically, with a second factor.
+`send_message`, `send_email`, and `email_action` now declare that Ted requires
+confirmation before executing, and `_pending_tool_confirmation` carries the
+yes/no. `type_text`, `clipboard_write`, and app control still run unconfirmed.
+Low risk today because there is no browser automation; it becomes real the
+moment DOM automation lands.
+
+Related: `VOICE_LOCK = True` gates **everything**, not just destructive actions.
+Voice is replayable and clonable — if voice lock is ever turned on and treated
+as security, that is the mismatch to fix. Gate destructive tools specifically,
+with a second factor.
 
 ### 8.7 Dead weight
 
 - `goals` table — 0 rows, left over from the deleted fireworks feature. Drop it.
 - `habit_logs` — 0 rows. Built, never used.
-- `patterns` — 117 rows accumulating, **nothing reads them**. Either wire them into the
-  correction-log idea (§9.3) or cut them.
-- Stale Neo4j password still in `config.py`.
-- `data/` contains 10 `.fuse_hidden*` files (32 KB each) — artifacts of the remote-device
+- `patterns` — 122 rows accumulating, **nothing reads them**. Either wire them
+  into the correction-log idea (§9.3) or cut them.
+- `TED_REFERENCE.txt` — untracked at the repo root, last updated June, and
+  describes fireworks "store mode", Neo4j, and the Claude relay. All three are
+  gone. It is a user-facing guide that would actively mislead. Rewrite or delete.
+- `data/` accumulates `.fuse_hidden*` files — artifacts of the remote-device
   mount, not project files.
+- Stale `index.lock` files appear in `.git/` when git is driven through the
+  Cowork device bridge. Harmless once removed (`rm -f .git/index.lock`), but
+  they block the next git command until you do.
 
 ### 8.8 Two pinned quirks (deliberate, documented in `9fa57bc`)
 
 - "the second one" matches the ordinal "one" and picks the **first** contact candidate
-- "nevermind" during contact disambiguation is swallowed by the cancel branch, leaving the
-  pending question armed until it expires
+- "nevermind" during contact disambiguation was swallowed by the cancel branch;
+  the cancel branch now clears pending state, so re-check whether this still holds
 
 These are pinned in tests *as current behavior*. Fixing them means updating the tests.
 
-### 8.9 Security: `Ted Keys` Google Doc
+### 8.9 Closed since Aug 12
 
-The Drive doc `Ted Keys` (created May 27, modified Aug 9) contains **live API keys in plain
-text** — Groq, ElevenLabs, and multiple Airtable personal access tokens including production
-ones for the dispatch app. Those should be rotated and moved to a password manager. Keys in a
-Google Doc are one bad share link from being public. **No keys are reproduced in this
-document.**
-
----
+- **The uncommitted working tree.** Committed on `arch/single-call` and pushed.
+- **Two LLM calls per message.** Merged into one streamed call (`b1b2762`).
+- **Four models plus a dead relay.** Collapsed to one (`9de0075`).
+- **Gate 5's ~50 regexes.** Reduced to a short allowlist.
 
 ## 9. Plans and intended add-ons
 
@@ -679,40 +769,41 @@ document.**
 
 | | |
 |---|---|
-| **Memory overhaul before Aug 25** (school restart) | Fully editable memory with a read/write/edit dashboard, plus Claude-style session recording. **Largely built** in `dashboard/` — needs committing and finishing. |
-| **Multi-model routing** | Free/cheap model (current Groq setup) for simple lookups; a frontier API for coding and deep reasoning. **Memory informs how requests get handled.** The config slot for Anthropic exists and is empty. |
-| **Find a good base / daily-driver model** | For chat + tool use (calendar, Mac apps), with frontier APIs layered on for hard tasks. Open question. |
-| **Chat search** | `sqlite-vec` / FTS5-style search so Ted can pull up a specific past chat by topic + timeframe instead of scanning everything. FTS5 is already in use for `exchanges`, so the pattern exists. |
-| **Proactive involvement** | Class reminders, schedule, to-dos, occasional suggestions. **Blocked on §8.2.** |
+| **Memory overhaul before Aug 25** (school restart) | Fully editable memory with a read/write/edit dashboard, plus Claude-style session recording. **Built and committed.** What is left is using it for a week and fixing what annoys him. |
+| **Multi-model routing** | Free/cheap model for simple lookups; a frontier API for coding and deep reasoning. **Half done, differently than planned**: routing exists as cloud→local *availability* fallback, not difficulty-based escalation. Nothing currently sends a hard question to a stronger model — the Claude relay was deleted in `9de0075` because it never had a key. |
+| **Find a good base / daily-driver model** | Qwen 3.6 27B is the current answer, chosen Aug 12. Open question whether it holds. |
+| **Chat search** | `sqlite-vec` / FTS5-style search so Ted can pull up a past chat by topic + timeframe. FTS5 is already in use for `exchanges`, so the pattern exists. With 340 chat turns this is starting to matter. |
+| **Proactive involvement** | Class reminders, schedule, to-dos. **Unblocked in code** (§8.3) — needs the macOS verification pass. |
 
 ### 9.2 Long-term [stated]
 
 - **Ted replaces the Claude app and ChatGPT** as Charlie's primary chatbot
 - **Mac + phone app**, with access to his tools on *both* devices
-- Cloud/Vercel hosting was considered to make phone access easier. **Claude flagged
-  serverless as a poor fit for a persistent voice assistant** and that objection stands for
-  anything needing long-lived state, audio, or a background daemon. If phone access is the
-  real goal, the existing `:5150` remote endpoint plus a small always-on host is a closer
-  fit than serverless. Unresolved.
+- Cloud/Vercel hosting was considered to make phone access easier. **Claude
+  flagged serverless as a poor fit for a persistent voice assistant** and that
+  objection stands for anything needing long-lived state, audio, or a background
+  daemon. If phone access is the real goal, the existing `:5150` remote endpoint
+  plus a small always-on host is a closer fit. Unresolved — and note
+  `REMOTE_TOKEN` is still blank, which disables that server entirely.
 
 ### 9.3 On the roadmap but not started
 
-- **Merge Gates 6 and 8** into one streamed call — highest-value remaining change (§4.2)
-- **Gut Gate 5** — delete regexes incrementally, use Ted for a day between batches
-- **Correction / feedback log** — raw material exists (`patterns`, plus frustration tracking
-  in `app.py`) and nothing reads it
-- **Todo / assignment tracking** — the old named-lists feature was retired; this needs
-  rebuilding against EventKit/Reminders rather than a JSON file
-- **Self-narration** — "checking your calendar…" spoken aloud. The HUD shows state visually;
-  Ted doesn't say it.
-- **DOM-based browser interaction** (Playwright/Selenium) and a unified perceive-screen layer
-  (DOM → vision fallback). Only the vision half exists.
-- **Blackboard integration** — Charlie was manually feeding Ted his Blackboard URL on Aug 12
-  (`add_knowledge({'source': 'blackboard_url', ...})`). Clear signal this is wanted.
+- **Difficulty-based model escalation** — the half of "multi-model routing" that
+  does not exist. Would need a stronger model's key and a rule for when to spend it
+- **Finish gutting gate 5** — the allowlist is short now; the dead branches below
+  it are still 700-odd lines of `core/app.py`
+- **Correction / feedback log** — raw material exists (`patterns`, plus
+  frustration tracking in `app.py`) and nothing reads it
+- **Todo / assignment tracking** — the old named-lists feature was retired; this
+  needs rebuilding against EventKit/Reminders rather than a JSON file
+- **Self-narration** — "checking your calendar…" spoken aloud. The HUD shows
+  state visually; Ted doesn't say it
+- **DOM-based browser interaction** (Playwright/Selenium) and a unified
+  perceive-screen layer (DOM → vision fallback). Only the vision half exists
+- **Blackboard integration** — Charlie was manually feeding Ted his Blackboard
+  URL on Aug 12. Clear signal this is wanted, and the semester makes it timely
 - **Investment / market monitoring**, news / GitHub / papers polling
 - **Emotional prosody / style tags** — not supported in the current Kokoro ONNX path
-
----
 
 ## 10. Things tried and abandoned — do not repeat these
 
@@ -724,13 +815,15 @@ document.**
 | **Neo4j** | Required Neo4j Desktop to be running and it usually wasn't. Replaced by SQLite Jul 1. |
 | **Streamlit UI + 5-second record button** | Replaced by pywebview and always-listening. |
 | **OpenWakeWord / "hey jarvis"** | Replaced by the attention window. Not in `requirements.txt`, not imported. |
-| **Local LLM via Ollama** | Never made it to the Mac. See §12.5. |
+| **Local LLM via Ollama** | Abandoned in June, **reversed in August.** `qwen3.5:35b-a3b` is now the fallback brain. See §11.3. |
 | **Native Swift AEC (echo cancellation)** | Built and active. Apple Voice Processing is enabled; on macOS 14+ other-audio ducking is set to minimum. |
 | **Microsoft Graph for email** | Stalled on the MSAL `offline_access` scope error. IMAP shipped instead. Recoverable — §8.5. |
 | **Fireworks-store features** (sales tally, goals, countdown, store mode) | Seasonal, deleted Jul 2 in `3dd744c`. |
 | **Inventory / Sortly tracking** | Deleted with the above. **Keep the design calls if it ever returns:** math in Python not the LLM; folders → categories; Min Level → reorder point; and the seasonality warning — naive units-per-day velocity is worse than useless against a July 4th spike. |
 | **Named lists / to-do tools** | Removed Aug 2026. Built, never used — `data/assistant.json` had `"lists": {}`. |
 | **Keyword-gated tool triggering** (`likely_command()`) | Removed Aug 2026. Made Ted feel like a robot spitting back answers, and locked novel phrasings out of every tool. |
+| **The tool probe** | Removed Aug 12. A cheap first call asking "does this need a tool?", then a second call to compose the answer. One streamed call does both. |
+| **The `claude-sonnet-5` relay** | Removed Aug 12. Never had an API key, so every path through it returned "I'd need an Anthropic API key." |
 
 ---
 
@@ -782,8 +875,9 @@ These recur across the project's history and should survive any rewrite.
    threshold. Both fixes included *making it observable* — that's the pattern to keep.
    Real failures go to `ted_errors.log`, not stdout.
 3. **Ground truth over optimism.** Action tools report what actually happened, verbatim.
-4. **Cheap gates before expensive ones is correct** — the ladder design is sound. The
-   problem is that too many rungs are hardcoded and two rungs do the same LLM work twice.
+4. **Cheap gates before expensive ones is correct** — the ladder design is sound.
+   What was wrong was how many rungs were hardcoded, and that two rungs did the
+   same LLM work twice. Both fixed in August; the principle survives the fix.
 5. **Deleting a regex is a feature.** Every one removed moves a decision from "hardcoded"
    to "reasoned," and makes Ted feel more intelligent.
 6. **No second source of truth.** Calendar and Notes go through AppleScript to the *real*
@@ -791,11 +885,24 @@ These recur across the project's history and should survive any rewrite.
 7. **Selective memory beats complete memory.** Remembering everything makes callbacks worse.
 8. **Prompt prefix stability is a performance feature.** Keep the static prefix
    byte-identical; put volatile per-turn context last.
-9. **Know which tool can run the thing.** Cowork reads and edits the repo but runs in a
-   Linux sandbox — it **cannot** execute a macOS venv, touch CoreAudio, call Groq with the
-   real key, or build a `.app`. Runtime, audio, and hardware bugs belong in Claude Code on
-   the Mac. The `BARGE_IN_HANDOFF.md` pattern — diagnose in one, hand off to the other, and
-   **state plainly which claims are unverified** — worked. Reuse it.
+9. **Know which tool can run the thing.** Cowork reads and edits the repo but
+   runs in a Linux sandbox — it **cannot** execute a macOS venv, touch CoreAudio,
+   run AppleScript, call Groq with the real key, reach Ollama, or build a `.app`.
+   Runtime, audio, hardware, and permission bugs belong in Claude Code on the Mac.
+   The `BARGE_IN_HANDOFF.md` pattern — diagnose in one, hand off to the other, and
+   **state plainly which claims are unverified** — worked twice more since
+   (`VERIFY_SINGLE_CALL.md`, `DAEMON_HANDOFF.md`). Reuse it.
+
+   The pure-Python suites *can* be run off-Mac by stubbing `groq` and mocking
+   `osascript`; that is how 353 checks were confirmed green on Aug 14. It proves
+   logic and proves nothing about macOS.
+
+11. **Two places must never own one fact.** The recurring bug in this codebase is
+    not complexity, it is duplication of judgment: a gate matching by substring
+    while the dispatch below it matched by prefix; a stored reply diverging from
+    the spoken one; a health check inferring "cloud down" from "no calls yet."
+    Every one of those was two pieces of code answering the same question
+    differently. When adding a check, find who already answers it.
 10. **Plans rot faster than code.** Re-audit against the repo before planning off any
     document, including this one.
 
@@ -881,17 +988,26 @@ cd ~/ted-ai && source venv/bin/activate && python hud.py
 
 # Or: double-click Ted.app  (rebuild with: bash tools/make_app.sh)
 
-# Full test suite
+# Full test suite — 11 suites, 353 checks
 cd ~/ted-ai && source venv/bin/activate
-for t in test_memory test_session_memory test_intents test_capture_gates test_barge test_pipeline; do
-    echo "— $t"; python tests/$t.py | tail -1
-done
+for t in tests/test_*.py; do printf "%-34s " "$t"; python "$t" | tail -1; done
+
+# Which brain answered last, and why
+grep '\[provider\]' data/ted_launch.log     # only prints when Groq failed over
+ollama list                                  # is qwen3.5:35b-a3b actually pulled?
+
+# The calendar daemon
+venv/bin/python ted_daemon.py --once         # one poll, verbose
+bash tools/install_daemon.sh                 # install the launchd agent
+bash tools/install_daemon.sh --uninstall
+launchctl print gui/$(id -u)/com.charlie.ted-daemon | head -20
+tail -f data/ted_daemon.log
 
 # Build the native audio engine (needs swiftc; xcode-select --install)
 cd ~/ted-ai/native && ./build.sh
 
 # Memory dashboard standalone
-cd ~/ted-ai && python -m dashboard        # → http://127.0.0.1:5175
+cd ~/ted-ai && python -m dashboard        # -> http://127.0.0.1:5175
 
 # One-time setup
 python setup_email.py          # Outlook IMAP
@@ -903,6 +1019,9 @@ sqlite3 -box ~/ted-ai/data/memory.db "SELECT id, exchanges, topics, text FROM se
 # Debug barge-in
 TED_DEBUG_BARGE=1 python hud.py
 
+# Fall back to the old two-call ladder (bisecting only)
+TED_LEGACY_LADDER=1 python hud.py
+
 # Logs
 cat ~/ted-ai/data/ted_launch.log      # everything Ted prints (no terminal when launched via .app)
 cat ~/ted-ai/ted_errors.log           # real failures only
@@ -910,36 +1029,42 @@ cat ~/ted-ai/ted_errors.log           # real failures only
 
 ### 15.2 Config keys (`config.py`, gitignored; template in `config.example.py`)
 
-| Key | Default | Notes |
+| Key | Value | Notes |
 |---|---|---|
-| `GROQ_API_KEY` | — | **Required** |
-| `USE_GROQ_STT` | `True` | False → local Whisper |
-| `USE_ELEVENLABS` / `ELEVENLABS_API_KEY` | `False` | Kokoro otherwise |
-| `ATTENTION_WINDOW` | 90 (README) / 180 (bumped in `125d899`) | 0 = always listen |
+| `GROQ_API_KEY` | set | Ted runs on local Ollama alone without it, slowly |
+| `CLOUD_CHAT_MODEL` | `"qwen/qwen3.6-27b"` | tried first |
+| `LOCAL_CHAT_MODEL` | `"qwen3.5:35b-a3b"` | Ollama fallback; must be pulled |
+| `OLLAMA_URL` | `"http://127.0.0.1:11434"` | `providers.py` will start `ollama serve` if idle |
+| `USE_GROQ_STT` | `True` | False → local Whisper (the offline path for hearing) |
+| `USE_ELEVENLABS` / `ELEVENLABS_API_KEY` | `False` / set | Kokoro otherwise |
+| `ATTENTION_WINDOW` | `180` | 0 = always listen |
 | `VOICE_LOCK` / `VOICE_LOCK_THRESHOLD` | `False` / 0.68 | needs `resemblyzer` |
 | `FALLBACK_VOICE_BARGEIN` | `True` | disable if Ted interrupts himself on speakers |
-| `ANTHROPIC_API_KEY` / `CLAUDE_MODEL` | `""` / `claude-sonnet-5` | **empty — the "ask Claude" relay is inert** |
 | `OWNER_NAME` | `"Charlie"` | used in greetings and fact subjects |
 | `WEATHER_LOCATION` | `""` | auto-detected via IP if blank |
-| `DAILY_BRIEFING_TIME` | `""` | e.g. `"7:30am"` |
-| `REMOTE_PORT` / `REMOTE_TOKEN` | 5150 / `""` | **set the token** |
-| `SPOTIFY_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | — | needs Premium |
+| `DAILY_BRIEFING_TIME` | unset | e.g. `"7:30am"` |
+| `REMOTE_PORT` / `REMOTE_TOKEN` | 5150 / unset | **blank token disables the server** — this is why iPhone access does not work |
+| `SPOTIFY_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | set | needs Premium |
 
-Also present and stale: a leftover Neo4j password. Remove it.
+The three model keys were added Aug 14; before that `providers.py` fell through
+to its own hardcoded defaults, which still happens if the lines are absent.
+`ANTHROPIC_API_KEY` / `CLAUDE_MODEL` and the stale Neo4j password were removed.
 
 ### 15.3 Glossary
 
 | Term | Meaning |
 |---|---|
-| **The ladder** | The 8-gate routing in `TedApi._respond()` (§4.2) |
-| **Gate 5** | `_assistant_command()` — the 746-line regex dispatch; the main liability |
-| **The probe** | Round 1 of `_try_tools`, a cheap "does this need a tool?" call |
+| **The ladder** | The routing in `TedApi._respond()` (§4.2). Six steps now, not eight |
+| **Gate 5** | What remains of `_assistant_command()` — a short allowlist in `_use_deterministic_command()`, with ~700 lines of now-mostly-unreachable dispatch below it |
+| **The probe** | The old cheap "does this need a tool?" call. **Deleted Aug 12** — if `[timing] tool probe` appears in the log, you are on the legacy path |
+| **`chat_create`** | `core/providers.py` — the single door every thinking request goes through |
+| **The handover** | Groq failing and the same request being retried on local Ollama |
 | **Attention window** | Idle timeout after which Ted needs "Hey Ted" again |
 | **Barge-in** | Interrupting Ted by talking over him |
-| **AEC** | Acoustic echo cancellation — active in the native Swift audio engine |
-| **The monolith** | `core/app.py`, 118 KB |
+| **AEC** | Acoustic echo cancellation — **removed Aug 5**; the name lingers in code |
+| **The monolith** | `core/app.py`, 126 KB |
 | **Migration / stage 1** | The event-bus decomposition; stage 1 = characterization tests, done |
-| **Cowork vs Claude Code** | Cowork = Linux sandbox, can read/edit but not run Ted. Claude Code = on the Mac, can run it. |
+| **Cowork vs Claude Code** | Cowork = Linux sandbox, can read/edit but not run Ted. Claude Code = on the Mac, can run it |
 
 ### 15.4 Where things live
 
@@ -966,31 +1091,45 @@ Separate projects, not Ted: `~/Dad`, `~/budget-blinds`, `~/todo-list`.
 
 ```bash
 cd ~/ted-ai
-git status && git log --oneline -5
+git status && git log --oneline -8 && git branch --show-current
 sqlite3 data/memory.db ".tables"
 tail -40 data/ted_launch.log
 ```
 
-**Then read, in this order:** `docs/DECISION_FLOW.md` (how it thinks) → `README.md` (what it
-does) → `docs/ROADMAP.md` (how it got here) → `core/app.py::_respond` top to bottom.
+Work happens on `arch/single-call`, not `main`. Charlie also runs ChatGPT on
+this repo — read `docs/AI_WORKFLOW.md` before editing. If `git status` shows
+files you did not modify, someone else is mid-task; say so rather than editing
+them.
+
+**Then read, in this order:** `docs/DECISION_FLOW.md` (how it thinks, updated
+Aug 13) → `README.md` (what it does) → `core/providers.py` (small, and it is the
+door every thought goes through) → `core/app.py::_respond` top to bottom.
 
 **Highest-value actions available right now, in order:**
 
-1. **Commit the working tree.** Days of good work, zero safety net.
-2. **Verify barge-in on the Mac** with `TED_DEBUG_BARGE=1`, including the sentence-boundary
-   case and self-interruption on speakers.
-3. **Finish and commit the memory dashboard** — it is most of Charlie's stated pre-Aug-25 goal.
-4. **Start Stage 2 of the decomposition** — one domain out of `_assistant_command` per commit,
-   `test_pipeline.py` green between each.
-5. **Solve the daemon** (`launchd`) — nothing proactive is possible without it.
-6. Then: merge Gates 6 and 8, gut Gate 5, wire difficulty-based model routing.
+1. **Verify the daemon on the Mac** — `docs/DAEMON_HANDOFF.md`. It is written and
+   unit-tested and has never run on macOS. This is the last thing between Charlie
+   and proactive class reminders, and the semester starts Aug 25.
+2. **Watch one real Groq→Ollama handover** (§8.2). A 180-second cold load that
+   nobody has timed is the difference between a fallback and a hang.
+3. **Verify barge-in** with `TED_DEBUG_BARGE=1`, including the sentence-boundary
+   case and self-interruption on speakers. Outstanding since Aug 5.
+4. **Rotate the keys in the `Ted Keys` Drive doc** (§8.5). Ten minutes, and the
+   only item here with an unbounded downside.
+5. **Chat search** — 340 chat turns and no way to find one. FTS5 is already in
+   use for `exchanges`; the pattern exists.
+6. **Stage 2 of the decomposition** — one domain out of the old dispatch per
+   commit, tests green between each. Correct, and repeatedly deferred in favor of
+   features. That is a real decision Charlie keeps making, not an oversight.
 
-**Do not:** add keyword triggers, give Ted the ability to edit its own code,
-rebuild named lists, re-attempt fine-tuning or voice cloning, or plan off any
-document without re-checking the repo first.
+**Do not:** add keyword triggers, restore the tool probe, give Ted the ability to
+edit its own code, rebuild named lists, re-attempt fine-tuning or voice cloning,
+remove the local Ollama fallback because Groq is usually faster, or plan off any
+document — including this one — without re-checking the repo first.
 
 ---
 
-*End of handoff. Compiled from the repo, git history, in-repo docs, Google Drive documents,
-and persistent memory. Past chat transcripts were not machine-readable; where a claim comes
-only from conversation it is marked [stated].*
+*End of handoff. Compiled from the repo, git history, in-repo docs, Google Drive
+documents, and persistent memory. Revised Aug 14, 2026 against the working tree
+at `3f5d2ac`. Past chat transcripts were not machine-readable; where a claim
+comes only from conversation it is marked [stated].*

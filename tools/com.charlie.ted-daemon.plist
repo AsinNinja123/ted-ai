@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.charlie.ted-daemon</string>
+
+    <!-- The venv interpreter directly. Activating a venv is a shell thing and
+         launchd is not a shell; calling venv/bin/python is the same result
+         with nothing to go wrong. __PLACEHOLDER_HOME__ is rewritten by
+         tools/install_daemon.sh. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PLACEHOLDER_HOME__/venv/bin/python</string>
+        <string>__PLACEHOLDER_HOME__/ted_daemon.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PLACEHOLDER_HOME__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart if it dies. ThrottleInterval stops a crash-on-startup bug from
+         becoming a restart loop that pins a core. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PLACEHOLDER_HOME__/data/ted_daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PLACEHOLDER_HOME__/data/ted_daemon.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
