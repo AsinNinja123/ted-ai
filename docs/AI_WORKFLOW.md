@@ -37,6 +37,31 @@ the only state where work can vanish without trace.
 
 This is the whole rule. Most collisions die here.
 
+## 2b. Regenerate the status block
+
+```bash
+python tools/ted_map.py --sync
+```
+
+Rewrites the generated block in `CLAUDE.md` and `AGENTS.md` from what is
+actually in the repo: models, tool count, routing shape, memory row counts,
+branch, whether the working tree is clean, whether the daemon has ever run.
+Takes a second, and it is what the next assistant reads first.
+
+This exists because the hand-written version of that block was wrong within two
+days — it named the old model stack and claimed the working tree was
+uncommitted long after it had been committed. A status line maintained by hand
+is a second source of truth, and the second one always loses.
+
+Two habits worth keeping: run it after committing, and run it at the start of a
+session too. If the block disagrees with what you just regenerated, the previous
+session ended without syncing, and you should be suspicious of anything else it
+left behind.
+
+`python tools/ted_map.py` also writes a full page version for Charlie, and the
+memory dashboard serves the same thing live at
+`http://127.0.0.1:5175/map`.
+
 ## 3. Never revert what you did not write
 
 If a change looks wrong and you did not make it, **say so — do not fix it.** It

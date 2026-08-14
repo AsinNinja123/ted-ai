@@ -61,11 +61,38 @@ def index():
     return send_file(os.path.join(_HERE, "index.html"))
 
 
+@app.get("/map")
+def ted_map():
+    """A plain-language page describing Ted, regenerated on every load.
+
+    tools/ted_map.py reads the code, the database and git and renders the page
+    from what it finds, so this cannot drift from reality the way a written
+    document does. It is regenerated per request rather than cached because the
+    facts it reports — branch, row counts, whether the daemon is alive — are
+    exactly the ones that change while you are looking at them.
+    """
+    import importlib.util
+    from flask import Response
+    path = os.path.join(os.path.dirname(_HERE), "tools", "ted_map.py")
+    if not os.path.exists(path):
+        return Response("tools/ted_map.py is missing.", mimetype="text/plain",
+                        status=404)
+    try:
+        spec = importlib.util.spec_from_file_location("ted_map", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return Response(mod.render(mod.collect()), mimetype="text/html")
+    except Exception as e:
+        # A broken map page must never take the memory dashboard down with it.
+        return Response(f"Could not build the map: {e}", mimetype="text/plain",
+                        status=500)
+
+
 @app.get("/api/version")
 def api_version():
     """Lets the HUD (and hud.py) verify the server on this port speaks the
     chat API — an older dashboard process holding the port 404s this."""
-    return jsonify({"version": 2, "chats": True})
+    return jsonify({"version": 3, "chats": True, "map": True})
 
 
 _weather_cache = {"ts": 0.0, "data": None}
