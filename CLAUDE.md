@@ -26,7 +26,7 @@
 | Hears / speaks | `whisper-large-v3-turbo` / `kokoro-v1.0.onnx` (local) |
 | Tools | 32 |
 | Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
-| Memory | 22 facts, ~450 chat turns, 3 session memories |
+| Memory | 22 facts, ~450 chat turns, 4 session memories |
 | Tests | 421 checks across 14 suites |
 | Calendar daemon | built, never started on this Mac |
 
