@@ -588,6 +588,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     Saves the final reply to memory and logs facts, both on background threads.
     """
     global _GROQ_OK
+    _turn_t0 = time.time()
     action = detect_action(user_input)
     if action:
         yield action
@@ -751,6 +752,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     import groq as _groq_mod
     resp = None
     closing = False
+    _req_t0 = time.time()
     try:
         resp = _do_groq_call()
     except _groq_mod.RateLimitError:
@@ -802,6 +804,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             yield "I ran into an issue — give me a second and try again."
             return
 
+    # How long the request itself took to be accepted, separately from how long
+    # the model then took to say something. A slow turn is one or the other and
+    # they have completely different causes: this one is network, retries, and
+    # the local-brain attempt; the [timing] first token line below is the model.
+    _req_ms = int((time.time() - _req_t0) * 1000)
+    if _req_ms > 400:
+        print(f"[timing] request accepted after {_req_ms}ms "
+              f"({providers.active_provider()})")
+
     _GROQ_OK = providers.active_provider() == "groq"
     full_reply = ""
     # Results from the most recent round that produced any. If the loop ends
@@ -827,6 +838,14 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             calls = {}
             turn_text = yield from _stream_turn(
                 resp, calls, suppress_text=bool(action_results))
+            if rounds == 1:
+                # The number that matches what the user felt: their key press to
+                # the first word on screen, retrieval, retries and all.
+                print(f"[timing] turn to first output "
+                      f"{int((time.time() - _turn_t0) * 1000)}ms")
+            elif calls:
+                print(f"[timing] round {rounds} after "
+                      f"{int((time.time() - _turn_t0) * 1000)}ms")
 
             # Text emitted ALONGSIDE a tool call was already streamed to the
             # HUD and the speaker, so it has to land in full_reply too:

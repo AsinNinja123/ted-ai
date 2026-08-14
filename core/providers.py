@@ -111,8 +111,35 @@ def _ollama_messages(messages):
     return converted
 
 
+# When the local brain cannot start, every later cloud failure would pay the
+# full startup wait again — 20 polls at a 1s timeout each, up to ~23 seconds of
+# silence per message, on top of whatever the cloud failure already cost. One
+# failure buys quiet for this long instead.
+OLLAMA_RETRY_COOLDOWN = 300.0
+OLLAMA_START_BUDGET = 6.0
+_ollama_down_until = 0.0
+
+
+def local_brain_available() -> bool:
+    """False while the local brain is in its failure cooldown."""
+    return time.time() >= _ollama_down_until
+
+
 def _ensure_ollama():
-    """Start the local Ollama service when the app is installed but idle."""
+    """Start the local Ollama service when the app is installed but idle.
+
+    Fails fast and stays failed for a while. The point of the local brain is to
+    rescue a cloud outage; a rescue that takes twenty seconds and then throws is
+    worse for the user than an immediate honest error, because it is
+    indistinguishable from a freeze.
+    """
+    global _ollama_down_until
+    now = time.time()
+    if now < _ollama_down_until:
+        raise RuntimeError(
+            f"local brain unavailable, not retried for another "
+            f"{int(_ollama_down_until - now)}s")
+
     try:
         r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.0)
         if r.status_code == 200:
@@ -127,14 +154,22 @@ def _ensure_ollama():
             start_new_session=True,
         )
     except Exception as exc:
+        _ollama_down_until = time.time() + OLLAMA_RETRY_COOLDOWN
+        print("[provider] Ollama is not installed — local fallback disabled "
+              f"for {int(OLLAMA_RETRY_COOLDOWN / 60)} min")
         raise RuntimeError("Ollama is not installed or could not start") from exc
-    for _ in range(20):
+
+    deadline = time.time() + OLLAMA_START_BUDGET
+    while time.time() < deadline:
         try:
             if httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.0).status_code == 200:
                 return
         except Exception:
             pass
         time.sleep(0.15)
+    _ollama_down_until = time.time() + OLLAMA_RETRY_COOLDOWN
+    print(f"[provider] Ollama did not start within {OLLAMA_START_BUDGET:.0f}s — "
+          f"local fallback disabled for {int(OLLAMA_RETRY_COOLDOWN / 60)} min")
     raise RuntimeError("Ollama did not become ready")
 
 

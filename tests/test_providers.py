@@ -93,6 +93,50 @@ check("missing Groq key also uses local", providers.chat_create(messages=[]) is 
 providers._groq = original_groq
 providers._ollama_create = original_local
 
+print("\n— the local brain fails fast, and stays failed —")
+
+# Charlie's case: the ollama binary exists so Popen succeeds, but the server
+# never answers. The old loop polled 20 times at a 1s timeout, so EVERY cloud
+# failure paid up to ~23 seconds of silence before the error — indistinguishable
+# from a freeze, and repeated on the next message, and the one after that.
+import time as _time
+
+_orig_url = providers.OLLAMA_URL
+_orig_popen = providers.subprocess.Popen
+providers.OLLAMA_URL = "http://127.0.0.1:59999"     # nothing is listening
+providers.OLLAMA_START_BUDGET = 1.0
+providers._ollama_down_until = 0.0
+providers.subprocess.Popen = lambda *a, **k: None   # "starts" but never serves
+
+t0 = _time.time()
+try:
+    providers._ensure_ollama()
+    first_error = ""
+except Exception as e:
+    first_error = str(e)
+first = _time.time() - t0
+check("a dead local brain gives up inside its budget",
+      first < providers.OLLAMA_START_BUDGET * 2.5)
+check("…and says so", "did not become ready" in first_error)
+
+t0 = _time.time()
+try:
+    providers._ensure_ollama()
+except Exception as e:
+    second_error = str(e)
+second = _time.time() - t0
+check("the next call does not pay the wait again", second < 0.05)
+check("…and explains it is in cooldown rather than pretending",
+      "not retried" in second_error)
+check("local_brain_available reports the cooldown",
+      not providers.local_brain_available())
+
+providers._ollama_down_until = 0.0
+check("…and recovers once the cooldown clears", providers.local_brain_available())
+
+providers.OLLAMA_URL = _orig_url
+providers.subprocess.Popen = _orig_popen
+
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
