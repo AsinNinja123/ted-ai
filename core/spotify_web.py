@@ -203,6 +203,45 @@ def match_playlist(name, playlists):
 
 # ---- Actions ----
 
+def _confirm_playing(sp, expect_uri=None, timeout=3.0):
+    """Ask Spotify whether audio is ACTUALLY playing before claiming it is.
+
+    start_playback returning without an exception does not mean anything is
+    coming out of the speakers. The Web API accepts the call and returns 202 in
+    plenty of situations where nothing plays: the device went idle between
+    listing it and using it, another device grabbed the session, or the account
+    can't stream right now. Ted then said "Playing Maine by Noah Kahan" to a
+    silent room, which is the exact cheerful lie the honesty rule exists to
+    stop — see README section 5.3.
+
+    Returns True (confirmed playing), False (confirmed not playing), or None
+    (could not tell — do not claim either way).
+    """
+    deadline = time.time() + timeout
+    saw_state = False
+    while time.time() < deadline:
+        try:
+            state = sp.current_playback()
+        except Exception as e:
+            print("[spotify] playback check:", e)
+            return None
+        if state:
+            saw_state = True
+            if state.get("is_playing"):
+                if not expect_uri:
+                    return True
+                item = state.get("item") or {}
+                # Right track, or at least the right context (a playlist starts
+                # on whichever track Spotify picks, which is not ours to predict).
+                if item.get("uri") == expect_uri:
+                    return True
+                ctx = (state.get("context") or {}).get("uri")
+                if ctx and ctx == expect_uri:
+                    return True
+        time.sleep(0.4)
+    return False if saw_state else None
+
+
 def play_playlist(name, shuffle=False):
     """Start playing the named playlist via the Spotify Web API.
 
@@ -237,10 +276,18 @@ def play_playlist(name, shuffle=False):
     except Exception as e:
         print("[spotify] playback:", e)
         return "I found it but couldn't start playback. Make sure Spotify's open."
-    if shuffle and not shuffle_ok:
-        return f"Playing your {match[0]} playlist — shuffle isn't available on your account or device right now."
     verb = "Shuffling" if shuffle else "Playing"
-    return f"{verb} your {match[0]} playlist."
+    confirmed = _confirm_playing(sp, expect_uri=match[1])
+    if confirmed is False:
+        return (f"I sent your {match[0]} playlist to Spotify but nothing is "
+                "playing. Spotify may need to be open and awake on the device "
+                "you want.")
+    tail = ""
+    if confirmed is None:
+        tail = " — though I couldn't confirm it's actually playing"
+    elif shuffle and not shuffle_ok:
+        tail = " — shuffle isn't available on your account or device right now"
+    return f"{verb} your {match[0]} playlist{tail}."
 
 
 def play_track(query, artist=None):
@@ -280,7 +327,14 @@ def play_track(query, artist=None):
         print("[spotify] playback:", e)
         return "I found it but couldn't start playback."
     names = ", ".join(a["name"] for a in track.get("artists", []))
-    return f"Playing {track['name']}" + (f" by {names}" if names else "") + "."
+    label = track["name"] + (f" by {names}" if names else "")
+    confirmed = _confirm_playing(sp, expect_uri=track["uri"])
+    if confirmed is True:
+        return f"Playing {label}."
+    if confirmed is False:
+        return (f"I sent {label} to Spotify but it isn't playing. "
+                "Spotify may need to be open and awake on the device you want.")
+    return f"I started {label} on Spotify, but couldn't confirm it's actually playing."
 
 
 def transport(action):

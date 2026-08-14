@@ -144,20 +144,28 @@ TOOL_SCHEMAS = [
             "name": "send_message",
             "description": (
                 "Send an iMessage to a contact. "
-                "IMPORTANT: only set 'instruction' if the user EXPLICITLY said what the message should be about. "
-                "If the user just said 'send a message to X' or 'text X' with no content, leave instruction blank — Ted will ask. "
-                "Do NOT invent or assume a message. "
-                "If the user mentioned a style (casual, formal, short, funny), pass it as 'style'. "
-                "Example: 'text Gavin and ask if he wants to golf casually' → instruction='ask if he wants to golf', style='casual'. "
-                "Example: 'send a message to Calvin' → instruction omitted. "
+                "TEXT vs INSTRUCTION decides whether the user's own words get sent or "
+                "rewritten, so get this right. "
+                "(1) The user gave the actual words, usually in quotes: put them in "
+                "'text' EXACTLY as written. Keep their spelling, slang, casing and "
+                "missing punctuation. Do not tidy, rephrase, or add a greeting. "
+                "Example: send gavin \"otw be there in 10\" → text='otw be there in 10'. "
+                "(2) The user said what to convey but not the words: use 'instruction' "
+                "and Ted writes it. Example: 'text Gavin that I'll be late to golf' → "
+                "instruction='tell him I will be late to golf'. "
+                "(3) The user gave neither: set only 'contact' and Ted will ask. Never "
+                "invent a message. "
+                "Never set both 'text' and 'instruction'. 'style' applies only to "
+                "'instruction' — words the user wrote themselves are never restyled. "
                 "This is consequential and Ted will require user confirmation before sending."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "contact": {"type": "string", "description": "Contact first name or full name"},
-                    "instruction": {"type": "string", "description": "ONLY set if user said what to write. What the message should convey."},
-                    "style": {"type": "string", "description": "Tone/style only if user specified, e.g. 'casual', 'formal', 'short and funny'"}
+                    "text": {"type": "string", "description": "The user's OWN words, sent verbatim and never edited. Use this whenever they supplied the actual message."},
+                    "instruction": {"type": "string", "description": "ONLY when the user said what to convey but not the exact words. Ted writes the message from this."},
+                    "style": {"type": "string", "description": "Tone/style, only with 'instruction'. Words the user wrote are never restyled."}
                 },
                 "required": ["contact"]
             }

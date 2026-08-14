@@ -1617,7 +1617,20 @@ class TedApi:
                 }
                 if name == "send_message":
                     target = args.get("contact", "that contact")
-                    return f"Ready to message {target}. Say yes to send it, or anything else to cancel."
+                    # Show what is about to be sent. Confirming a message you
+                    # cannot see is not consent — the user asked "what message
+                    # were you going to send? I didn't tell you what to send"
+                    # after being asked to approve a blank one.
+                    body = (args.get("text") or "").strip()
+                    if body:
+                        return (f"Ready to send {target}: \u201c{body}\u201d "
+                                "Say yes to send it, or anything else to cancel.")
+                    brief = (args.get("instruction") or "").strip()
+                    if brief:
+                        return (f"Ready to message {target} — I'll write something to "
+                                f"{brief}. Say yes and I'll show you before it goes.")
+                    return (f"I don't have anything to say to {target} yet. "
+                            "What do you want the message to be?")
                 if name == "send_email":
                     target = args.get("to", "that address")
                     return f"Ready to email {target}. Say yes to send it, or anything else to cancel."
@@ -1647,6 +1660,7 @@ class TedApi:
                     args.get("contact", ""),
                     instruction=args.get("instruction"),
                     style=args.get("style"),
+                    text=args.get("text"),
                 )
             if name == "set_reminder":
                 return th.tool_set_reminder(args.get("text", ""), args.get("when", ""))
@@ -1856,27 +1870,40 @@ class TedApi:
 
     # ── Message / Email compose flow ──────────────────────────────────────────
 
-    def _compose_and_send(self, contact, instruction=None, style=None):
-        """Find the contact, then orchestrate the ask-style → generate → send flow."""
+    def _compose_and_send(self, contact, instruction=None, style=None, text=None):
+        """Find the contact, then orchestrate the ask-style → generate → send flow.
+
+        `text` is the user's own wording and is sent byte for byte. There used to
+        be no way to express that: every message went through instruction →
+        "how should it sound?" → a model rewrite, so asking Ted to send
+        'hey this is ted' got you a question about the vibe and then something
+        Ted wrote instead. Words the user typed are not a brief.
+        """
         candidates = search_contacts(contact)
         if not candidates:
             return f"I couldn't find {contact.title()} in your contacts."
 
         if len(candidates) > 1:
             # Save compose intent separately — disambiguation uses _pending_msg alone
-            self._pending_disambig_compose = {"instruction": instruction, "style": style}
+            self._pending_disambig_compose = {"instruction": instruction,
+                                              "style": style, "text": text}
             self._pending_msg = (candidates, None, time.time() + 30)
             names = [c[0] for c in candidates]
             choices = " or ".join(names) if len(names) == 2 else ", ".join(names[:-1]) + f", or {names[-1]}"
             return f"I found a few — {choices}. Which one?"
 
         name, addr = candidates[0]
-        return self._continue_compose(name, addr, instruction, style)
+        return self._continue_compose(name, addr, instruction, style, text)
 
-    def _continue_compose(self, name, addr, instruction, style):
+    def _continue_compose(self, name, addr, instruction, style, text=None):
         """Continue the compose flow once we have a confirmed contact."""
         if not addr:
             return f"I found {name} but they don't have a phone or email saved."
+        # The user's own words: no style question, no rewrite, no improvement.
+        if text and text.strip():
+            ok = send_imessage_to_address(addr, text)
+            first = name.split()[0]
+            return f"Sent to {first}." if ok else f"Couldn't reach {name}."
         if not instruction:
             self._pending_compose = {
                 "type": "imessage", "stage": "instruction",
@@ -2028,7 +2055,8 @@ class TedApi:
         compose = self._pending_disambig_compose
         if compose is not None:
             self._pending_disambig_compose = None
-            return self._continue_compose(name, addr, compose.get("instruction"), compose.get("style"))
+            return self._continue_compose(name, addr, compose.get("instruction"),
+                                          compose.get("style"), compose.get("text"))
 
         # Legacy path: msg_text was pre-generated before disambiguation
         if not msg_text:
