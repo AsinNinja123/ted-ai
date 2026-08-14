@@ -41,7 +41,14 @@ if ! /usr/bin/python3 "$PROJECT/tools/make_icon.py" "$ICON_TMP/Ted.icns"; then
 fi
 
 # ── 2. Bundle skeleton ────────────────────────────────────────────────────────
-rm -rf "$APP"
+# Replace Contents, NOT the .app directory itself. `rm -rf "$APP"` gave the
+# bundle a new inode on every build, which breaks anything holding a reference
+# to the old one — a Dock tile, a Spotlight entry, a Login Item. Since Charlie
+# launches Ted from the Dock, a rebuild was silently invalidating the very icon
+# this script exists to produce. Keeping the outer directory keeps those
+# references pointing at something real.
+mkdir -p "$APP"
+rm -rf "$APP/Contents"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ICON_TMP/Ted.icns" "$APP/Contents/Resources/Ted.icns"
 
@@ -51,7 +58,20 @@ if [ ! -s "$APP/Contents/Resources/Ted.icns" ]; then
     echo "error: Ted.icns did not land in the bundle." >&2
     exit 1
 fi
-echo "  icon installed ($(wc -c < "$APP/Contents/Resources/Ted.icns" | tr -d ' ') bytes)"
+
+# Ask macOS ITSELF whether it can read the file. Everything up to here was our
+# own code agreeing with our own code; sips uses the system image decoders, so
+# this is the first opinion that counts. If macOS can read it and Finder still
+# shows a blank page, the file is fine and the problem is the icon cache —
+# which is a completely different fix, and worth not guessing about.
+if /usr/bin/sips -g pixelWidth -g pixelHeight \
+        "$APP/Contents/Resources/Ted.icns" >/dev/null 2>&1; then
+    echo "  icon installed and readable by macOS \
+($(wc -c < "$APP/Contents/Resources/Ted.icns" | tr -d ' ') bytes)"
+else
+    echo "  warning: macOS could not read the generated .icns." >&2
+    echo "           The bundle is still usable; the icon will be blank." >&2
+fi
 
 # ── 3. Info.plist ─────────────────────────────────────────────────────────────
 # The usage-description strings matter: without NSMicrophoneUsageDescription
@@ -132,8 +152,28 @@ LAUNCH
 
 chmod +x "$APP/Contents/MacOS/Ted"
 
-# Make Finder pick up the new icon immediately instead of caching the generic one.
+# ── 5. Make macOS actually show the icon ──────────────────────────────────────
+# A `touch` alone is not enough and never was. macOS caches an app's icon per
+# bundle, and Ted.app spent days with NO icon — so what is cached is "this app
+# has no icon", and that entry survives the file appearing underneath it.
+#
+# Three steps, cheapest first. All are safe to re-run and none need sudo.
 touch "$APP"
+
+LSREG="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks"
+LSREG="$LSREG/LaunchServices.framework/Versions/A/Support/lsregister"
+if [ -x "$LSREG" ]; then
+    "$LSREG" -f "$APP" >/dev/null 2>&1 || true
+    echo "  re-registered with LaunchServices"
+fi
+
+# The Dock holds its own copy of the icon for anything pinned to it, and Finder
+# holds another. Both relaunch immediately; this looks like a half-second
+# flicker and is the step that actually makes the icon appear.
+killall Dock   >/dev/null 2>&1 || true
+killall Finder >/dev/null 2>&1 || true
+echo "  refreshed Dock and Finder"
+
 rm -rf "$ICON_TMP"
 
 echo
@@ -144,3 +184,6 @@ echo "  • Double-click Ted.app, or search 'Ted' in Spotlight."
 echo "  • Drag it onto the Dock to keep it there."
 echo "  • First launch will ask for Microphone access — allow it."
 echo "  • If it starts and immediately quits, read: $PROJECT/data/ted_launch.log"
+echo
+echo "If the Dock tile is still blank, drag it off the Dock and drag Ted.app on"
+echo "again — a tile pinned before this build points at the old bundle."
