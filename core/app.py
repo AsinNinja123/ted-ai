@@ -2573,6 +2573,11 @@ class TedApi:
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
         threading.Thread(target=self.apps_watch,            daemon=True).start()
+        # Load the knowledge store now, on a thread, so the first message does
+        # not pay for it inside the retrieval budget.
+        if features.HAS_KNOWLEDGE:
+            threading.Thread(target=features.knowledge.warm, daemon=True,
+                             name="knowledge-warm").start()
         try:
             from core.proactive import ProactiveScheduler
             _sched = ProactiveScheduler(self, speak_fn=speak, add_message_fn=add_message)

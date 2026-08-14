@@ -49,6 +49,22 @@ def _get_collection():
         return None
 
 
+def warm():
+    """Load ChromaDB and the embedding model ahead of the first question.
+
+    _get_collection() is lazy, so without this the first message of a session
+    pays for it: importing chromadb, starting the client, and loading (or on a
+    fresh machine downloading) the fastembed model — all inside the retrieval
+    window, where it eats the whole context budget and delays the reply.
+
+    Safe to call repeatedly; after the first success it returns immediately.
+    """
+    try:
+        _get_collection()
+    except Exception as e:
+        print(f"[knowledge] warm-up failed: {e}")
+
+
 def _embed(texts: list) -> list:
     """Return a list of embedding vectors (as plain lists) for the given texts."""
     global _embedder

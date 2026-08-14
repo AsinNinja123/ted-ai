@@ -39,6 +39,10 @@ def chat_create(**kwargs):
     """Use the free hosted brain, then the genuinely local offline brain."""
     return providers.chat_create(**kwargs)
 
+# Hard ceiling on how long memory retrieval may delay a reply. Everything it
+# gathers is optional context; the answer is not.
+CONTEXT_BUDGET = 4.0
+
 MAX_HISTORY = 20        # messages sent to LLM per turn
 MAX_CONV_MESSAGES = 40  # hard cap on stored conversation length (keeps system msg at [0])
 
@@ -602,8 +606,24 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             _ctx["know"] = features.knowledge.search(user_input, k=3)
     _lk_threads = [threading.Thread(target=f, daemon=True)
                    for f in (_load_mem, _load_facts, _load_know, _load_sessions)]
+    _ctx_t0 = time.time()
     for _t in _lk_threads: _t.start()
-    for _t in _lk_threads: _t.join(timeout=4.0)
+    # ONE deadline for all four, not four independent timeouts. `join(timeout=4)`
+    # per thread meant the budget was 4s each and therefore 16s total: the reply
+    # had not even been requested yet. Retrieval is best-effort context, so a
+    # slow source is dropped rather than waited on.
+    _ctx_deadline = _ctx_t0 + CONTEXT_BUDGET
+    for _t in _lk_threads:
+        _t.join(timeout=max(0.0, _ctx_deadline - time.time()))
+    _ctx_ms = int((time.time() - _ctx_t0) * 1000)
+    if _ctx_ms > 250:
+        _slow = [n for n, v in (("memory", _ctx["mem"]), ("facts", _ctx["facts"]),
+                                ("knowledge", _ctx["know"]), ("sessions", _ctx["sessions"]))
+                 if not v]
+        # Silent latency is the expensive kind. Name what was still missing when
+        # the budget ran out, so a slow source is findable instead of felt.
+        print(f"[timing] context {_ctx_ms}ms"
+              + (f" (empty: {', '.join(_slow)})" if _slow else ""))
     past_memory   = _ctx["mem"]
     known_facts   = _ctx["facts"]
     knowledge_ctx = _ctx["know"]
