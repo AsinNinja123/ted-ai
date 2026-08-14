@@ -197,36 +197,36 @@ print("\n— the persona has takes of its own, and Charlie can override it —")
 from core.llm import SYSTEM_PROMPT as _P2
 _l = _P2.lower()
 
-# Asked for an opinion, Ted was reading Charlie's stored preferences back to
-# him. Nothing had ever drawn a line between what Charlie likes (memory) and
-# what Ted thinks (nothing was supplying it), so the nearest thing to an
-# opinion in context was his own.
-check("memory is named as HIS preferences, not Ted's opinions",
-      "what he likes" in _l and "not what you think" in _l)
-check("…and an opinion has to land somewhere specific",
-      "land somewhere specific" in _l)
-check("…and disagreeing is explicitly allowed",
-      "disagreeing with him" in _l)
+# These check BEHAVIOURS, not phrasing. The block was rewritten twice in one
+# day — once for size, once because Charlie said it read like a butler — and a
+# test that pins wording just breaks on every rewrite without protecting
+# anything. What must survive is what the block makes Ted do.
+check("memory is named as HIS taste, not Ted's opinions",
+      "what he likes" in _l and "you have your own taste" in _l)
+check("…and an opinion has to land somewhere",
+      "land somewhere" in _l)
+check("…and disagreeing is explicitly invited",
+      "argue with him" in _l and "pushed back on" in _l)
 
-# "Let's have a philosophical debate" -> "don't expect me to play devil's
-# advocate on things I believe are wrong". "But that's what I want you to do"
-# -> nothing. The persona had no notion of Charlie outranking a default.
-check("Charlie can override a default", "outranks your defaults" in _l)
-check("…specifically including arguing a side Ted disagrees with",
-      "devil's advocate" in _l and "argue a side you" in _l)
-check("…without a disclaimer or a negotiation first",
-      "no disclaimer" in _l and "no negotiating" in _l)
+check("Charlie can override a default", "outranks your instincts" in _l)
+check("…including taking a side Ted does not hold",
+      "side you don't hold" in _l and "devil's advocate" in _l)
+check("…without a lecture first", "no lecture" in _l)
 check("…and the override still has exactly one boundary",
-      "real harm to a real person" in _l)
+      "really hurting someone" in _l)
 
-check("multi-step work is thought through before it is typed",
-      "think first" in _l and "before you start typing" in _l)
+check("multi-step work is thought through before it is answered",
+      "multi-step before answering" in _l)
 check("half-remembered facts are flagged rather than asserted",
-      "flag as unchecked" in _l)
-check("…which is stated as the failure he cannot catch",
-      "confident and wrong" in _l)
+      "flagged or looked up" in _l)
+check("…stated as the failure he cannot catch", "he can't catch" in _l)
 
-# Cheap guard: this block is the floor under every request, and it doubled
-# once already before being trimmed back.
-check("the persona stays under a token budget",
-      len(_P2) / 4 < 700)
+check("speech-recognition and typo tolerance survived the rewrite",
+      "what he meant" in _l)
+check("the voice is described rather than legislated",
+      "like a person, not a product" in _l)
+
+# This block is the floor under every single request. It has been 371, then
+# 605, and is now 310; the ceiling exists so the next rewrite has to argue for
+# its size rather than drift into it.
+check("the persona stays under its token budget", len(_P2) / 4 < 400)
