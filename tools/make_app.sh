@@ -111,53 +111,22 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
         <string>Ted reads and creates reminders when you ask.</string>
     <key>NSDesktopFolderUsageDescription</key>
         <string>Ted can take a screenshot to see what you are looking at.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+        <string>Ted uses screenshots to understand and verify screen actions you request.</string>
 </dict>
 </plist>
 PLIST
 
-# ── 4. Launcher ───────────────────────────────────────────────────────────────
-cat > "$APP/Contents/MacOS/Ted" <<'LAUNCH'
-#!/bin/bash
-# Ted.app launcher — activates the venv and starts hud.py.
-PROJECT="$HOME/ted-ai"
-PY="$PROJECT/venv/bin/python"
-LOG="$PROJECT/data/ted_launch.log"
-
-die() {  # no terminal to print to, so use a real dialog
-    /usr/bin/osascript -e "display alert \"Ted couldn't start\" message \"$1\" as critical" >/dev/null 2>&1
-    exit 1
-}
-
-[ -x "$PY" ] || die "No virtualenv at ~/ted-ai/venv. Run: python3 -m venv venv && pip install -r requirements.txt"
-[ -f "$PROJECT/config.py" ] || die "config.py is missing. Copy config.example.py to config.py and add your GROQ_API_KEY."
-
-# Already running? Don't start a second one — two Teds fight over the microphone.
-if /usr/bin/pgrep -f "$PROJECT/hud.py" >/dev/null 2>&1; then
-    /usr/bin/osascript -e 'display notification "Ted is already running." with title "Ted"' >/dev/null 2>&1
-    exit 0
-fi
-
-mkdir -p "$PROJECT/data"
-# Keep the log from growing forever — last ~2000 lines is plenty to debug a crash.
-if [ -f "$LOG" ] && [ "$(wc -l < "$LOG")" -gt 4000 ]; then
-    tail -n 2000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
-fi
-exec >> "$LOG" 2>&1
-echo "=== $(date '+%Y-%m-%d %H:%M:%S') — launching Ted from Ted.app ==="
-
-cd "$PROJECT" || die "Can't open ~/ted-ai"
-"$PY" -u "$PROJECT/hud.py"
-status=$?
-
-# A non-zero exit with no window means something broke at import time; surface it.
-if [ $status -ne 0 ]; then
-    last=$(tail -n 12 "$LOG" | tr '"' "'" | tr '\n' ' ')
-    /usr/bin/osascript -e "display alert \"Ted exited unexpectedly\" message \"$last\" as critical" >/dev/null 2>&1
-fi
-exit $status
-LAUNCH
-
-chmod +x "$APP/Contents/MacOS/Ted"
+# ── 4. Native launcher ────────────────────────────────────────────────────────
+# A script that execs framework Python leaves the visible AppKit process named
+# Python, so the Dock puts its running dot under Python's icon. Keep a real Ted
+# process alive as the app host and run Python as its accessory child instead.
+echo "  building native app host…"
+swiftc -O "$PROJECT/native/ted_launcher.swift" \
+    -o "$APP/Contents/MacOS/Ted" \
+    -framework Foundation -framework AppKit
+codesign --force --sign - --identifier com.charlierowenhorst.ted \
+    "$APP/Contents/MacOS/Ted" >/dev/null 2>&1 || true
 
 # Confirm macOS agrees this is an application before claiming success. Opening
 # the bundle in Script Editor is what "not an application" looks like from the

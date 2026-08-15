@@ -14,7 +14,8 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 cp config.example.py config.py     # add a free Groq key for the fast hosted brain
-ollama pull qwen3.5:35b-a3b        # one-time download for the offline fallback
+ollama pull qwen3.5:9b-q4_K_M      # fast offline conversation + memory helpers
+ollama pull qwen3.5:35b-a3b        # stronger offline tool/screenshot fallback
 python hud.py
 ```
 
@@ -64,8 +65,9 @@ The first launch after building asks for **microphone permission** — allow it.
   with a key for ElevenLabs cloud TTS.
 - **Reasoning brain:** Groq `qwen/qwen3.6-27b` on its free tier. Ted uses Qwen's
   reasoning and tool calling for chat, actions, facts, summaries, and vision.
-- **Offline/down fallback:** local Ollama `qwen3.5:35b-a3b` (about 24 GB, reasoning,
-  tools, and vision). A missing key, outage, rate limit, or lost internet switches
+- **Offline/down fallback:** local Ollama `qwen3.5:9b-q4_K_M` for conversation and
+  background memory work, with `qwen3.5:35b-a3b` reserved for reasoning, tools,
+  and vision. A missing key, outage, rate limit, or lost internet switches
   the same request locally.
 - **Live info:** `web_search` is a normal tool. The brain decides when fresh
   DuckDuckGo results are required instead of relying on a keyword gate.
@@ -89,6 +91,18 @@ The first launch after building asks for **microphone permission** — allow it.
   narration and retries once automatically.
 - **Confirmations:** messages and consequential email changes pause for an explicit
   yes before execution.
+
+## Phrase routines
+
+Open `http://127.0.0.1:5175` while Ted is running and choose **Routines** to pair
+your own sayings with one or more actions. For example, “let's do some comp org
+homework” can open Claude, ChatGPT, and Chrome together. The dashboard can preview
+which routine a longer natural sentence will match without running it.
+
+Routines are intentionally limited to low-risk actions such as opening apps or
+sites, starting music or YouTube, and changing volume. They bypass the model, use
+no inference tokens, and run immediately; messages, purchases, deletion, and other
+consequential actions cannot be hardwired around Ted's confirmation step.
 
 ## Memory
 

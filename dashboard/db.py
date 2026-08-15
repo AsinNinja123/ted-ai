@@ -217,6 +217,15 @@ def ensure_schema(conn):
         )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON memory_audit(ts DESC)")
 
+    # Phrase-triggered routines are managed by a custom dashboard panel rather
+    # than the generic memory table editor, but they share this database so a
+    # running Ted sees edits immediately.
+    try:
+        from core import routines
+        routines.ensure_schema(conn)
+    except Exception as e:
+        print(f"[dashboard] routines schema skipped: {e}")
+
     for table in TABLES:
         try:
             _make_audit_triggers(conn, table)
@@ -308,6 +317,10 @@ def summary():
     with _lock:
         for t in TABLES:
             counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        try:
+            counts["routines"] = conn.execute("SELECT COUNT(*) FROM routines").fetchone()[0]
+        except sqlite3.Error:
+            counts["routines"] = 0
         counts["history"] = conn.execute("SELECT COUNT(*) FROM memory_audit").fetchone()[0]
     return {"db_path": DB_PATH, "counts": counts}
 

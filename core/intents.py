@@ -21,7 +21,7 @@ from core import features
 # then accept it if it IS a command word, or if a short utterance STARTS with a
 # command phrase. Phrases are normalized the same way so the two always line up.
 _FILLER = {
-    "okay", "ok", "alright", "alrighty", "well", "so", "um", "uh", "er", "hey",
+    "okay", "ok", "alright", "alrighty", "alight", "well", "so", "um", "uh", "er", "hey",
     "hi", "yo", "yeah", "yep", "please", "ted", "tim", "now", "just", "kindly", "could",
     "would", "can", "will", "you", "your", "a", "an", "the", "to", "i", "im",
     "lets", "let", "go", "get",
@@ -431,7 +431,11 @@ _CMD_PHONETIC = {
     "said": "set", "sit": "set",
 }
 
-_FILLER_WORDS = {"hey", "ted", "okay", "ok", "um", "uh", "please", "can", "you", "just"}
+_FILLER_WORDS = {
+    "hey", "ted", "okay", "ok", "alright", "alight", "well", "so",
+    "um", "uh", "please", "can", "could", "would", "you", "just",
+    "lets", "let",
+}
 
 def _fix_command_words(text):
     """Correct common Whisper phonetic mishearings of command verbs."""

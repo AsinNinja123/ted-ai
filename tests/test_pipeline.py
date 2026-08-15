@@ -287,8 +287,8 @@ check("reply lands in the HUD chat", js_containing(api, "addMessage"))
 check("plain conversation carries only the discovery meta-tool",
       [s["function"]["name"] for s in LLM_STREAM_RUNTIMES[0].schemas]
       == ["find_tools"])
-check("plain conversation uses relevant—not full—memory retrieval",
-      LLM_CONTEXT_SCOPES == ["relevant"] and LLM_REQUIRE_TOOLS == [False])
+check("a greeting uses lightweight—not vector—memory retrieval",
+      LLM_CONTEXT_SCOPES == ["light"] and LLM_REQUIRE_TOOLS == [False])
 
 api = make_api()
 api._respond("open Notes and YouTube")
@@ -554,6 +554,24 @@ check("the content answer becomes a visible confirmation, not a cancellation",
       and SENT_MESSAGES == [])
 api._respond("no")
 check("declining the completed preview sends nothing", SENT_MESSAGES == [])
+
+api = make_api()
+SENT_MESSAGES.clear()
+app_mod.search_contacts = lambda q: [("Gavin Smith", "+15551234567")]
+preview = api._dispatch_tool("send_message", {
+    "contact": "Gavin", "text": "old wording",
+})
+check("the first confirmation shows the exact pending text",
+      "old wording" in preview and SENT_MESSAGES == [])
+api._respond("actually say new wording")
+check("a correction revises and re-arms confirmation instead of canceling",
+      api._pending_tool_confirmation is not None
+      and api._pending_tool_confirmation["args"]["text"] == "new wording"
+      and "new wording" in SPOKEN[-1]
+      and SENT_MESSAGES == [])
+api._respond("yes")
+check("only the revised text is sent after a fresh yes",
+      SENT_MESSAGES == [("+15551234567", "new wording")])
 
 print("\n— compose flow: instruction → style → send —")
 api = make_api()

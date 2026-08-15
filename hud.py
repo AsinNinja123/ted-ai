@@ -20,6 +20,12 @@ import atexit
 import signal
 import threading
 
+# The native Dock host uses SIGUSR1 as a private "show your window" message.
+# Ignore it during heavy startup, before the real handler is installed, so an
+# eager Dock click can never terminate the Python worker by default.
+if os.environ.get("TED_NATIVE_HOST") == "1":
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+
 # Make `from core.xxx import …` work from any cwd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -103,7 +109,26 @@ def _teardown(reason):
     except Exception:
         pass
     try:
-        api.write_session_memory(reason="shutdown", end_session=True)
+        # This is optional housekeeping, not a reason to leave Ted frozen on
+        # exit. A provider call once ignored its nominal request timeout and
+        # held the process in "saving state" indefinitely. Chat turns are
+        # already persisted individually, so give the summary a firm deadline.
+        save_error = []
+
+        def _save_memory():
+            try:
+                api.write_session_memory(reason="shutdown", end_session=True)
+            except Exception as exc:
+                save_error.append(exc)
+
+        saver = threading.Thread(target=_save_memory, daemon=True,
+                                 name="shutdown-memory")
+        saver.start()
+        saver.join(timeout=15.0)
+        if saver.is_alive():
+            print("[shutdown] session summary timed out; chat turns are already saved")
+        elif save_error:
+            print(f"[shutdown] session memory skipped: {save_error[0]}")
     except Exception as e:
         print(f"[shutdown] session memory skipped: {e}")
     try:
@@ -119,7 +144,12 @@ def _teardown(reason):
 
 def _shutdown(signum, frame):
     _teardown(f"signal {signum}")
-    sys.exit(0)
+    # SystemExit can be swallowed by pywebview's native AppKit event loop. In
+    # practice the UI disappeared while the Python child, Flask server, and
+    # audio engine stayed alive indefinitely, leaving the native launcher
+    # waiting forever on quit. Teardown above has already saved memory and
+    # closed owned resources, so finish the signal path at the process level.
+    os._exit(0)
 
 
 signal.signal(signal.SIGINT,  _shutdown)
@@ -148,5 +178,61 @@ if __name__ == "__main__":
     except Exception:
         pass   # older pywebview without the events API — atexit still covers us
 
-    webview.start(api.start)  # api.start() is called once the window is ready
+    # Configure the child on AppKit's main thread *before* pywebview creates
+    # its native window. Changing activation policy from pywebview's ready
+    # callback runs on a worker thread and can leave the child alive without a
+    # visible window. Accessory apps can own normal windows but do not get a
+    # second Dock tile; the regular native Ted host remains the Dock identity.
+    native_host = os.environ.get("TED_NATIVE_HOST") == "1"
+
+    def _make_python_accessory():
+        import AppKit
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyAccessory)
+
+    if native_host:
+        try:
+            _make_python_accessory()
+        except Exception as exc:
+            print(f"[app] could not prepare Python as an accessory: {exc}")
+
+        def _raise_ted_window(signum, frame):
+            """Handle the native Dock host's request inside the UI process."""
+            try:
+                import AppKit
+                import Foundation
+
+                def raise_on_main():
+                    app = AppKit.NSApplication.sharedApplication()
+                    for native_window in app.windows():
+                        if native_window.title().startswith("Ted"):
+                            native_window.makeKeyAndOrderFront_(None)
+                            native_window.orderFrontRegardless()
+                    if hasattr(app, "activate"):
+                        app.activate()
+                    else:
+                        app.activateIgnoringOtherApps_(True)
+
+                Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    raise_on_main)
+            except Exception as exc:
+                print(f"[app] could not raise Ted's window: {exc}")
+
+        signal.signal(signal.SIGUSR1, _raise_ted_window)
+
+    def _ready():
+        # pywebview sets its process back to a regular application while it
+        # creates the native window. Once the window exists, repeat the policy
+        # change on AppKit's main queue so the window remains visible while the
+        # duplicate Python Dock tile disappears.
+        if native_host:
+            try:
+                import Foundation
+                Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    _make_python_accessory)
+            except Exception as exc:
+                print(f"[app] could not hide Python Dock identity: {exc}")
+        api.start()
+
+    webview.start(_ready)  # starts the runtime once the window is ready
     _teardown("webview stopped")

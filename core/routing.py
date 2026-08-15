@@ -54,8 +54,8 @@ _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in TOOL_SCHEMAS}
 _FAMILIES = (
     (r"\b(?:open|close|quit|launch|start|bring up|pull up|app|application|window)\b",
      ("open_app", "close_app")),
-    (r"\b(?:website|browser|browse|navigate|url|\.com\b|youtube|reddit|github|google)\b",
-     ("browse_to", "open_app")),
+    (r"\b(?:website|browser|browse|navigate|url|\.com\b|youtube|video|watch|reddit|github|google)\b",
+     ("play_youtube", "browse_to", "open_app")),
     # "play" itself was missing here, so "play a different one" arrived with an
     # empty menu, burned a find_tools round trip, hit the rate limit and fell
     # through to the local brain — 7.8 seconds to change a song.
@@ -73,16 +73,18 @@ _FAMILIES = (
      ("calendar_get", "calendar_add")),
     (r"\b(?:note|notes|write down|jot down)\b", ("notes_add", "notes_get")),
     (r"\b(?:clipboard|copy|paste)\b", ("clipboard_read", "clipboard_write")),
-    (r"\b(?:volume|brightness|screen|display|type|keyboard|cursor)\b",
-     ("system_volume", "system_brightness", "screen_describe", "type_text")),
+    (r"\b(?:volume|brightness|screen|display|type|keyboard|cursor|click|tap|"
+     r"press|button|link|video|scroll|field|control)\b",
+     ("system_volume", "system_brightness", "screen_describe", "ui_inspect",
+      "ui_press", "ui_fill", "type_text", "create_document", "press_key", "scroll")),
     (r"\b(?:habit|streak|workout|worked out|exercise)\b",
      ("log_habit", "get_habit_streak")),
     (r"\b(?:calculate|math|percent|plus|minus|times|divided|\d\s*[-+*/]\s*\d)\b",
      ("calculate",)),
     (r"\b(?:search the web|look up|current|latest|news|score|price|verify online)\b",
      ("web_search",)),
-    (r"\b(?:remember|knowledge|document|documents|file|files|what do you know)\b",
-     ("search_knowledge", "add_knowledge")),
+    (r"\b(?:remember|knowledge|document|documents|google docs?|textedit|file|files|what do you know)\b",
+     ("create_document", "search_knowledge", "add_knowledge")),
 )
 
 # Verbs that can only mean "do something to my Mac or my accounts". Anything a
@@ -97,7 +99,7 @@ _FAMILIES = (
 _ACTION_WORDS = re.compile(
     r"^(?:open|close|quit|launch|relaunch|reopen|browse|navigate|"
     r"play|pause|resume|skip|mute|unmute|"
-    r"imessage|paste|screenshot)\b",
+    r"imessage|paste|screenshot|click|tap|press|scroll|type)\b",
     re.I,
 )
 
@@ -112,6 +114,8 @@ _TARGETED_ACTIONS = (
                 r"gym|run|lift)\b", re.I)),
     (re.compile(r"^(?:copy|type)\b", re.I),
      re.compile(r"\b(?:clipboard|to my clipboard|into|out loud)\b", re.I)),
+    (re.compile(r"^(?:create|start|make|write|draft)\b", re.I),
+     re.compile(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b", re.I)),
 )
 
 
@@ -185,7 +189,9 @@ def likely_action_request(text):
         return False
     # Peel only explicit request wrappers. A verb appearing later in discussion
     # ("I wonder whether I should remove it") must not force a tool call.
-    t = re.sub(r"^(?:(?:hey|okay|ok)\s+ted[,.]?\s*|please\s+)+", "", t,
+    t = re.sub(r"^(?:(?:hey|okay|ok|alright|alight|um|uh|well|so)\s+ted[,.]?\s*|"
+               r"(?:hey|okay|ok|alright|alight|um|uh|well|so|please)[,.]?\s*|"
+               r"(?:let'?s|let us)\s+)+", "", t,
                flags=re.I)
     t = re.sub(
         r"^(?:(?:can|could|would|will)\s+you|i\s+(?:want|need|would like)\s+you\s+to)\s+",
@@ -213,6 +219,12 @@ def expected_action_calls(text):
     """
     if not likely_action_request(text):
         return 0
+    # create_document owns the whole open → focus → type outcome, so do not
+    # force the model to perform a redundant second action for that phrase.
+    lower_text = (text or "").lower()
+    if (re.search(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b", lower_text)
+            and re.search(r"\b(?:type|write|start|draft|paragraph)\b", lower_text)):
+        return 1
     segments = [part.strip(" ,") for part in _SEQUENCE_SEP.split(text or "")
                 if part.strip(" ,")]
     total = 0
@@ -244,8 +256,8 @@ def expected_action_calls(text):
 def memory_scope_for(text, schemas):
     """Choose how much personal context this turn earns.
 
-    ``none`` is for operational actions, ``relevant`` for ordinary conversation,
-    and ``full`` for explicit recall/profile requests.
+    ``none`` is for operational actions, ``light`` for greetings, ``relevant``
+    for ordinary conversation, and ``full`` for explicit recall/profile requests.
     """
     t = (text or "").lower()
     explicit = re.search(
@@ -257,6 +269,18 @@ def memory_scope_for(text, schemas):
         return "full"
     if likely_action_request(text):
         return "none"
+    # Greetings need personality, facts and recent in-session history, but a
+    # vector search over documents and old exchanges adds latency and often
+    # injects the nearest *unrelated* chunk. Keep that retrieval for actual
+    # topics, where it has something to search for.
+    greeting = re.fullmatch(
+        r"\s*(?:(?:hey|hi|hello|yo|okay|ok|alright|alight|um|uh|so|well)\s+)*"
+        r"(?:ted[,.]?\s+)?(?:hey|hi|hello|yo|how are you|how(?:'s| is) it going|"
+        r"what(?:'s| is) up|what(?:'s| is) going on|good morning|good afternoon|"
+        r"good evening)[.!?\s]*",
+        text or "", re.I)
+    if greeting:
+        return "light"
     return "relevant"
 
 
@@ -266,8 +290,10 @@ class ReflexPlan:
 
 
 _POLITE_PREFIX = re.compile(
-    r"^(?:(?:hey|okay|ok)\s+ted[,.]?\s*|(?:hey|okay|ok)[,.]?\s*|"
-    r"(?:can|could|would|will)\s+you\s+|please\s+|just\s+)+",
+    r"^(?:(?:hey|okay|ok|alright|alight|um|uh|well|so)\s+ted[,.]?\s*|"
+    r"(?:hey|okay|ok|alright|alight|um|uh|well|so)[,.]?\s*|"
+    r"(?:can|could|would|will)\s+you\s+|(?:let'?s|let us)\s+|"
+    r"please\s+|just\s+)+",
     re.I,
 )
 _OPEN_RE = re.compile(r"^(?:open|launch|start|run|pull up|bring up|open up)\s+(.+)$", re.I)
@@ -293,6 +319,15 @@ def plan_reflex(text):
     cleaned = re.sub(r"[, ]+(?:please|thanks|thank you)$", "", cleaned, flags=re.I)
     if not cleaned or _DEPENDENCY_WORDS.search(cleaned):
         return None
+    youtube = re.match(
+        r"^(?:open\s+)?youtube(?:\s+and)?\s+(?:play|start|watch)\s+"
+        r"(?:me\s+)?(?:(?:a|an|any|some|the)\s+)?(.*?)\s*video$",
+        cleaned, re.I)
+    if youtube:
+        query = youtube.group(1).strip()
+        if query.lower() in {"", "random", "popular", "youtube"}:
+            query = ""
+        return ReflexPlan((("play_youtube", {"query": query}),))
     match = _OPEN_RE.match(cleaned)
     tool = "open_app"
     if not match:

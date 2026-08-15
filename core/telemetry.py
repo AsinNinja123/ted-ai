@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS turn_log (
     ms_total          INTEGER NOT NULL DEFAULT 0,
     retries           TEXT    NOT NULL DEFAULT '',
     rate_limited      INTEGER NOT NULL DEFAULT 0,
+    degraded_reason   TEXT    NOT NULL DEFAULT '',
     error             TEXT    NOT NULL DEFAULT '',
     ctx_breakdown     TEXT    NOT NULL DEFAULT '',
     ok                INTEGER NOT NULL DEFAULT 1
@@ -132,6 +133,11 @@ def _connect():
         try:
             conn.execute("ALTER TABLE turn_log ADD COLUMN "
                          "ctx_breakdown TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass                     # already there
+        try:
+            conn.execute("ALTER TABLE turn_log ADD COLUMN "
+                         "degraded_reason TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass                     # already there
         conn.commit()
@@ -163,7 +169,8 @@ class Turn:
                  "tokens_estimated", "reasoning", "context_scope",
                  "history_msgs", "tools_offered", "tools_called", "tool_rounds",
                  "ms_retrieval", "ms_accepted", "ms_first_token", "retries",
-                 "rate_limited", "error", "ctx_breakdown", "written")
+                 "rate_limited", "degraded_reason", "error", "ctx_breakdown",
+                 "written")
 
     def __init__(self, user_text="", source="chat"):
         self.t0 = time.time()
@@ -187,6 +194,7 @@ class Turn:
         self.ms_first_token = 0
         self.retries = []
         self.rate_limited = False
+        self.degraded_reason = ""
         self.error = ""
         self.ctx_breakdown = ""
         self.written = False
@@ -223,8 +231,9 @@ class Turn:
                     "total_tokens, tokens_estimated, reasoning, context_scope, "
                     "history_msgs, tools_offered, tools_called, tool_rounds, "
                     "ms_retrieval, ms_accepted, ms_first_token, ms_total, "
-                    "retries, rate_limited, error, ctx_breakdown, ok) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "retries, rate_limited, degraded_reason, error, "
+                    "ctx_breakdown, ok) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(timespec="seconds"), self.t0,
                      self.source, _trim(self.user_text, 2000),
                      _trim(self.reply, 4000), self.provider, self.model,
@@ -235,7 +244,8 @@ class Turn:
                      self.tool_rounds, self.ms_retrieval, self.ms_accepted,
                      self.ms_first_token, self.elapsed_ms(),
                      ",".join(self.retries), 1 if self.rate_limited else 0,
-                     _trim(self.error, 1000), self.ctx_breakdown,
+                     _trim(self.degraded_reason, 1000), _trim(self.error, 1000),
+                     self.ctx_breakdown,
                      0 if self.error else 1))
                 conn.commit()
         except Exception as e:                               # pragma: no cover
@@ -296,6 +306,7 @@ def stats(window=3600.0):
                 "       COALESCE(AVG(NULLIF(total_tokens, 0)), 0), "
                 "       COALESCE(AVG(NULLIF(ms_total, 0)), 0), "
                 "       SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), "
+                "       SUM(CASE WHEN degraded_reason != '' THEN 1 ELSE 0 END), "
                 "       SUM(rate_limited), "
                 "       SUM(CASE WHEN provider = 'ollama' THEN 1 ELSE 0 END), "
                 "       SUM(CASE WHEN provider = 'reflex' THEN 1 ELSE 0 END), "
@@ -304,8 +315,8 @@ def stats(window=3600.0):
                 "                THEN 1 ELSE 0 END) "
                 "FROM turn_log WHERE epoch >= ?", (since,)).fetchone()
         keys = ("turns", "tokens", "avg_tokens", "avg_ms", "errors",
-                "rate_limited", "local_turns", "reflex_turns", "retry_turns",
-                "find_tools_turns")
+                "degraded", "rate_limited", "local_turns", "reflex_turns",
+                "retry_turns", "find_tools_turns")
         out = {k: (v or 0) for k, v in zip(keys, row)}
         out["avg_tokens"] = round(out["avg_tokens"])
         out["avg_ms"] = round(out["avg_ms"])
@@ -365,6 +376,8 @@ def as_report(limit=25):
             out.append(f"    tools: {r['tools_called']}")
         if r["error"]:
             out.append(f"    ERROR: {_trim(r['error'], 300)}")
+        elif r.get("degraded_reason"):
+            out.append(f"    DEGRADED: {_trim(r['degraded_reason'], 300)}")
         out.append(f"    < {_trim(r['reply'], 200)}")
     return "\n".join(out)
 

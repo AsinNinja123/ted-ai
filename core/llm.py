@@ -81,6 +81,26 @@ def reasoning_effort_for(text):
     return "none"
 
 
+_LONG_REPLY_RE = re.compile(
+    r"\b(?:essay|report|article|draft|write|rewrite|code|implement|detailed|"
+    r"thorough|in depth|long(?:er)?|several paragraphs?)\b", re.I)
+
+
+def completion_budget_for(text, effort="none", voice=False):
+    """Reserve enough output for the request without pre-spending Groq's TPM.
+
+    Groq rate-limits against the requested completion allowance, not merely the
+    tokens a short answer ultimately uses. The former 1,200/2,000 caps made an
+    ordinary chat turn reserve a quarter of the free per-minute budget before
+    it had produced anything.
+    """
+    if voice:
+        return 180
+    if _LONG_REPLY_RE.search(text or ""):
+        return 900
+    return 700 if effort == "default" else 420
+
+
 _ACTION_VERBS = (r"closed|opened|quit|launched|sent|texted|emailed|played|paused|"
                  r"skipped|scheduled|created|deleted|typed|copied|muted")
 
@@ -149,61 +169,49 @@ def groq_ok():
 
 # ---------- persona ----------
 SYSTEM_PROMPT = (
-    # Rewritten Aug 14, second pass, after Charlie read it back: "these prompts
-    # make it feel like he can't go out of line, or he's just in this box of
-    # being this personal butler."
+    # Trimmed Aug 14 from ~1,120 tokens to ~470. Every behavioural rule below
+    # survived; what went was the same rule stated three ways, and the
+    # formatting rules, which now live in the per-turn mode line so a chat turn
+    # does not pay for the voice rules and vice versa. The static prefix is
+    # billed against the tokens-per-minute limit on every single request
+    # whether or not the provider serves it from its prefix cache — caching is
+    # a latency win, not a rate-limit one. This block is the floor under every
+    # turn, so it is the one place where cutting words is worth real money.
     #
-    # He was reading the FORM, not the content. The old block was a list of
-    # prohibitions — BANNED OPENERS, NO HEDGING, GAPS, LIMITS, each one an
-    # enumerated rule — and a prompt shaped like a policy document produces
-    # something that behaves like it is following a policy document. Every
-    # banned phrase had to be spelled out, which cost tokens, and the spelling
-    # out is itself what made the voice careful.
-    #
-    # This describes a person instead and lets the model infer the rest. It is
-    # both warmer and SMALLER: 311 tokens against his 371 and against the 605
-    # of the previous draft, while carrying three behaviours neither of those
-    # had — that his opinions are his own and not Charlie's, that Charlie can
-    # overrule his instincts, and that half-remembered facts get flagged.
-    #
-    # The trade being made, stated plainly: an enumerated ban ("never open with
-    # 'Got it'") is more reliable than a described disposition ("no assistant
-    # noises"). Some tics may come back. That is the cost of not being a rule
-    # box, it was chosen on purpose, and the enumerated version is one commit
-    # back if the tics turn out to matter more than the voice.
+    # Also removed: a "capabilities" paragraph that offered to "relay hard
+    # questions to Claude". That relay was deleted in 9de0075. The prompt had
+    # been advertising a feature that no longer existed.
+
     f"You are Ted — {OWNER_NAME}'s own AI. He built you and you run on his Mac. "
-    "You're a friend first, assistant second: someone smart he thinks out loud "
-    "with, who can also run things on his computer.\n"
+    "You're a familiar, independent thinking partner who can also act on his "
+    "computer. Friend first, assistant second.\n"
 
-    "Talk like a person, not a product. Casual, warm, dry when it's funny. A line "
-    "or two unless there's something real to say. No assistant noises — no 'Got "
-    "it', no repeating his question back, no summing yourself up. No emojis, his "
-    "name only now and then.\n"
+    "Sound grounded and understated, never performatively casual. Use normal "
+    "conversational English; don't imitate his slang, nag him, force banter into "
+    "every reply, or tell him to relax. Usually answer in a line or two, but give "
+    "real work the space it needs. No assistant noises, question restatements, "
+    "self-summaries, emojis, or constant use of his name.\n"
 
-    "You have your own taste. What you remember about him is what HE likes; asked "
-    "what YOU think, answer for yourself and land somewhere. Argue with him — he'd "
-    "rather be pushed back on than agreed with.\n"
+    "Your takes are yours. Memory describes what HE likes, not what you think. "
+    "Asked for an opinion, land somewhere specific; disagree when you genuinely "
+    "do, without turning every exchange into an argument.\n"
 
-    "He outranks your instincts. Take a side you don't hold, play devil's advocate, "
-    "skip the caveats, be blunter — when he asks, just do it, no lecture attached. "
-    "The only line is really hurting someone.\n"
+    "He can ask you to steelman a position, play devil's advocate, drop caveats, "
+    "or be blunter. Humor may be dry, dark, profane, sexual, vulgar, or explicit "
+    "when he asks for it; adult humor is not the same as targeted abuse. Follow "
+    "the request without a lecture. Slurs or abuse aimed at a person are the line; "
+    "decline that part in one sentence and move on.\n"
 
-    "Say things plainly: you know it, or you say you're not sure and move on. "
-    "Half-remembered stats, dates and names get flagged or looked up — confidently "
-    "wrong is the one thing he can't catch.\n"
-
-    "Work out anything multi-step before answering. Never freeze or list "
-    "interpretations — assume the sensible thing, say which, go. He types fast and "
-    "sometimes talks to you, so read what he meant, not what he typed."
+    "Say things plainly: either you know, or you say you're not sure and move on. "
+    "Flag or look up half-remembered stats, dates, names, and versions. Work out "
+    "multi-step requests before answering. Assume the sensible interpretation, "
+    "state it only when useful, and go. Read what he meant, not just what he typed."
 )
 
 THINKING_CONTEXT = (
-    # Same treatment. The old version listed six example questions and three
-    # prohibitions to produce "ask one good question", which a capable model
-    # does not need spelled out.
-    "THINKING PARTNER MODE: don't solve it for him. Say back what you heard in a "
-    "line, then ask one real question — the kind a friend asks when they can tell "
-    "you're circling something. Two or three sentences. No advice unless he asks."
+    "THINKING PARTNER MODE: don't solve it for him. Reflect what you heard in one "
+    "plain sentence, then ask one real question that helps him find the next step. "
+    "Two or three sentences total. No advice unless he asks for it."
 )
 
 # ---------- fact extraction (background, never blocks Ted) ----------
@@ -287,6 +295,7 @@ def extract_and_save_facts(user_input, ted_reply):
             ],
             max_tokens=300,
             timeout=10.0,
+            _ted_workload="background",
         )
         raw = (resp.choices[0].message.content or "").strip()
         facts = _parse_fact_payload(raw)
@@ -424,7 +433,7 @@ def _remember_exchange(user_input, full_reply, conversation):
                          args=(user_input, full_reply), daemon=True).start()
 
 # ---------- tool runtime ----------
-def validate_tool_arguments(schema, args):
+def validate_tool_arguments(schema, args, user_input=""):
     """Return a concise validation error, or ``None`` for valid arguments."""
     if not isinstance(args, dict):
         return "arguments must be a JSON object"
@@ -449,6 +458,24 @@ def validate_tool_arguments(schema, args):
             return f"{name} must be {rule['type']}"
         if "enum" in rule and value not in rule["enum"]:
             return f"{name} must be one of: {', '.join(map(str, rule['enum']))}"
+    tool_name = ((schema or {}).get("function") or {}).get("name", "")
+    if tool_name == "send_message":
+        if args.get("text") and args.get("instruction"):
+            return "text and instruction are mutually exclusive"
+        if args.get("text") and args.get("style"):
+            return "style can only be used with instruction"
+        # Qwen sometimes copies the *brief* into text, which turns “ask him
+        # what he's doing” into that literal, robotic message. Quotes signal
+        # actual supplied words; otherwise these constructions are semantic
+        # instructions and must be composed before confirmation.
+        quoted = bool(re.search(
+            r'''["“”]|(?:^|\s)'[^']{2,}'(?:\s|$)''', user_input or ""))
+        brief = re.search(
+            r"\b(?:and\s+)?(?:ask|tell)\s+(?:him|her|them|if|whether|that)\b",
+            user_input or "", re.I)
+        if args.get("text") and brief and not quoted:
+            return ("the user gave a message brief, not literal words; put it "
+                    "in instruction instead of text")
     return None
 
 
@@ -514,8 +541,8 @@ TOOL_RULES = (
     "name, to people he chose. Given the words, send them exactly — no fixed "
     "grammar, no added greeting, no softened tone. His typos and slang are how he "
     "talks. Don't argue that a message is too blunt or that a joke might land wrong; "
-    "that is his call and his friend knows him. Slurs and abuse you still refuse, "
-    "in one line.\n"
+    "that is his call and his friend knows him. Slurs and abuse aimed at someone "
+    "are still refused, in one line.\n"
 )
 
 TOOL_GUIDANCE = (
@@ -525,7 +552,11 @@ TOOL_GUIDANCE = (
     "the outcome is actually reached. Never claim an action that no tool confirmed, "
     "and never repeat one that already worked. The menu starts small — if it is "
     "missing something, call find_tools and then use what it loads. Use web_search "
-    "for anything current or changing, and cite the URLs. Prefer known preferences "
+    "for anything current or changing, and cite the URLs. For computer control, "
+    "prefer the app/browser accessibility tree (ui_inspect, ui_press, ui_fill) and "
+    "use screenshots only when semantic controls cannot expose what is needed. "
+    "Use create_document when asked to open a new document and write in it. "
+    "Prefer known preferences "
     "and low-risk defaults; ask one short question only when a missing value "
     "changes the result or makes an action unsafe."
 )
@@ -755,7 +786,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     context_parts = [f"Today is {today}."]
     if operational_context:
-        context_parts.append(_cap(operational_context, 900) + ".")
+        # Live computer hierarchy can include browser tabs and terminal
+        # branches. 900 characters cut it off after the app names, defeating
+        # the whole point of collecting child state; 2400 stays bounded while
+        # preserving a normal desktop-sized snapshot.
+        context_parts.append(_cap(operational_context, 2400) + ".")
     if known_facts:
         context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200)}.")
     if past_memory:
@@ -926,10 +961,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         if force_tool and tool_runtime is not None:
             tool_kwargs["tool_choice"] = "required"
         _effort = effort or reasoning_effort_for(user_input)
-        # Reasoning and the answer share this budget. At 1200 a thinking turn
-        # can spend the lot before it says a word, so thinking turns get more
-        # room; everything else keeps the tighter cap.
-        _cap = 250 if voice_mode else (2000 if _effort == "default" else 1200)
+        _cap = completion_budget_for(user_input, _effort, voice_mode)
         return chat_create(
             messages=messages if msgs is None else msgs,
             # Voice keeps the old tight cap; chat gets room for real answers —
@@ -1006,21 +1038,21 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # they have completely different causes: this one is network, retries, and
     # the local-brain attempt; the [timing] first token line below is the model.
     _req_ms = int((time.time() - _req_t0) * 1000)
+    _turn.ms_accepted = _req_ms
+    _turn.provider = _providers.active_provider()
+    _turn.model = _providers.active_model()
+    # A valid local answer is degraded service, not a failed turn. Keep that
+    # distinction even when fallback was fast enough to finish under 400 ms.
+    _why = _providers.last_fallback_reason()
+    if _why == "rate_limit":
+        _turn.rate_limited = True
+        _turn.degraded_reason = (
+            "cloud rate limit — answered by the local brain")
+    elif _why == "unavailable":
+        _turn.degraded_reason = (
+            "cloud unavailable — answered by the local brain: "
+            + (_providers.last_cloud_error() or "")[:200])
     if _req_ms > 400:
-        _turn.ms_accepted = _req_ms
-        _turn.provider = _providers.active_provider()
-        _turn.model = _providers.active_model()
-        # Ask the provider why, rather than inferring from an exception that
-        # was handled two layers down and never reached here.
-        _why = _providers.last_fallback_reason()
-        if _why == "rate_limit":
-            _turn.rate_limited = True
-            _turn.error = _turn.error or (
-                "cloud rate limit — answered by the local brain")
-        elif _why == "unavailable":
-            _turn.error = _turn.error or (
-                "cloud unavailable — answered by the local brain: "
-                + (_providers.last_cloud_error() or "")[:200])
         print(f"[timing] request accepted after {_req_ms}ms "
               f"({providers.active_provider()})")
 
@@ -1264,7 +1296,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 if schema is None:
                     parse_error = f"unknown tool '{c['name']}'"
                 elif parse_error is None:
-                    parse_error = validate_tool_arguments(schema, args)
+                    parse_error = validate_tool_arguments(schema, args, user_input)
                 canonical = (c["name"], json.dumps(args, sort_keys=True)
                              if isinstance(args, dict) else c["args"] or "{}")
                 if canonical in seen_calls:
@@ -1597,6 +1629,7 @@ def generate_session_summary(conversation):
             max_tokens=220,
             temperature=0.2,
             timeout=12.0,
+            _ted_workload="background",
         )
         raw = (resp.choices[0].message.content or "").strip()
     except Exception as e:

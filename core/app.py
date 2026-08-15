@@ -16,7 +16,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (features, llm, music, routing, telemetry,
+from core import (features, llm, music, routing, routines, system_state, telemetry,
                   tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -70,6 +70,34 @@ def _log_gate5(text, result, line=None):
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def _revised_message_args(text, current):
+    """Turn a correction at the confirmation prompt into a fresh preview.
+
+    Returns None when the response is not recognizably a revision. Consequential
+    actions still require explicit yes; this only lets “actually, say …” edit
+    the pending message instead of being mistaken for a cancellation.
+    """
+    raw = (text or "").strip()
+    quoted = re.search(r'["“](.+?)["”]', raw)
+    if quoted:
+        return {"contact": current.get("contact", ""), "text": quoted.group(1)}
+    match = re.match(
+        r"^(?:no[, ]+)?(?:actually[, ]+)?(?:change (?:it|that)(?: to)?|"
+        r"replace (?:it|that) with|say|send)\s+(.+)$", raw, re.I)
+    if match:
+        return {"contact": current.get("contact", ""), "text": match.group(1).strip()}
+    vibe = re.match(
+        r"^(?:no[, ]+)?(?:actually[, ]+)?make (?:it|that)\s+(.+)$", raw, re.I)
+    if vibe and current.get("text"):
+        return {
+            "contact": current.get("contact", ""),
+            "instruction": ("Rewrite this message without changing its meaning: "
+                            + current["text"]),
+            "style": vibe.group(1).strip(),
+        }
+    return None
 
 try:
     from config import OWNER_NAME
@@ -203,6 +231,9 @@ class TedApi:
         # intentionally separate from prose chat history so command reasoning
         # does not need twenty old messages just to resolve a pronoun.
         self._recent_actions = []
+        # Replaced atomically by apps_watch. This is live machine state, not a
+        # memory: every model turn sees what macOS most recently confirmed.
+        self._live_state = system_state.collect(include_remote=False)
 
         # Augment the base system prompt with the user's auto-detected location so
         # Ted can answer "what's the weather" / "where am I" without config.
@@ -451,6 +482,9 @@ class TedApi:
                     "yes", "yeah", "yep", "confirm", "do it", "send it", "go ahead"}:
                 result = self._dispatch_and_record(
                     pending["name"], pending["args"], confirmed=True)
+            elif pending["name"] == "send_message" and (
+                    revised := _revised_message_args(text, pending["args"])):
+                result = self._dispatch_tool("send_message", revised)
             else:
                 result = "Canceled — nothing was sent or changed."
             if echo_user:
@@ -525,6 +559,28 @@ class TedApi:
             return False
 
         # ── fast deterministic commands (no LLM call — regex/rule-based) ──
+        # Personal sayings are checked before generic reflexes. They are
+        # explicitly authored in the dashboard, contain only low-risk actions,
+        # and therefore should never spend tokens asking a model what they mean.
+        routine = routines.match_routine(text)
+        if routine is not None:
+            _rturn = telemetry.Turn(text, source="routine")
+            _rturn.provider = "routine"
+            _rturn.forced = "n/a"
+            results = self._execute_routine(routine)
+            for step in routine["steps"]:
+                _rturn.note_tool(step["tool"])
+            engine.reset_barge_in()
+            reply = " ".join(results)
+            self.last_reply = reply
+            add_message(w, "ted", reply)
+            failed = [result for result in results if th.looks_like_failure(result)]
+            if failed:
+                show_issue(w, reply)
+            _rturn.finish(reply=reply, error="; ".join(failed))
+            speak(w, reply, self)
+            return False
+
         # Only complete, reversible app requests qualify. A partial/ambiguous
         # match declines the whole turn and reaches the reasoner below.
         reflex = routing.plan_reflex(text)
@@ -585,7 +641,10 @@ class TedApi:
 
         _runtime = None
         _selected_schemas = []
-        _op_context = routing.operational_context(self._recent_actions)
+        _recent_context = routing.operational_context(self._recent_actions)
+        _live_context = system_state.format_for_prompt(self._live_state)
+        _op_context = "\n".join(
+            part for part in (_live_context, _recent_context) if part)
         if not LEGACY_LADDER:
             _selected_schemas = routing.select_tool_schemas(text, _op_context)
 
@@ -1687,9 +1746,7 @@ class TedApi:
 
         def _run(call):
             name, args = call
-            if name == "open_app":
-                return open_app(args.get("name", ""))
-            return close_app(args.get("name", ""))
+            return self._dispatch_tool(name, args)
 
         if len(calls) == 1:
             results = [_run(calls[0])]
@@ -1699,6 +1756,29 @@ class TedApi:
         for (name, args), result in zip(calls, results):
             self._record_action(name, args, result)
         return results
+
+    def _execute_routine(self, routine):
+        """Execute a dashboard-authored routine and preserve configured order."""
+        steps = list(routine.get("steps") or [])
+
+        def _run(step):
+            return self._dispatch_and_record(step["tool"], step.get("args") or {})
+
+        # A semantic press acts on whichever app is frontmost, so it must never
+        # race the app/browser launch that establishes that state. Other listed
+        # routine actions are independent and intentionally safe to fan out.
+        can_parallel = (routine.get("parallel") and len(steps) > 1
+                        and not any(step["tool"] == "ui_press" for step in steps))
+        if can_parallel:
+            with ThreadPoolExecutor(max_workers=min(4, len(steps))) as pool:
+                results = list(pool.map(_run, steps))
+        else:
+            results = [_run(step) for step in steps]
+        try:
+            routines.note_run(routine["id"])
+        except Exception as exc:
+            print(f"[routines] couldn't update run count: {exc}")
+        return [str(result or "That action did not return a result.") for result in results]
 
     def _dispatch_tool(self, name, args, confirmed=False):
         """Route a tool call from the LLM to the right Python handler.
@@ -1719,6 +1799,20 @@ class TedApi:
                 }
                 return (f"What exact message should I send to "
                         f"{args.get('contact', 'them')}?")
+            if name == "send_message" and not confirmed and args.get("instruction"):
+                # Compose first, then ask for consent to the actual bytes that
+                # will be sent. The former flow asked Charlie to approve a
+                # brief and promised to show the message later, then sent the
+                # unseen generated wording immediately after “yes.”
+                preview = llm.generate_message_with_style(
+                    args.get("instruction", ""), args.get("contact", ""),
+                    args.get("style") or "natural and casual")
+                if not preview or not preview.strip():
+                    return "I couldn't draft that message, so nothing is ready to send."
+                args = dict(args)
+                args["text"] = preview.strip()
+                args.pop("instruction", None)
+                args.pop("style", None)
             if name in th.CONFIRMATION_TOOLS and not confirmed:
                 self._pending_tool_confirmation = {
                     "name": name, "args": dict(args), "expires": time.time() + 60,
@@ -1733,10 +1827,6 @@ class TedApi:
                     if body:
                         return (f"Ready to send {target}: \u201c{body}\u201d "
                                 "Say yes to send it, or anything else to cancel.")
-                    brief = (args.get("instruction") or "").strip()
-                    if brief:
-                        return (f"Ready to message {target} — I'll write something to "
-                                f"{brief}. Say yes and I'll show you before it goes.")
                     return (f"I don't have anything to say to {target} yet. "
                             "What do you want the message to be?")
                 if name == "send_email":
@@ -1756,7 +1846,12 @@ class TedApi:
             if name == "close_app":
                 return close_app(args.get("name", ""))
             if name == "browse_to":
-                return th.tool_browse_to(args.get("site", ""), args.get("browser"))
+                return th.tool_browse_to(
+                    args.get("site", ""), args.get("browser"),
+                    args.get("new_window", False))
+            if name == "play_youtube":
+                return th.tool_play_youtube(
+                    args.get("query", ""), args.get("browser"))
             if name == "play_music":
                 return features.spotify_web.play_track(args.get("query", ""), args.get("artist"))
             if name == "play_playlist":
@@ -1944,10 +2039,41 @@ class TedApi:
                     return features.screen.describe_screen(question)
                 return "Screen module unavailable."
 
+            if name == "ui_inspect":
+                if features.HAS_COMPUTER:
+                    return features.computer.inspect_ui(args.get("query", ""))
+                return "Computer module unavailable."
+
+            if name == "ui_press":
+                if features.HAS_COMPUTER:
+                    return features.computer.press_target(args.get("target", ""))
+                return "Computer module unavailable."
+
+            if name == "ui_fill":
+                if features.HAS_COMPUTER:
+                    return features.computer.fill_field(
+                        args.get("target", ""), args.get("text", ""))
+                return "Computer module unavailable."
+
             # ── Computer control ─────────────────────────────────────────────
+            if name == "create_document":
+                if features.HAS_COMPUTER:
+                    return features.computer.create_document(
+                        args.get("text", ""), args.get("app", "google_docs"),
+                        args.get("browser", "Chrome"))
+                return "Computer module unavailable."
             if name == "type_text":
                 if features.HAS_COMPUTER:
                     return features.computer.type_text(args.get("text", ""))
+                return "Computer module unavailable."
+            if name == "press_key":
+                if features.HAS_COMPUTER:
+                    return features.computer.press_key(args.get("key", ""))
+                return "Computer module unavailable."
+            if name == "scroll":
+                if features.HAS_COMPUTER:
+                    return features.computer.scroll(
+                        args.get("direction", "down"), args.get("amount", 600))
                 return "Computer module unavailable."
 
             # ── Habits ───────────────────────────────────────────────────────
@@ -2715,6 +2841,14 @@ class TedApi:
             except Exception:
                 apps = _prev
             try:
+                # One assignment keeps readers from observing a half-built
+                # snapshot while this watcher refreshes it.
+                self._live_state = system_state.collect(apps=apps)
+                js(self.window, "tedHud.setComputerState(%s)" %
+                   json.dumps(self._live_state))
+            except Exception as e:
+                error_log.error(f"apps_watch live state: {e}")
+            try:
                 if apps != _prev:
                     _prev = apps
                     js(self.window, f"tedHud.setOpenApps({json.dumps(apps)})")
@@ -2730,10 +2864,13 @@ class TedApi:
                 except Exception:
                     mem_ok = False
                 spot_ok = ("Spotify" in apps) or music.spotify_web_ready()
-                # Now-playing chip: only poll the track when Spotify is running
+                # Now-playing chip uses the same verified state given to the
+                # model, including Apple Music or a remote Spotify device.
                 try:
-                    from core.actions import spotify_now_playing
-                    np = spotify_now_playing() if "Spotify" in apps else None
+                    media = self._live_state.get("media") or {}
+                    np = media.get("title")
+                    if np and media.get("artist"):
+                        np += " — " + media["artist"]
                     js(self.window, f"tedHud.setNowPlaying({json.dumps(np)})")
                 except Exception:
                     pass

@@ -70,15 +70,39 @@ TOOL_SCHEMAS = [
                 "Open a website. Use for 'go to X', 'open X website', 'browse to X', "
                 "'pull up X.com'. Pass the site name or URL. If the user wants a "
                 "specific browser (or is known to prefer one for this site), pass it "
-                "in 'browser' — e.g. open YouTube in Brave."
+                "in 'browser' ONLY when the user explicitly names it. Chrome is the "
+                "default for every site except YouTube, which defaults to Brave for ad "
+                "blocking. Never infer Brave for Docs or any non-YouTube site. Reuse the browser's "
+                "existing window and open a new tab by default. Set new_window=true "
+                "ONLY when the user explicitly asks for a new window."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "site": {"type": "string", "description": "Website name or URL, e.g. 'amazon', 'youtube.com', 'https://google.com'"},
-                    "browser": {"type": "string", "description": "Optional: specific browser to open it in, e.g. 'Brave', 'Safari', 'Chrome'"}
+                    "browser": {"type": "string", "description": "Optional: specific browser to open it in, e.g. 'Brave', 'Safari', 'Chrome'"},
+                    "new_window": {"type": "boolean", "description": "Default false. True only if the user explicitly said to open a new window."}
                 },
                 "required": ["site"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_youtube",
+            "description": (
+                "Search YouTube, open the first concrete video result, and start playback. "
+                "Use for the complete outcome whenever the user asks to play or watch a "
+                "YouTube video; do not stop after browse_to opens the home page. An empty "
+                "query means any popular video. YouTube defaults to Brave."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Video topic/title; empty for any popular video"},
+                    "browser": {"type": "string", "description": "Optional browser named by the user"}
+                }
             }
         }
     },
@@ -122,13 +146,17 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "spotify_control",
-            "description": "Control Spotify playback — pause, resume, skip, go back, volume. Do NOT use to play a specific song.",
+            "description": (
+                "Control or inspect verified Spotify playback — pause, resume, skip, "
+                "go back, volume, or report the current track. Use action=current for "
+                "questions about what is playing. Do NOT use to play a specific song."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["play", "pause", "next", "previous", "volume_up", "volume_down"],
+                        "enum": ["play", "pause", "next", "previous", "volume_up", "volume_down", "current"],
                         "description": "Playback action"
                     }
                 },
@@ -531,9 +559,10 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "screen_describe",
             "description": (
-                "Take a screenshot and describe what's visible on screen using vision AI. "
-                "Use for 'what's on my screen', 'describe my screen', 'read this', "
-                "'what does this say', 'what app is open'."
+                "Last-resort visual inspection: take a temporary screenshot and describe "
+                "what semantic accessibility cannot expose. Prefer ui_inspect for apps and "
+                "well-structured web pages. The image is stored only in the macOS temporary "
+                "folder and deleted immediately after vision reads it; no history is kept."
             ),
             "parameters": {
                 "type": "object",
@@ -546,15 +575,95 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ui_inspect",
+            "description": (
+                "Inspect the frontmost app's accessibility tree without a screenshot. In "
+                "Brave, Chrome, Safari, and other browsers this exposes documented HTML "
+                "buttons, links, form fields, headings, and video controls. Always use this "
+                "before visual screen inspection on a structured page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Optional label fragment to filter for"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ui_press",
+            "description": (
+                "Press a visible named button, link, menu item, or video control in "
+                "the frontmost app. Uses macOS Accessibility first and high-confidence "
+                "screen vision only when the app exposes no matching control. Never use "
+                "for destructive or purchase confirmation controls."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Visible control label, e.g. Blank document, Play, or Share"}
+                },
+                "required": ["target"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ui_fill",
+            "description": (
+                "Fill a labeled native or HTML input field through macOS Accessibility, "
+                "without taking a screenshot. Use for search boxes, text inputs, and forms "
+                "whose label or placeholder is visible in ui_inspect."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Field label, placeholder, or accessible name"},
+                    "text": {"type": "string", "description": "Text to put in the field"}
+                },
+                "required": ["target", "text"]
+            }
+        }
+    },
 
     # ── Computer control ──────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "create_document",
+            "description": (
+                "Create a fresh Google Doc or TextEdit document and type the supplied "
+                "content into it as one complete action. Use whenever the user asks to "
+                "open/start a new document and write or type something; Ted can write "
+                "directly on the computer. Google Docs reuses the existing browser window "
+                "and opens a new tab in Google Chrome by default. Never use Brave for "
+                "Google Docs unless the user explicitly asks for Brave."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Complete text to put in the new document"},
+                    "app": {"type": "string", "enum": ["google_docs", "textedit"], "description": "Default google_docs"},
+                    "browser": {"type": "string", "description": "Browser for Google Docs; default Google Chrome. Set only when the user explicitly names another browser."}
+                },
+                "required": ["text"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
             "name": "type_text",
             "description": (
                 "Type text at the current cursor position using the keyboard. "
-                "Use for 'type this', 'write this for me', 'type X in the field'."
+                "Use for an already-focused editor. For a new document, use "
+                "create_document; for a labeled HTML field, use ui_fill."
             ),
             "parameters": {
                 "type": "object",
@@ -562,6 +671,35 @@ TOOL_SCHEMAS = [
                     "text": {"type": "string", "description": "Text to type"}
                 },
                 "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "press_key",
+            "description": "Press a keyboard key or shortcut in the frontmost app.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "enum": ["enter", "tab", "escape", "space", "delete", "backspace", "left", "right", "up", "down", "copy", "paste", "cut", "undo", "redo", "select all", "save"]}
+                },
+                "required": ["key"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scroll",
+            "description": "Scroll the frontmost app up or down.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "enum": ["up", "down"]},
+                    "amount": {"type": "integer", "description": "Approximate pixels, 80-2400; defaults to 600"}
+                },
+                "required": ["direction"]
             }
         }
     },

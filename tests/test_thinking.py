@@ -14,6 +14,8 @@ def check(label, ok):
     if not ok: fails[0] += 1
 
 print("— reasoning effort follows the request, not its length —")
+check("thinking-partner instructions still exist",
+      bool(llm.THINKING_CONTEXT) and "ask one real question" in llm.THINKING_CONTEXT)
 check("28 words of small talk do not buy hidden reasoning",
       llm.reasoning_effort_for(
           "I game on my xbox ocasianally. not super serious just for fun.  but I "
@@ -54,4 +56,4 @@ txt2, _ = drive([C(D(content="Hello there, this is a long enough answer to commi
 check("ordinary content still streams", "Hello there" in txt2 and r2[0] == 0)
 
 print("\n" + "=" * 50)
-print(f"{9 - fails[0]} passed, {fails[0]} failed")
+print(f"{10 - fails[0]} passed, {fails[0]} failed")

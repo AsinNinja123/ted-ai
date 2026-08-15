@@ -19,7 +19,17 @@ codesign --force --sign - --identifier com.ted.audio ./ted_audio 2>/dev/null \
     && echo "(signed)" || echo "(codesign skipped — not fatal)"
 
 echo "✅ Built: $(pwd)/ted_audio"
+
+echo "Building ted_control (macOS Accessibility bridge)…"
+swiftc -O ted_control.swift -o ted_control \
+    -framework Foundation \
+    -framework AppKit \
+    -framework ApplicationServices
+codesign --force --sign - --identifier com.ted.control ./ted_control 2>/dev/null \
+    && echo "(signed ted_control)" || echo "(ted_control codesign skipped — not fatal)"
+echo "✅ Built: $(pwd)/ted_control"
 echo
 echo "Next launch will ask for microphone permission — click Allow."
 echo "If no prompt appears, open System Settings → Privacy & Security →"
 echo "Microphone and enable it for your terminal app, then relaunch."
+echo "For screen control, enable Ted in System Settings → Privacy & Security → Accessibility."

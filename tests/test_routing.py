@@ -37,6 +37,15 @@ check("two fully resolved app targets use the reflex lane",
 plan = routing.plan_reflex("Could you open VS Code, please?")
 check("polite natural wrappers still reach the safe reflex",
       plan and plan.calls == (("open_app", {"name": "vs code"}),))
+plan = routing.plan_reflex("alight Ted, uh, let's open Claude and Chat GPT please")
+check("fillers and ChatGPT spelling still reach the multi-app reflex",
+      plan and plan.calls == (
+          ("open_app", {"name": "claude"}),
+          ("open_app", {"name": "chat gpt"}),
+      ))
+plan = routing.plan_reflex("open YouTube and play any video")
+check("YouTube playback is one complete outcome instead of a home-page open",
+      plan and plan.calls == (("play_youtube", {"query": ""}),))
 check("a website mixed with an app declines the entire reflex",
       routing.plan_reflex("open Notes and YouTube") is None)
 check("a second capability declines the entire reflex",
@@ -113,6 +122,8 @@ check("a non-music turn is not given music tools by the continuation words",
 
 check("an action turn still gets no episodic recall",
       routing.memory_scope_for("open Notes", []) == "none")
+check("a greeting skips vector/episodic retrieval but keeps lightweight context",
+      routing.memory_scope_for("alright Ted, how are you?", []) == "light")
 check("a conversational verb keeps its ordinary memory scope",
       routing.memory_scope_for("write me a poem about fall", []) == "relevant")
 

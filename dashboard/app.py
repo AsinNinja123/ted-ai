@@ -21,6 +21,38 @@ app = Flask(__name__)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _neutral_chat_label(value, fallback=""):
+    """Strip model narration from sidebar titles and chat summaries."""
+    import re
+    text = (value or "").strip().strip('"').strip()
+    text = re.sub(
+        r"^(?:ted(?:'s)?\s+(?:helps?|assists?|handles?|discusses?|works?|"
+        r"responds?|shares?|reminds?|updates?|manages?|directs?|provides?)|"
+        r"(?:the\s+)?user\s+(?:asks?|requests?|wants?|needs?))"
+        r"(?:\s+(?:with|about|on|to))?\s+",
+        "", text, flags=re.I)
+    text = re.sub(r"^(?:help(?:ing)?\s+with)\s+", "", text, flags=re.I)
+    text = re.sub(r"^ted(?:'s)?\s+", "", text, flags=re.I)
+    text = re.sub(r"^(?:and|with|about)\s+", "", text, flags=re.I)
+    text = text.strip(" .:-")
+    return text or fallback
+
+
+def _neutral_chat_row(row):
+    """Return chat metadata suitable for the sidebar, including old rows."""
+    row = dict(row)
+    raw_title = row.get("title", "")
+    title = _neutral_chat_label(raw_title, "Conversation")
+    raw_summary = row.get("summary", "")
+    if __import__("re").match(r"^(?:ted(?:'s)?|(?:the\s+)?user|a\s+user)\b",
+                              raw_summary or "", __import__("re").I):
+        summary = title
+    else:
+        summary = _neutral_chat_label(raw_summary, title)
+    row.update(title=title, summary=summary)
+    return row
+
+
 def _allowed_hud_origin(origin):
     """Accept Ted's local pywebview origin without opening memory to websites.
 
@@ -221,7 +253,7 @@ def api_history():
 
 @app.get("/api/chats")
 def api_chats():
-    return jsonify(db.list_chats())
+    return jsonify([_neutral_chat_row(chat) for chat in db.list_chats()])
 
 
 @app.post("/api/chats")
@@ -232,7 +264,7 @@ def api_chat_create():
 @app.get("/api/chats/<int:chat_id>")
 def api_chat_get(chat_id):
     try:
-        return jsonify(db.get_chat(chat_id))
+        return jsonify(_neutral_chat_row(db.get_chat(chat_id)))
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
 
@@ -276,10 +308,15 @@ def api_chat_summarize(chat_id):
             for t in chat["turns"][-20:])
         r = chat_create(
             messages=[{"role": "user", "content":
-                       "Give this chat a title (3-6 words, no quotes, no period) and a "
-                       "one-sentence summary. Reply as exactly two lines:\n"
+                       "Label this chat neutrally. The title must be a 3-6 word noun "
+                       "phrase, never a narrated sentence. The summary must also name "
+                       "the topic directly. Never write 'Ted helps', 'Ted discusses', "
+                       "'the user asks', or describe either person acting. Good examples: "
+                       "'Digital Task Requests', 'Browser and Screen Control', "
+                       "'Spotify Playback Bug'. Reply as exactly two lines:\n"
                        "TITLE: ...\nSUMMARY: ...\n\n" + transcript}],
-            max_tokens=90, temperature=0.3, timeout=8.0)
+            max_tokens=90, temperature=0.3, timeout=8.0,
+            _ted_workload="background")
         for line in (r.choices[0].message.content or "").splitlines():
             if line.upper().startswith("TITLE:"):
                 title = line[6:].strip().strip('"')
@@ -290,6 +327,8 @@ def api_chat_summarize(chat_id):
 
     if not title:
         title = user_turns[0]["content"][:48] + ("…" if len(user_turns[0]["content"]) > 48 else "")
+    title = _neutral_chat_label(title, "Conversation")
+    summary = _neutral_chat_label(summary, title)
     db.set_chat_meta(chat_id, title=title, summary=summary)
     return jsonify({"title": title, "summary": summary or chat["summary"]})
 
@@ -355,6 +394,7 @@ def api_provider_get():
         "active_model": providers.active_model(),
         "cloud_model": providers.CLOUD_CHAT_MODEL,
         "local_model": providers.LOCAL_CHAT_MODEL,
+        "local_tool_model": providers.LOCAL_TOOL_MODEL,
         "cloud_configured": providers.groq_client() is not None,
         "local_ready": providers.local_model_ready(),
         "last_cloud_error": providers.last_cloud_error(),
@@ -370,6 +410,61 @@ def api_provider_set():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"mode": providers.get_provider_mode()})
+
+
+# ---------------------------------------------------------------------------
+# User-defined phrase -> action routines.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/routines")
+def api_routines_list():
+    from core import routines
+    return jsonify(routines.list_routines())
+
+
+@app.get("/api/routines/actions")
+def api_routine_actions():
+    from core import routines
+    return jsonify(routines.ROUTINE_ACTIONS)
+
+
+@app.get("/api/routines/match")
+def api_routine_match():
+    """Preview matching only. The dashboard never executes Mac actions."""
+    from core import routines
+    match = routines.match_routine(request.args.get("q", ""))
+    return jsonify({"match": match})
+
+
+@app.post("/api/routines")
+def api_routine_create():
+    from core import routines
+    try:
+        return jsonify(routines.save_routine(request.get_json(force=True) or {}))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/routines/<int:routine_id>")
+def api_routine_update(routine_id):
+    from core import routines
+    try:
+        return jsonify(routines.save_routine(
+            request.get_json(force=True) or {}, routine_id=routine_id))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/routines/<int:routine_id>")
+def api_routine_delete(routine_id):
+    from core import routines
+    try:
+        routines.delete_routine(routine_id)
+        return jsonify({"ok": True})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
 
 
 @app.get("/api/meta")

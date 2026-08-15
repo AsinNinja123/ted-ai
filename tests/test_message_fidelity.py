@@ -57,6 +57,22 @@ check("…and says not to tidy the user's wording",
       "tidy" in desc.lower() or "rephrase" in desc.lower())
 check("…and forbids setting both", "Never set both" in desc)
 
+from core import llm as _llm
+_send_schema = {"type": "function", "function": send}
+check("an unquoted 'ask him' brief cannot become literal text",
+      "instruction instead of text" in (_llm.validate_tool_arguments(
+          _send_schema,
+          {"contact": "Gavin", "text": "what he's doing tonight"},
+          "text Gavin and ask him what he's doing tonight") or ""))
+check("quoted wording remains valid verbatim text",
+      _llm.validate_tool_arguments(
+          _send_schema, {"contact": "Gavin", "text": "ask him yourself"},
+          'text Gavin "ask him yourself"') is None)
+check("text and instruction cannot both slip through",
+      "mutually exclusive" in (_llm.validate_tool_arguments(
+          _send_schema, {"contact": "Gavin", "text": "hi", "instruction": "say hi"},
+          "text Gavin") or ""))
+
 print("\n— verbatim text skips the rewrite and the vibe question —")
 
 voice_stub = types.ModuleType("core.voice")
@@ -99,6 +115,8 @@ resp = func("_dispatch_tool") or app_src
 check("the confirmation quotes the actual message",
       'body = (args.get("text") or "").strip()' in app_src
       and "Ready to send" in app_src)
+check("an instruction is drafted before confirmation",
+      "Compose first, then ask for consent" in app_src)
 check("…and refuses to ask for approval of nothing",
       "I don't have anything to say to" in app_src)
 
@@ -172,6 +190,32 @@ class _Boom:
 
 check("an API error is unknown, not success",
       spotify_web._confirm_playing(_Boom(), _uri, timeout=0.6) is None)
+
+
+class _TransportSp:
+    def __init__(self):
+        self.started = False
+
+    def current_playback(self):
+        return {"is_playing": False, "device": {"id": "mac"}}
+
+    def start_playback(self, device_id=None):
+        self.started = device_id == "mac"
+
+
+real_client = spotify_web._client
+real_confirm = spotify_web._confirm_playing
+try:
+    transport_sp = _TransportSp()
+    spotify_web._client = lambda: transport_sp
+    spotify_web._confirm_playing = lambda _sp: False
+    resumed = spotify_web.transport("play")
+    check("Web resume is not called Playing until playback verifies",
+          transport_sp.started and "nothing is playing" in resumed.lower()
+          and resumed != "Playing.")
+finally:
+    spotify_web._client = real_client
+    spotify_web._confirm_playing = real_confirm
 
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")

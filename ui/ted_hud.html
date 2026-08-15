@@ -26,24 +26,43 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #side.collapsed{width:0;border-right:none}
 #side>*{min-width:230px}
 
-/* right panel — apps Ted has used this session */
+/* right panel — live computer hierarchy */
 #apps{width:0;flex:none;background:var(--side);border-left:none;overflow:hidden;
   transition:width .25s ease;display:flex;flex-direction:column}
-#apps.open{width:200px;border-left:1px solid var(--line)}
-#apps>*{min-width:180px}
-#apps h3{padding:16px 16px 8px;font-size:10px;letter-spacing:.25em;color:var(--dim)}
+#apps.open{width:320px;border-left:1px solid var(--line)}
+#apps>*{min-width:300px}
+.apps-head{padding:15px 15px 9px;border-bottom:1px solid var(--line)}
+.apps-head h3{font-size:10px;letter-spacing:.22em;color:var(--dim)}
+#apps-summary{font-size:11px;color:var(--dim);margin-top:3px}
 #apps-list{padding:0 10px 10px;overflow-y:auto;flex:1}
 #apps-list::-webkit-scrollbar{width:4px}
 #apps-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
-.appitem{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
-  font-size:12.5px;margin-bottom:2px;background:var(--panel)}
+.appitem{border-radius:9px;font-size:12.5px;margin-top:7px;background:var(--panel);
+  border:1px solid transparent;overflow:hidden}
+.appitem.front{border-color:rgba(22,222,222,.3)}
+.apphead{display:flex;align-items:center;gap:8px;padding:8px 9px;cursor:pointer}
 .appitem .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:none}
-.appitem.used .dot{background:var(--accent)}
+.appitem.used .dot,.appitem.front .dot{background:var(--accent)}
 .appitem .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.appitem .tag{font-size:9.5px;color:var(--accent);letter-spacing:.06em;flex:none}
+.appitem .meta{font-size:10px;color:var(--dim);margin-left:auto;white-space:nowrap}
+.appitem .tag{font-size:8.5px;color:var(--accent);letter-spacing:.06em;flex:none;
+  border:1px solid rgba(22,222,222,.3);border-radius:8px;padding:0 4px}
 .appitem .x{margin-left:auto;cursor:pointer;color:var(--dim);flex:none;
   padding:0 3px;border-radius:4px;font-size:13px}
 .appitem .x:hover{color:var(--down)}
+.appchildren{display:none;padding:0 8px 8px 24px;border-top:1px solid rgba(255,255,255,.035)}
+.appitem.expanded .appchildren{display:block}
+.subitem{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.045);min-width:0}
+.subitem:last-child{border-bottom:0}
+.subtop{display:flex;gap:6px;align-items:baseline;min-width:0}
+.subitem .mark{color:var(--dim);font-size:9px;flex:none}
+.subitem.active .mark{color:var(--accent)}
+.subitem .st{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.subitem .ss{font-size:9.8px;color:var(--dim);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;margin-left:15px}
+.branch{color:var(--accent);font:9.5px ui-monospace,Menlo,monospace;background:var(--accent-soft);
+  padding:1px 5px;border-radius:5px;margin-left:auto;max-width:105px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 #apps-empty{padding:8px 16px;color:var(--dim);font-size:12px;line-height:1.6}
 #side .brand{padding:18px 16px 10px;display:flex;align-items:baseline;gap:8px}
 #side .brand .t{font-size:15px;font-weight:650;letter-spacing:.18em}
@@ -84,8 +103,10 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #status.active{opacity:1}
 #status i{width:7px;height:7px;border-radius:50%;background:var(--dim);transition:background .3s}
 #status.listening i{background:var(--ok)}
-#status.thinking i{background:var(--warn)}
+#status.thinking i{background:var(--accent)}
 #status.speaking i{background:var(--accent)}
+#status.thinking i{animation:thinkStatus .85s ease-in-out infinite alternate}
+@keyframes thinkStatus{from{transform:scale(.75);opacity:.45}to{transform:scale(1.45);opacity:1}}
 
 /* now playing — top left, out of the chat's way */
 #np-slot{font-size:11.5px;color:var(--dim);display:none;align-items:center;gap:5px;
@@ -113,6 +134,16 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
 #msgs{max-width:740px;margin:0 auto;padding:26px 24px 30px}
 .m{margin:16px 0;line-height:1.6;position:relative}
+.thinking-row{display:flex;align-items:center;gap:9px;color:var(--dim);font-size:12px;
+  margin:18px 0 12px;min-height:26px}
+.thinking-dots{display:inline-flex;gap:4px;align-items:center}
+.thinking-dots i{display:block;width:6px;height:6px;border-radius:50%;background:var(--accent);
+  animation:thinkingDot 1.05s ease-in-out infinite}
+.thinking-dots i:nth-child(2){animation-delay:.14s}
+.thinking-dots i:nth-child(3){animation-delay:.28s}
+@keyframes thinkingDot{0%,70%,100%{transform:translateY(0);opacity:.3}
+  35%{transform:translateY(-5px);opacity:1}}
+.thinking-label{font-variant-numeric:tabular-nums}
 /* belt-and-braces selection: some pywebview/WebKit builds ignore text_select */
 #msgs,.m,.m .b,.m .b *{-webkit-user-select:text!important;user-select:text!important;
   cursor:auto;-webkit-touch-callout:default}
@@ -301,9 +332,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 </div>
 
 <div id="apps">
-  <h3>OPEN APPS</h3>
-  <div id="apps-list"><div id="apps-empty">Everything running on this Mac shows
-    up here. A teal dot means Ted is using it. ✕ closes the app.</div></div>
+  <div class="apps-head"><h3>COMPUTER</h3><div id="apps-summary">Reading live state…</div></div>
+  <div id="apps-list"><div id="apps-empty">Apps, windows, browser tabs, and terminal
+    branches appear here as macOS confirms them.</div></div>
 </div>
 
 <div id="ctxmenu"><button id="ctx-copy">Copy</button></div>
@@ -339,6 +370,7 @@ var chatSaveQueue=Promise.resolve();
 var chatEpoch=0;                   // prevents an old save crossing into New chat
 var turnCount=0, titled=false;
 var streamEl=null, streamBuf='';
+var thinkingEl=null, thinkingTimer=null, thinkingT0=0;
 var lastStreamText=null;           // dedupe: app.py re-sends streamed replies
                                    // through addMessage after streaming ends
 function _norm(s){ return String(s||'').toLowerCase().replace(/\s+/g,' ').trim(); }
@@ -429,6 +461,27 @@ function mdlite(s){
 /* ── chat rendering ───────────────────────────────────────── */
 function hideEmpty(){ var e=$('empty'); if(e) e.style.display='none'; }
 function scrollDown(){ var s=$('scroll'); s.scrollTop=s.scrollHeight; }
+
+function showThinking(){
+  if(thinkingEl) return;
+  hideEmpty(); thinkingT0=Date.now();
+  var row=document.createElement('div'); row.className='thinking-row';
+  row.innerHTML='<span class="thinking-dots"><i></i><i></i><i></i></span>'+
+    '<span class="thinking-label">Ted is thinking · 0s</span>';
+  $('msgs').appendChild(row); thinkingEl=row; scrollDown();
+  thinkingTimer=setInterval(function(){
+    if(!thinkingEl) return;
+    var sec=Math.floor((Date.now()-thinkingT0)/1000);
+    var lead=sec>=15?'Still working':sec>=7?'Working on it':'Ted is thinking';
+    thinkingEl.querySelector('.thinking-label').textContent=lead+' · '+sec+'s';
+    scrollDown();
+  },1000);
+}
+function hideThinking(){
+  if(thinkingTimer){ clearInterval(thinkingTimer); thinkingTimer=null; }
+  if(thinkingEl){ thinkingEl.remove(); thinkingEl=null; }
+  thinkingT0=0;
+}
 
 function copyText(text,btn){
   function done(){ if(!btn) return; var o=btn.textContent;
@@ -634,6 +687,7 @@ function openChat(id){
 function newChat(){
   chatEpoch++; chatCreatePromise=null; chatSaveQueue=Promise.resolve();
   currentChat=null; titled=false; turnCount=0;
+  hideThinking();
   streamEl=null; streamBuf='';
   $('chat-title').textContent='New chat';
   $('msgs').innerHTML='<div id="empty"><div class="big">What\'s on your mind?</div>'+
@@ -644,6 +698,8 @@ function newChat(){
 /* ── side + apps panel state ──────────────────────────────── */
 var appsUsed={};                 // app label → last time Ted touched it (ms)
 var openApps=[];                 // live list of everything running on the Mac
+var computerState={apps:[],details:{},frontmost:'',media:null};
+var expandedApps={};
 var USED_WINDOW=10*60*1000;      // "Ted is using it" badge lasts 10 minutes
 
 function closeAppFromPanel(name){
@@ -656,22 +712,79 @@ function closeAppFromPanel(name){
 }
 function renderApps(){
   var host=$('apps-list');
-  if(!openApps.length){ return; }
+  if(!openApps.length){
+    host.innerHTML='<div id="apps-empty">No user-facing apps were detected.</div>';
+    $('apps-summary').textContent='No apps detected'; return;
+  }
   host.innerHTML='';
   var now=Date.now();
   var sorted=openApps.slice().sort(function(a,b){
+    if(a===computerState.frontmost) return -1;
+    if(b===computerState.frontmost) return 1;
     var ua=(appsUsed[a]&&now-appsUsed[a]<USED_WINDOW)?1:0;
     var ub=(appsUsed[b]&&now-appsUsed[b]<USED_WINDOW)?1:0;
     if(ua!==ub) return ub-ua;                 // Ted's apps float to the top
     return a.localeCompare(b);
   });
+  var details=computerState.details||{};
+  var tabCount=0,terminalCount=0;
+  Object.keys(details).forEach(function(k){
+    tabCount+=(details[k].tabs||[]).length;
+    terminalCount+=(details[k].terminals||[]).length;
+  });
+  $('apps-summary').textContent=openApps.length+' apps · '+tabCount+' browser tabs'+
+    (terminalCount?' · '+terminalCount+' terminals':'');
   sorted.forEach(function(name){
     var used=appsUsed[name]&&now-appsUsed[name]<USED_WINDOW;
-    var d=document.createElement('div'); d.className='appitem'+(used?' used':'');
-    d.innerHTML='<span class="dot"></span><span class="nm">'+esc(name)+'</span>'+
-      (used?'<span class="tag">TED</span>':'')+
+    var front=name===computerState.frontmost;
+    var info=details[name]||{kind:'app',windows:[]};
+    var tabs=info.tabs||[],terms=info.terminals||[],windows=info.windows||[];
+    var countLabel=tabs.length?(tabs.length+' tab'+(tabs.length===1?'':'s')):
+      terms.length?(terms.length+' terminal'+(terms.length===1?'':'s')):
+      windows.length?(windows.length+' window'+(windows.length===1?'':'s')):'';
+    if(expandedApps[name]===undefined)
+      expandedApps[name]=front||tabs.length>0||terms.length>0;
+    var d=document.createElement('div');
+    d.className='appitem'+(used?' used':'')+(front?' front':'')+
+      (expandedApps[name]?' expanded':'');
+    var h=document.createElement('div'); h.className='apphead';
+    h.innerHTML='<span class="dot"></span><span class="nm">'+esc(name)+'</span>'+
+      (front?'<span class="tag">FRONT</span>':used?'<span class="tag">TED</span>':'')+
+      (countLabel?'<span class="meta">'+esc(countLabel)+'</span>':'')+
       '<span class="x" title="Close '+esc(name)+'">×</span>';
-    d.querySelector('.x').onclick=function(){ closeAppFromPanel(name); };
+    h.onclick=function(){ expandedApps[name]=!expandedApps[name]; renderApps(); };
+    h.querySelector('.x').onclick=function(e){ e.stopPropagation(); closeAppFromPanel(name); };
+    d.appendChild(h);
+    var children=document.createElement('div'); children.className='appchildren';
+    tabs.forEach(function(tab){
+      var row=document.createElement('div'); row.className='subitem'+(tab.active?' active':'');
+      row.title=tab.url||tab.title||'';
+      row.innerHTML='<div class="subtop"><span class="mark">'+(tab.active?'●':'○')+'</span>'+
+        '<span class="st">'+esc(tab.title||'Untitled tab')+'</span></div>'+
+        '<div class="ss">'+esc((tab.host||'local')+' · window '+(tab.window||1))+'</div>';
+      children.appendChild(row);
+    });
+    terms.forEach(function(term){
+      var row=document.createElement('div'); row.className='subitem'; row.title=term.cwd||'';
+      row.innerHTML='<div class="subtop"><span class="mark">›_</span><span class="st">'+
+        esc(term.folder||term.tty||term.shell||'Terminal')+'</span>'+
+        (term.branch?'<span class="branch">'+esc(term.branch)+'</span>':'')+'</div>'+
+        '<div class="ss">'+esc((term.shell||'shell')+' · '+(term.tty||''))+'</div>';
+      children.appendChild(row);
+    });
+    if(!tabs.length&&!terms.length) windows.slice(0,8).forEach(function(win){
+      var row=document.createElement('div'); row.className='subitem'; row.title=win.title||'';
+      row.innerHTML='<div class="subtop"><span class="mark">□</span><span class="st">'+
+        esc(win.title||name+' window')+'</span></div>';
+      children.appendChild(row);
+    });
+    if((computerState.media||{}).source&&name.indexOf('Spotify')>=0){
+      var media=computerState.media,row=document.createElement('div'); row.className='subitem active';
+      row.innerHTML='<div class="subtop"><span class="mark">♪</span><span class="st">'+
+        esc(media.title||'Playing')+'</span></div><div class="ss">'+esc(media.artist||media.device||'')+'</div>';
+      children.insertBefore(row,children.firstChild);
+    }
+    if(children.childNodes.length) d.appendChild(children);
     host.appendChild(d);
   });
 }
@@ -711,13 +824,15 @@ setInterval(fetchWeather,15*60*1000);
 var toastT=null, heardT=null;
 var tedHud={
   setState:function(s){
-    if(s==='error'||s==='offline') return;
+    if(s==='error'||s==='offline'){ hideThinking(); return; }
     if(!(s in STATE_TEXT)) return;
     var st=$('status');
+    if(s==='thinking') showThinking(); else hideThinking();
     if(s==='idle'){ st.className=''; st.querySelector('#status-t').textContent=''; }
     else{ st.className=s+' active'; st.querySelector('#status-t').textContent=STATE_TEXT[s]; }
   },
   addMessage:function(role,text){
+    if(role==='ted') hideThinking();
     if(role==='ted'){
       if(streamEl){ return; }                    // streamed reply still rendering
       // app.py calls add_message with the full reply AFTER streaming it —
@@ -745,6 +860,7 @@ var tedHud={
     }
   },
   streamTedText:function(piece){
+    hideThinking();
     if(!streamEl){ streamEl=addBubble('ted',''); streamBuf=''; }
     streamBuf+=piece;
     streamEl.innerHTML=mdlite(streamBuf);
@@ -834,6 +950,12 @@ var tedHud={
   /* live open-apps feed from apps_watch (every ~5s, on change) */
   setOpenApps:function(apps){
     if(Array.isArray(apps)){ openApps=apps; renderApps(); }
+  },
+
+  /* full live hierarchy: apps → windows/tabs/terminal sessions */
+  setComputerState:function(state){
+    if(!state||!Array.isArray(state.apps)) return;
+    computerState=state; openApps=state.apps; renderApps();
   },
 
   /* Ted touched a tool — mark the matching app as in use */

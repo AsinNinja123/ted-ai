@@ -60,11 +60,20 @@ check("…marked as measured, not estimated", r["tokens_estimated"] == 0)
 check("…the tool it called", r["tools_called"] == "play_music")
 check("…and is marked ok", r["ok"] == 1)
 
+degraded = telemetry.Turn("hello during a rate limit", source="chat")
+degraded.provider = "ollama"
+degraded.rate_limited = True
+degraded.degraded_reason = "cloud rate limit — answered by the local brain"
+degraded.finish(reply="Still here.")
+rows = telemetry.recent()
+check("a successful fallback is marked degraded", bool(rows[0]["degraded_reason"]))
+check("…but is still a successful turn", rows[0]["ok"] == 1)
+
 fail = telemetry.Turn("open notes", source="chat")
 fail.provider = "none"
 fail.finish(reply="", error="Both brains failed; Groq: 429; Ollama: refused")
 rows = telemetry.recent()
-check("a failed turn is recorded too", len(rows) == 2)
+check("a failed turn is recorded too", len(rows) == 3)
 check("…with the real error text, not a summary",
       "Ollama: refused" in rows[0]["error"])
 check("…and is marked not-ok", rows[0]["ok"] == 0)
@@ -73,14 +82,15 @@ twice = telemetry.Turn("hello")
 twice.finish(reply="Hi.")
 twice.finish(reply="Hi again.")
 check("finish() is idempotent — one turn is never two rows",
-      len(telemetry.recent()) == 3)
+      len(telemetry.recent()) == 4)
 
 
 print("\n— the numbers the header shows —")
 
 s = telemetry.stats()
-check("turns are counted", s["turns"] == 3)
+check("turns are counted", s["turns"] == 4)
 check("errors are counted", s["errors"] == 1)
+check("degraded turns are counted separately", s["degraded"] == 1)
 check("tokens-per-minute reflects what was just spent", s["tpm"] >= 1516)
 check("the ceiling is reported so the gauge has a denominator",
       s["tpm_limit"] == telemetry.DEFAULT_TPM_LIMIT)
@@ -96,7 +106,7 @@ report = telemetry.as_report(5)
 check("the report names the ceiling", "of 8000" in report)
 check("the report includes the failure", "Ollama: refused" in report)
 
-check("clearing empties the log", telemetry.clear() == 4 and not telemetry.recent())
+check("clearing empties the log", telemetry.clear() == 5 and not telemetry.recent())
 
 
 print("\n— a pinned brain is not a suggestion —")
@@ -338,12 +348,14 @@ _pv.set_provider_mode("auto")
 _pv.chat_create(messages=[], stream=True)
 check("a rate limit is recorded as a rate limit", _pv.last_fallback_reason() == "rate_limit")
 
+_pv._cloud_retry_at = 0.0
 _pv._groq = type("X", (), {"chat": type("c", (), {"completions": type("d", (), {
     "create": staticmethod(lambda **kw: (_ for _ in ()).throw(
         RuntimeError("connection reset")))})()})()})
 _pv.chat_create(messages=[], stream=True)
 check("an outage is recorded as an outage", _pv.last_fallback_reason() == "unavailable")
 _pv._groq, _pv._ollama_create = _sg, _so
+_pv._cloud_retry_at = 0.0
 
 # Background calls spend the same budget and had no representation at all.
 before = telemetry.side_token_rate()
@@ -364,6 +376,16 @@ check("each reply is timed from the keypress, not from the request",
       "turnT0=Date.now();" in hud2 and "(Date.now()-turnT0)/1000" in hud2)
 check("…and shows what that reply cost underneath it",
       "class='meta'" in hud2 or 'className=\'meta\'' in hud2)
+check("thinking is visible in the chat, not just a tiny header dot",
+      "thinking-row" in hud2 and "Ted is thinking" in hud2)
+check("the thinking indicator shows elapsed time and reassures on long turns",
+      "Working on it" in hud2 and "Still working" in hud2
+      and "Date.now()-thinkingT0" in hud2)
+check("thinking disappears as soon as reply text arrives",
+      "streamTedText:function(piece){\n    hideThinking();" in hud2)
+check("starting a new chat cannot leave a hidden thinking timer running",
+      "function newChat(){" in hud2 and "hideThinking();" in
+      hud2[hud2.index("function newChat(){"):hud2.index("function newChat(){") + 260])
 
 
 print("\n" + "=" * 50)

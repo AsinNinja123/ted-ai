@@ -6,7 +6,8 @@
 # ── LLM ──────────────────────────────────────────────────────────────────────
 GROQ_API_KEY = ""          # optional free hosted brain; local Ollama works without it
 CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"
-LOCAL_CHAT_MODEL = "qwen3.5:35b-a3b"
+LOCAL_CHAT_MODEL = "qwen3.5:9b-q4_K_M"
+LOCAL_TOOL_MODEL = "qwen3.5:35b-a3b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 SITE_BROWSER_PREFERENCES = {"youtube": "Brave"}
 USE_GROQ_STT = True        # True = Groq Whisper cloud STT; False = local Whisper

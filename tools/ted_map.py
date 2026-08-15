@@ -137,9 +137,12 @@ def collect_models() -> dict:
         "cloud": pick("CLOUD_CHAT_MODEL", "Cloud brain",
                       "Tried first. Does all the thinking: chat, tools, "
                       "remembering facts, describing screenshots."),
-        "local": pick("LOCAL_CHAT_MODEL", "Local brain",
-                      "Runs on your Mac through Ollama. Only used when the "
-                      "cloud one is missing, down, or rate limited."),
+        "local": pick("LOCAL_CHAT_MODEL", "Fast local brain",
+                      "Runs conversation and background memory work on your Mac "
+                      "when the cloud is missing, down, or rate limited."),
+        "local_tool": pick("LOCAL_TOOL_MODEL", "Local action brain",
+                           "The stronger local model reserved for tools and "
+                           "screen understanding."),
         "ollama_url": pick("OLLAMA_URL", "Where the local brain lives",
                            "Ted starts Ollama itself if it is installed but idle."),
         "stt": {"label": "Ears", "value": stt.group(1) if stt else "unknown",
@@ -453,7 +456,8 @@ def collect_warnings(models, memory, state) -> list:
         warn.append(("The calendar daemon is not running right now",
                      "It has run before. The HUD takes the calendar watch back "
                      "automatically, so alerts still work while Ted is open."))
-    if not models["local"]["in_config"] or not models["cloud"]["in_config"]:
+    if (not models["local"]["in_config"] or not models["local_tool"]["in_config"]
+            or not models["cloud"]["in_config"]):
         warn.append(("Model names are not in config.py",
                      "They fall through to the defaults inside providers.py, so "
                      "changing a model means editing code instead of config."))
@@ -591,20 +595,22 @@ def render(d: dict) -> str:
     # ── the one-paragraph version ────────────────────────────────────────────
     cloud = m["cloud"]["value"]
     local = m["local"]["value"]
+    local_tool = m["local_tool"]["value"]
     n_tools = len(t["all"])
     facts = next((x["rows"] for x in mem.get("tables", []) if x["table"] == "facts"), 0)
     turns = next((x["rows"] for x in mem.get("tables", []) if x["table"] == "chat_turns"), 0)
     add(f"<div class=lede>Ted is a chat window on your Mac that thinks with "
-        f"<b>{esc(cloud)}</b>, falls back to <b>{esc(local)}</b> running on your own "
-        f"machine when that is unavailable, remembers <b>{facts} things about you</b> "
+        f"<b>{esc(cloud)}</b>, falls back to <b>{esc(local)}</b> for chat and "
+        f"<b>{esc(local_tool)}</b> for actions on your own machine, remembers "
+        f"<b>{facts} things about you</b> "
         f"across <b>{turns} messages</b>, and can take <b>{n_tools} kinds of action</b> "
         f"on your computer and your accounts.</div>")
 
     # ── brains ───────────────────────────────────────────────────────────────
     add("<h2>What it thinks with</h2>")
-    add("<p class=sub>Four different jobs. Only the first two are 'the brain' — "
+    add("<p class=sub>Five different jobs. The first three are reasoning models — "
         "the other two are hearing and speaking.</p><div class=grid>")
-    for key in ("cloud", "local", "stt", "tts"):
+    for key in ("cloud", "local", "local_tool", "stt", "tts"):
         e = m[key]
         add("<div class=card>")
         add(f"<div class=k>{esc(e['label'])}</div>")
@@ -780,8 +786,11 @@ def render_markdown(d: dict, stable: bool = False) -> str:
     L.append("")
     L.append("| | |")
     L.append("|---|---|")
+    local_models = f"`{m['local']['value']}` for chat"
+    if m["local_tool"]["value"] != m["local"]["value"]:
+        local_models += f" / `{m['local_tool']['value']}` for tools"
     L.append(f"| Thinks with | `{m['cloud']['value']}` (cloud), falling back to "
-             f"`{m['local']['value']}` on local Ollama |")
+             f"{local_models} on local Ollama |")
     L.append(f"| Hears / speaks | `{m['stt']['value']}` / `{m['tts']['value']}` (local) |")
     L.append(f"| Tools | {len(d['tools']['all'])} |")
     route = ("local app reflex + one streamed loop" if d["routing"].get("reflex")

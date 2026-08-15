@@ -96,6 +96,13 @@ knowledge._init_failed = True          # make it a no-op, not a real model load
 knowledge.warm()                       # must never raise
 check("…and warming is safe to call when the stack is unavailable", True)
 
+print("\n— app shutdown cannot be swallowed by the native event loop —")
+with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "hud.py"),
+          encoding="utf-8") as fh:
+    hud_source = fh.read()
+check("SIGTERM exits after bounded teardown instead of leaving a ghost Ted",
+      "def _shutdown(signum, frame):" in hud_source and "os._exit(0)" in hud_source)
+
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

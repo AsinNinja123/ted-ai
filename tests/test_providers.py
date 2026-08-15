@@ -51,6 +51,21 @@ payload = providers._ollama_payload({
 })
 check("local payload preserves streaming/token cap",
       payload["stream"] and payload["options"]["num_predict"] == 99)
+check("plain local chat uses the fast fallback model",
+      payload["model"] == providers.LOCAL_CHAT_MODEL)
+tool_payload = providers._ollama_payload({
+    "messages": [{"role": "user", "content": "open Notes"}],
+    "tools": [{"type": "function", "function": {"name": "open_app"}}],
+})
+check("tool-bearing local turns use the stronger agent model",
+      tool_payload["model"] == providers.LOCAL_TOOL_MODEL)
+vision_payload = providers._ollama_payload({
+    "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}],
+})
+check("local screenshots use the stronger multimodal model",
+      vision_payload["model"] == providers.LOCAL_TOOL_MODEL)
+check("local context allocation stays bounded", payload["options"]["num_ctx"] == 8192)
 check("local payload can disable thinking", payload["think"] is False)
 check("JSON mode maps to Ollama format", payload["format"] == "json")
 
@@ -138,7 +153,7 @@ providers.OLLAMA_URL = _orig_url
 providers.subprocess.Popen = _orig_popen
 
 print("\n" + "=" * 50)
-print("\n— an unsupported SDK argument must not take the cloud offline —")
+print("\n— streaming usage works through the installed SDK —")
 
 # Aug 14: stream_options was added to get exact token counts. The installed SDK
 # rejected it with a TypeError, chat_create treats ANY cloud exception as
@@ -155,10 +170,6 @@ class _OldSDK:
             @staticmethod
             def create(**kw):
                 seen.append(dict(kw))
-                if "stream_options" in kw:
-                    raise TypeError(
-                        "Completions.create() got an unexpected keyword "
-                        "argument 'stream_options'")
                 return "cloud-response"
 
 
@@ -172,14 +183,17 @@ providers._ollama_create = lambda **kw: local_hits.append(1)
 out = providers.chat_create(messages=[], stream=True)
 check("an old SDK still gets a cloud answer", out == "cloud-response")
 check("…and the turn never fell through to the local brain", not local_hits)
-check("…the retry dropped only the unsupported argument",
-      "stream_options" in seen[0] and "stream_options" not in seen[1])
-check("…and the capability is remembered, not re-probed every turn",
-      providers._USAGE_SUPPORTED[0] is False)
+check("…without sending an unsupported named argument",
+      "stream_options" not in seen[0])
+check("…the HTTP API still receives the usage request",
+      seen[0].get("extra_body", {}).get("stream_options") ==
+      {"include_usage": True})
 
 seen.clear()
 providers.chat_create(messages=[], stream=True)
-check("the next call does not send it again", "stream_options" not in seen[0])
+check("the next call requests exact usage the same safe way",
+      "stream_options" not in seen[0]
+      and "stream_options" in seen[0].get("extra_body", {}))
 
 # A TypeError that is NOT about stream_options must still behave like a real
 # failure, or this rescue would swallow genuine bugs.
@@ -201,6 +215,63 @@ check("an unrelated TypeError still falls back to the local brain",
 
 providers._groq, providers._ollama_create = _saved_groq, _saved_ollama
 providers._USAGE_SUPPORTED[0] = True
+providers.set_provider_mode(_saved_mode)
+
+
+print("\n— cloud quota is conserved —")
+
+providers.set_provider_mode("auto")
+providers._cloud_retry_at = 0.0
+cloud_hits, local_hits = [], []
+providers._groq = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions(
+    value="cloud")))
+providers._groq.chat.completions.create = lambda **kw: cloud_hits.append(kw) or "cloud"
+providers._ollama_create = lambda **kw: local_hits.append(kw) or "local"
+out = providers.chat_create(messages=[], _ted_workload="background")
+check("background helpers stay local in auto mode", out == "local" and not cloud_hits)
+check("…and that intentional routing is not reported as a fallback",
+      providers.last_fallback_reason() == "")
+
+
+class _Headers:
+    headers = {"retry-after": "19.2s"}
+
+
+class _RateLimited(RuntimeError):
+    response = _Headers()
+
+
+def _limited(**kw):
+    cloud_hits.append(kw)
+    raise _RateLimited("429 rate limit; try again in 19.2s")
+
+
+providers._groq.chat.completions.create = _limited
+out = providers.chat_create(messages=[])
+check("a 429 falls back locally", out == "local")
+check("…and honors the provider cooldown", providers.cloud_cooldown_remaining() >= 19)
+cloud_count = len(cloud_hits)
+out = providers.chat_create(messages=[])
+check("foreground calls skip a cloud known to be rate-limited", out == "local")
+check("…without another doomed cloud request", len(cloud_hits) == cloud_count)
+
+
+class _LongResetHeaders:
+    headers = {"x-ratelimit-reset-tokens": "4m19s"}
+
+
+class _SoonRetry(RuntimeError):
+    response = _LongResetHeaders()
+
+
+providers._cloud_retry_at = 0.0
+wait = providers._start_cloud_cooldown(
+    _SoonRetry("429 rate limit; please try again in 14.97s"))
+check("the 429 retry time beats the much later full-bucket reset header",
+      14.9 <= wait <= 15.1 and providers.cloud_cooldown_remaining() <= 16)
+
+providers._cloud_retry_at = 0.0
+providers._groq, providers._ollama_create = _saved_groq, _saved_ollama
 providers.set_provider_mode(_saved_mode)
 
 

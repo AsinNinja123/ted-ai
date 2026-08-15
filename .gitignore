@@ -44,6 +44,7 @@ Ted.app/
 # === Build artifacts ===
 # compiled Swift binary (build with native/build.sh)
 native/ted_audio
+native/ted_control
 *.o
 
 # === Editor / OS cruft ===

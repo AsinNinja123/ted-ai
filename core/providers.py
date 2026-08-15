@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from types import SimpleNamespace
@@ -31,7 +32,12 @@ except Exception:
 try:
     from config import LOCAL_CHAT_MODEL
 except Exception:
-    LOCAL_CHAT_MODEL = "qwen3.5:35b-a3b"
+    LOCAL_CHAT_MODEL = "qwen3.5:9b-q4_K_M"
+
+try:
+    from config import LOCAL_TOOL_MODEL
+except Exception:
+    LOCAL_TOOL_MODEL = "qwen3.5:35b-a3b"
 
 try:
     from config import OLLAMA_URL
@@ -75,6 +81,13 @@ _HEADERS_SUPPORTED = [True]
 # 600ms to 8 seconds. A diagnostics panel that under-reports is worse than none.
 _last_fallback = ""
 
+# Do not hammer Groq after it has explicitly said the account is out of
+# budget. A 429 used to make every foreground and background helper try the
+# same doomed request before falling through to Ollama. Apart from wasting a
+# round trip, those probes keep the diagnostics noisy and can extend recovery.
+_cloud_retry_at = 0.0
+DEFAULT_CLOUD_COOLDOWN = 15.0
+
 
 def last_fallback_reason() -> str:
     """`rate_limit`, `unavailable`, or '' if the last call used the cloud."""
@@ -85,7 +98,61 @@ _rate_limit = {"limit_tokens": 0, "remaining_tokens": 0,
 
 def rate_limit_status():
     """The provider's own view of the budget, or zeros if never reported."""
-    return dict(_rate_limit)
+    out = dict(_rate_limit)
+    out["cooldown_seconds"] = cloud_cooldown_remaining()
+    return out
+
+
+def cloud_cooldown_remaining() -> int:
+    """Whole seconds until auto mode will try the cloud again."""
+    return max(0, int(_cloud_retry_at - time.time() + 0.999))
+
+
+def _duration_seconds(raw) -> float:
+    """Parse Groq retry/reset values such as ``19.2s`` or ``1m4s``."""
+    text = str(raw or "").strip().lower()
+    if not text:
+        return 0.0
+    if text.replace(".", "", 1).isdigit():
+        return float(text)
+    total = 0.0
+    for value, unit in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m|h)", text):
+        scale = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[unit]
+        total += float(value) * scale
+    return total
+
+
+def _start_cloud_cooldown(exc) -> float:
+    """Honor the earliest provider-approved retry, not the full bucket reset.
+
+    Groq's ``x-ratelimit-reset-tokens`` can describe when the entire token
+    bucket is full again (several minutes), while the 429 body says the request
+    can be retried in fifteen seconds. Taking the maximum is why Ted stayed on
+    Ollama long after the cloud was usable again.
+    """
+    global _cloud_retry_at
+    retry_after = 0.0
+    reset_candidates = []
+    try:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None) or {}
+        retry_after = _duration_seconds(headers.get("retry-after"))
+        reset_candidates = [value for value in (
+            _duration_seconds(headers.get("x-ratelimit-reset-tokens")),
+            _duration_seconds(headers.get("x-ratelimit-reset-requests")),
+        ) if value > 0]
+        _read_rate_headers(headers)
+    except Exception:
+        pass
+    match = re.search(
+        r"(?:try again in|retry(?:ing)? after)\s+([0-9.]+\s*(?:ms|s|m|h))",
+        str(exc), re.I)
+    body_wait = _duration_seconds(match.group(1)) if match else 0.0
+    seconds = retry_after or body_wait or (
+        min(reset_candidates) if reset_candidates else 0.0)
+    seconds = seconds or DEFAULT_CLOUD_COOLDOWN
+    _cloud_retry_at = max(_cloud_retry_at, time.time() + seconds)
+    return seconds
 
 
 def _note_usage(result):
@@ -212,8 +279,12 @@ def local_model_ready() -> bool:
     try:
         res = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=1.5)
         names = [m.get("name", "") for m in (res.json() or {}).get("models", [])]
-        base = LOCAL_CHAT_MODEL.split(":")[0]
-        return any(n == LOCAL_CHAT_MODEL or n.split(":")[0] == base for n in names)
+        def _ready(model):
+            if ":" in model:
+                return model in names
+            base = model.split(":")[0]
+            return any(n.split(":")[0] == base for n in names)
+        return all(_ready(model) for model in {LOCAL_CHAT_MODEL, LOCAL_TOOL_MODEL})
     except Exception:
         return False
 
@@ -340,11 +411,12 @@ def _ensure_ollama():
 
 
 def _ollama_payload(kwargs):
+    model = _local_model_for(kwargs)
     payload = {
-        "model": LOCAL_CHAT_MODEL,
+        "model": model,
         "messages": _ollama_messages(kwargs.get("messages") or []),
         "stream": bool(kwargs.get("stream", False)),
-        "keep_alive": "10m",
+        "keep_alive": "10m" if model == LOCAL_CHAT_MODEL else "5m",
     }
     if kwargs.get("tools"):
         payload["tools"] = kwargs["tools"]
@@ -354,7 +426,10 @@ def _ollama_payload(kwargs):
     short_helper = not kwargs.get("tools") and (kwargs.get("max_tokens") or 0) <= 500
     effort = kwargs.get("reasoning_effort", "none" if short_helper else "default")
     payload["think"] = effort != "none"
-    options = {}
+    # Ted's prompts are deliberately compact. Capping the local KV cache keeps
+    # two fallback specialists resident comfortably on a 48 GB Mac and avoids
+    # allocating a huge model-default context that no normal turn uses.
+    options = {"num_ctx": 8192}
     if kwargs.get("max_tokens") is not None:
         options["num_predict"] = kwargs["max_tokens"]
     if kwargs.get("temperature") is not None:
@@ -364,11 +439,27 @@ def _ollama_payload(kwargs):
     return payload
 
 
+def _local_model_for(kwargs):
+    """Use a fast chat model for prose/helpers and the stronger MoE for tools."""
+    if kwargs.get("tools"):
+        return LOCAL_TOOL_MODEL
+    for message in kwargs.get("messages") or []:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+                part.get("type") == "image_url" for part in content if isinstance(part, dict)):
+            return LOCAL_TOOL_MODEL
+    return LOCAL_CHAT_MODEL
+
+
 class _OllamaStream:
     """Adapt Ollama NDJSON chunks to the shape consumed by ``_stream_turn``."""
 
     def __init__(self, payload, timeout):
-        self._client = httpx.Client(timeout=httpx.Timeout(timeout, connect=4.0))
+        # A rescue provider that stays silent for minutes is indistinguishable
+        # from a frozen app. Give model load/generation a bounded first-chunk
+        # window; callers then surface the honest provider failure.
+        self._client = httpx.Client(timeout=httpx.Timeout(
+            timeout, connect=4.0, read=min(timeout, 25.0)))
         self._ctx = self._client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload)
         self._response = self._ctx.__enter__()
         self._response.raise_for_status()
@@ -438,14 +529,33 @@ def chat_create(**kwargs):
     """
     global _active_provider, _last_cloud_error, _last_model, _last_fallback
     cloud_error = None
+    workload = kwargs.pop("_ted_workload", "foreground")
+    local_model = _local_model_for(kwargs)
     mode = get_provider_mode()
     if mode == "local":
         # Pinned. No cloud attempt at all, so what comes back is unambiguously
         # the local brain's own behaviour and its own latency.
         result = _ollama_create(**kwargs)
-        _active_provider, _last_model = "ollama", LOCAL_CHAT_MODEL
+        _active_provider, _last_model = "ollama", local_model
+        _last_fallback = ""
         return result
-    if _groq is not None:
+
+    # Titles, fact extraction and session summaries are useful, but they must
+    # not consume the scarce cloud allowance needed for Charlie's next actual
+    # message. Explicit cloud pinning still means cloud, including helpers.
+    background_local = mode == "auto" and workload == "background"
+    cooling_down = mode == "auto" and cloud_cooldown_remaining() > 0
+    if background_local:
+        result = _ollama_create(**kwargs)
+        _active_provider, _last_model = "ollama", local_model
+        _last_fallback = ""
+        return result
+    if cooling_down:
+        _last_fallback = "rate_limit"
+        _last_cloud_error = (
+            f"cloud cooldown active for {cloud_cooldown_remaining()}s")
+
+    if _groq is not None and not cooling_down:
         params = dict(kwargs)
         params["model"] = CLOUD_CHAT_MODEL
         # Ask Groq to append a final usage chunk to the stream. Without this a
@@ -453,15 +563,14 @@ def chat_create(**kwargs):
         # left estimating from character length — which is close enough to be
         # believed and wrong enough to matter next to an 8,000/minute ceiling.
         #
-        # Guarded by a capability flag because older SDKs reject the argument
-        # outright, and this module treats ANY cloud exception as grounds to
-        # fall back to the local brain. Sending an unsupported kwarg therefore
-        # did not degrade token counting — it took the cloud offline entirely
-        # and quietly moved every conversation onto Ollama at ten times the
-        # latency. A feature that cannot be added safely must not be added
-        # unconditionally.
+        # The installed SDK does not expose stream_options as a named keyword,
+        # although Groq's HTTP API supports it. extra_body is the SDK's intended
+        # compatibility escape hatch, so this reaches the API without making a
+        # supported cloud request look like an SDK failure.
         if params.get("stream") and _USAGE_SUPPORTED[0]:
-            params.setdefault("stream_options", {"include_usage": True})
+            extra_body = dict(params.get("extra_body") or {})
+            extra_body.setdefault("stream_options", {"include_usage": True})
+            params["extra_body"] = extra_body
         # Tool-bearing foreground turns get Qwen's thinking mode. Tiny helper
         # calls (titles, JSON extraction, short compositions) do not: otherwise
         # their small output budget can be consumed entirely by hidden reasoning
@@ -489,18 +598,11 @@ def chat_create(**kwargs):
                         result = _groq.chat.completions.create(**params)
                 else:
                     result = _groq.chat.completions.create(**params)
-            except TypeError as exc:
-                # The installed SDK does not know this argument. Drop it, never
-                # try again this session, and say so once — exact token counts
-                # are a nice-to-have; a working cloud brain is not.
-                if "stream_options" not in str(exc) or not _USAGE_SUPPORTED[0]:
-                    raise
-                _USAGE_SUPPORTED[0] = False
-                params.pop("stream_options", None)
-                print("[provider] this groq SDK has no stream_options — token "
-                      "counts will be estimated. `pip install -U groq` for exact "
-                      "ones.")
-                result = _groq.chat.completions.create(**params)
+            except TypeError:
+                # Do not reinterpret unrelated programming errors as provider
+                # outages. The header wrapper compatibility path above already
+                # retries through the ordinary SDK method where appropriate.
+                raise
             _active_provider, _last_model = "groq", CLOUD_CHAT_MODEL
             _last_cloud_error = ""
             _last_fallback = ""
@@ -514,11 +616,13 @@ def chat_create(**kwargs):
                               or "rate limit" in str(exc).lower()
                               else "unavailable")
             if "429" in str(exc) or "rate limit" in str(exc).lower():
+                wait = _start_cloud_cooldown(exc)
                 print(f"[provider] RATE LIMITED on {CLOUD_CHAT_MODEL} — "
-                      f"trying local {LOCAL_CHAT_MODEL}")
+                      f"trying local {local_model}; cloud paused "
+                      f"for {wait:.1f}s")
             else:
                 print(f"[provider] Groq unavailable ({str(exc)[:100]}) — "
-                      f"using local {LOCAL_CHAT_MODEL}")
+                      f"using local {local_model}")
 
     if mode == "cloud":
         # Pinned to the cloud: surface the real cloud failure instead of
@@ -529,7 +633,7 @@ def chat_create(**kwargs):
 
     try:
         result = _ollama_create(**kwargs)
-        _active_provider, _last_model = "ollama", LOCAL_CHAT_MODEL
+        _active_provider, _last_model = "ollama", local_model
         return result
     except Exception as local_error:
         _active_provider, _last_model = "none", ""

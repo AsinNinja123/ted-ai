@@ -10,6 +10,8 @@ import subprocess
 import time
 import re
 import os
+import urllib.parse
+import urllib.request
 
 from core import features
 from core.actions import APPS, WEB_APPS, open_app, spotify_command
@@ -23,10 +25,12 @@ except Exception:
 # Tools that CHANGE something (side effects). Their handler return value is the
 # ground truth and must be spoken verbatim.
 ACTION_TOOLS = frozenset({
-    "open_app", "close_app", "browse_to", "play_music", "play_playlist",
+    "open_app", "close_app", "browse_to", "play_youtube", "play_music", "play_playlist",
     "spotify_control", "send_message", "set_reminder", "set_timer",
     "calendar_add", "notes_add", "clipboard_write",
-    "system_volume", "system_brightness", "type_text", "log_habit",
+    "system_volume", "system_brightness", "ui_press", "ui_fill", "type_text",
+    "create_document",
+    "press_key", "scroll", "log_habit",
     "email_action", "send_email",
 })
 
@@ -42,6 +46,7 @@ _FAILURE_MARKERS = (
     "not installed", "unavailable", "didn't catch", "couldn't find",
     "couldn't parse", "couldn't reach", "no app", "don't have", "failed",
     "didn't go through", "still open", "didn't work", "isn't set",
+    "verification was unavailable", "unexpectedly created",
 )
 def looks_like_failure(result):
     r = (result or "").lower()
@@ -66,6 +71,8 @@ _TOOL_VERBS = frozenset({
     "clipboard",
     # system controls — multi-word, unambiguous
     "system volume", "screen brightness",
+    "click", "tap", "press", "scroll", "type this", "write this",
+    "new document", "google doc", "google docs",
     # inbox — specific enough
     "index my documents", "scan my inbox",
 })
@@ -116,7 +123,14 @@ def tool_spotify_control(action):
         "volume_up": "up", "volume_down": "down",
     }
     cmd = _map.get(action, action)
-    result = spotify_command(cmd)
+    # music.transport preserves fast local control while reaching a genuinely
+    # active phone/speaker when the desktop app is closed. The Web resume path
+    # verifies playback before it is allowed to say "Playing."
+    if cmd in {"play", "pause", "next", "previous", "current"}:
+        from core.music import transport
+        result = transport(cmd)
+    else:
+        result = spotify_command(cmd)
     if result is None:
         return f"I don't have a Spotify action called '{action}'."
     return result
@@ -124,6 +138,7 @@ def tool_spotify_control(action):
 
 _BROWSERS = {
     "brave": "Brave Browser", "chrome": "Google Chrome", "google chrome": "Google Chrome",
+    "google": "Google Chrome",
     "safari": "Safari", "firefox": "Firefox", "edge": "Microsoft Edge",
     "arc": "Arc", "opera": "Opera",
 }
@@ -137,9 +152,13 @@ except Exception:
 
 
 def preferred_browser_for(site):
-    """Return a configured per-site browser preference, if any."""
+    """Apply Charlie's browser boundary: Brave is YouTube-only by default."""
     key = (site or "").strip().lower().rstrip("/")
-    return (SITE_BROWSER_PREFERENCES or {}).get(key)
+    is_youtube = (key == "youtube"
+                  or bool(re.search(r"(?:^|[/.])youtube\.com(?:$|/)", key)))
+    if is_youtube:
+        return (SITE_BROWSER_PREFERENCES or {}).get("youtube", "Brave")
+    return "Chrome"
 
 
 def _browser_window_count(app_name):
@@ -173,32 +192,23 @@ def _browser_window_count(app_name):
         return None
 
 
-def _open_verified_browser(app_name, url):
-    """Send ``url`` to a browser and verify a real browser window exists.
+def _open_verified_browser(app_name, url, new_window=False):
+    """Navigate once, reusing an existing browser window unless explicitly told not to.
 
-    Brave's AppleScript interface can hang while macOS waits on an Automation
-    permission dialog. Launch Services does not need that permission, so use it
-    to send the URL. Chromium receives ``--new-window`` directly to recover from
-    its common background-only launch mode. Success requires a substantial
-    browser window, never merely a process or a change in keyboard focus.
+    Launch Services opens a URL as a new tab in an existing browser window and
+    creates one window when none exists. The old path forced ``--new-window``
+    and then separately activated Brave; on a cold launch that produced the
+    requested page in one window and a second empty window. Explicit new-window
+    requests use the Chromium flag once, with no second activation.
     """
     before = _browser_window_count(app_name)
     try:
-        # Chromium can sit in a background-only ``--no-startup-window`` process,
-        # in which case Launch Services blocks for a full minute with error
-        # -1712. Sending --new-window to the browser executable recovers that
-        # state without force-quitting or discarding the user's session.
         executable = f"/Applications/{app_name}.app/Contents/MacOS/{app_name}"
-        if app_name in {"Brave Browser", "Google Chrome", "Microsoft Edge"} \
-                and os.path.exists(executable):
+        chromium = app_name in {"Brave Browser", "Google Chrome", "Microsoft Edge"}
+        if new_window and chromium and os.path.exists(executable):
             subprocess.Popen(
                 [executable, "--new-window", url], stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, start_new_session=True,
-            )
-            # Activation is separate from URL delivery. It is best-effort: Ted
-            # may take focus back while showing the result, which is not failure.
-            subprocess.run(
-                ["open", "-a", app_name], capture_output=True, text=True, timeout=8,
             )
         else:
             sent = subprocess.run(
@@ -206,18 +216,22 @@ def _open_verified_browser(app_name, url):
             )
             if sent.returncode != 0:
                 return False, (sent.stderr or "Launch Services rejected the URL").strip()
-            subprocess.run(
-                ["open", "-a", app_name], capture_output=True, text=True, timeout=8,
-            )
     except Exception as exc:
         return False, str(exc)
     for _ in range(20):
         windows = _browser_window_count(app_name)
         if windows is not None and windows > 0:
-            # --new-window normally increases the count. Accept an existing
-            # substantial window too: URL delivery may be forwarded to it by a
-            # browser that ignores the flag, and it is still visible ground truth.
-            change = "new window appeared" if before is not None and windows > before else "window is visible"
+            if (not new_window and before is not None and before > 0
+                    and windows > before):
+                return False, (f"{app_name} created a new window instead of "
+                               "reusing the existing one")
+            if not new_window and before == 0 and windows > 1:
+                return False, f"{app_name} unexpectedly created {windows} windows"
+            if new_window and before is not None and windows <= before:
+                time.sleep(0.2)
+                continue
+            change = ("new window appeared" if new_window else
+                      "existing window reused" if before else "one window is visible")
             return True, f"{app_name} {change}"
         time.sleep(0.2)
     if _browser_window_count(app_name) == 0:
@@ -226,10 +240,10 @@ def _open_verified_browser(app_name, url):
     return False, "macOS window verification was unavailable"
 
 
-def tool_browse_to(site, browser=None):
+def tool_browse_to(site, browser=None, new_window=False):
     """Open a website, optionally in a SPECIFIC browser ('youtube in Brave').
-    Without a browser it uses the old Chrome-then-default path. Verifies the
-    open actually succeeded before claiming it did."""
+    Existing browser windows are reused unless ``new_window`` is explicit.
+    Verifies the open actually succeeded before claiming it did."""
     from core.actions import SITE_URLS
     key = site.strip().lower().rstrip("/")
     if key in SITE_URLS:
@@ -243,11 +257,13 @@ def tool_browse_to(site, browser=None):
                 domain += ".com"
             url = f"https://{domain}"
         label = url.replace("https://", "").replace("http://", "").split("/")[0]
-    browser = browser or preferred_browser_for(key)
+    # An explicitly named browser is honored. Otherwise Chrome owns the web,
+    # with exactly one standing exception: YouTube goes to Brave for ad blocking.
+    browser = browser or preferred_browser_for(url)
     # Send the URL and verify the requested browser actually appears.
     if browser:
         app_name = _BROWSERS.get(browser.strip().lower(), browser.strip())
-        verified, detail = _open_verified_browser(app_name, url)
+        verified, detail = _open_verified_browser(app_name, url, bool(new_window))
         if verified:
             return f"Opened {label} in {app_name}."
         return (f"I couldn't verify that {label} opened in {app_name}; "
@@ -274,6 +290,96 @@ def tool_browse_to(site, browser=None):
     except Exception:
         pass
     return f"I couldn't open {label}."
+
+
+def _youtube_first_video_id(query):
+    """Resolve a search to a public video ID without requiring an API key."""
+    search = query.strip() or "popular videos"
+    url = "https://www.youtube.com/results?" + urllib.parse.urlencode(
+        {"search_query": search})
+    request = urllib.request.Request(url, headers={
+        "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 Chrome/126 Safari/537.36"),
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            page = response.read().decode("utf-8", "ignore")
+    except Exception as exc:
+        return "", str(exc)
+    for video_id in re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', page):
+        if video_id:
+            return video_id, ""
+    return "", "YouTube returned no playable search result"
+
+
+def _browser_video_state(app_name):
+    """Return ``playing``, ``paused``, or ``""`` when state is unavailable."""
+    script = (
+        f'tell application "{app_name}" to execute active tab of front window '
+        'javascript "(() => { const v=document.querySelector(\'video\'); '
+        'return v ? (v.paused ? \'paused\' : \'playing\') : \'missing\'; })()"'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+        value = result.stdout.strip().lower()
+        if result.returncode == 0 and value in {"playing", "paused"}:
+            return value
+    except Exception:
+        pass
+    # Chromium disables JavaScript from Apple Events by default. Its
+    # Accessibility window title still exposes "Audio playing", which gives us
+    # a semantic, image-free verification path without asking Charlie to weaken
+    # a browser security setting.
+    try:
+        from core import computer
+        if (computer.accessibility_status().get("frontmost") == app_name
+                and computer.has_accessible_text("Audio playing")):
+            return "playing"
+    except Exception:
+        pass
+    return ""
+
+
+def tool_play_youtube(query="", browser=None):
+    """Open a concrete YouTube watch URL and verify or start its video player."""
+    video_id, error = _youtube_first_video_id(query or "")
+    if not video_id:
+        return f"I couldn't find a YouTube video to play. ({error})"
+    url = f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
+    browser = browser or preferred_browser_for("youtube") or "Brave"
+    opened = tool_browse_to(url, browser)
+    if looks_like_failure(opened):
+        return opened
+    app_name = _BROWSERS.get(str(browser).strip().lower(), str(browser).strip())
+    state = ""
+    for _ in range(16):
+        state = _browser_video_state(app_name)
+        if state in {"playing", "paused"}:
+            break
+        time.sleep(0.25)
+    if state in {"paused", ""}:
+        try:
+            from core import computer
+            pressed = computer.press_target("Play")
+            if looks_like_failure(pressed):
+                # Autoplay may already have started even when the browser did
+                # not expose its player button. Re-check before reporting a
+                # failure, since Chromium's window title is authoritative here.
+                state = _browser_video_state(app_name)
+                if state != "playing":
+                    return (f"Opened the YouTube video in {app_name}, but I couldn't "
+                            "start playback. " + pressed)
+            time.sleep(0.5)
+            state = _browser_video_state(app_name)
+        except Exception:
+            state = ""
+    label = query.strip() or "a popular video"
+    if state == "playing":
+        return f"Playing {label} on YouTube in {app_name}."
+    return (f"Opened {label} on YouTube in {app_name}, but I couldn't verify "
+            "that playback started.")
 
 
 # ── Reminder / timer / list tools ─────────────────────────────────────────────

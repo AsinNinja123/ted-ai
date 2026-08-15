@@ -374,7 +374,13 @@ def transport(action):
             return "Paused."
         if action in ("play", "resume"):
             sp.start_playback(device_id=dev)
-            return "Playing."
+            confirmed = _confirm_playing(sp)
+            if confirmed is True:
+                return "Playing."
+            if confirmed is False:
+                return ("I sent resume to Spotify, but nothing is playing. "
+                        "The playback device may be asleep.")
+            return "I sent resume to Spotify, but couldn't confirm that audio started."
         if action == "next":
             sp.next_track(device_id=dev)
             return "Skipping ahead."
