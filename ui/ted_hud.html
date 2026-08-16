@@ -20,17 +20,46 @@ body{background:var(--bg);color:var(--text);overflow:hidden;
   display:flex}
 button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 
-/* ── sidebar ─────────────────────────────────────────────── */
-#side{width:250px;flex:none;background:var(--side);border-right:1px solid var(--line);
-  display:flex;flex-direction:column;transition:width .25s ease,border .25s;overflow:hidden}
-#side.collapsed{width:0;border-right:none}
-#side>*{min-width:230px}
+/* ── the collapse component, used by both side panels ──────────
+   One set of rules for the chat panel and the computer panel, mirrored. The
+   panel is a row: a full-width body plus a 16px rail on its INNER edge. The
+   panel animates its own width down to the rail and no further, so the rail is
+   always on screen to reopen with, and the body is only ever clipped — never
+   unmounted. Nothing is rebuilt on reopen and no scroll position is lost.
 
-/* right panel — live computer hierarchy */
-#apps{width:0;flex:none;background:var(--side);border-left:none;overflow:hidden;
-  transition:width .25s ease;display:flex;flex-direction:column}
-#apps.open{width:320px;border-left:1px solid var(--line)}
-#apps>*{min-width:300px}
+   The body is pinned to the panel's OUTER edge and the rail to its inner one,
+   both absolutely. That is what makes the collapse a reveal: the body stays put
+   in the window at a fixed width while the panel's width — and therefore the
+   clip — animates over it, so no text reflows on the way and the rail is never
+   the thing that gets clipped away. */
+.panel{flex:none;position:relative;background:var(--side);overflow:hidden;
+  transition:width .25s ease}
+.panel-body{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;
+  overflow:hidden}
+.panel-rail{position:absolute;top:0;bottom:0;width:16px;z-index:2;
+  cursor:pointer;border:none;background:var(--side);
+  color:var(--dim);font-size:11px;line-height:1;padding:0;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .18s,color .18s}
+.panel-rail:hover{background:var(--panel);color:var(--accent)}
+/* Ted used an app while the panel was shut. The rail is the only thing on
+   screen to say so, so it is what lights up. */
+.panel-rail.noted{color:var(--accent);background:var(--accent-soft)}
+
+/* ── sidebar ─────────────────────────────────────────────── */
+#side{width:266px;border-right:1px solid var(--line)}   /* 250 body + 16 rail */
+#side.collapsed{width:16px}
+#side .panel-body{left:0;width:250px}
+#side .panel-rail{right:0;border-left:1px solid var(--line)}
+#side .panel-body>*{min-width:230px}
+
+/* right panel — live computer hierarchy. Starts collapsed, so by default the
+   only part of it on screen is its 16px rail. */
+#apps{width:336px;border-left:1px solid var(--line)}    /* 320 body + 16 rail */
+#apps.collapsed{width:16px}
+#apps .panel-body{right:0;width:320px}
+#apps .panel-rail{left:0;border-right:1px solid var(--line)}
+#apps .panel-body>*{min-width:300px}
 .apps-head{padding:15px 15px 9px;border-bottom:1px solid var(--line)}
 .apps-head h3{font-size:10px;letter-spacing:.22em;color:var(--dim)}
 #apps-summary{font-size:11px;color:var(--dim);margin-top:3px}
@@ -329,19 +358,21 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 </head>
 <body>
 
-<div id="side">
-  <div class="brand"><span class="t">TED</span><span class="v" id="hdr-v">v4</span></div>
-  <button id="newchat">+ New chat</button>
-  <div id="chats"></div>
-  <div id="sidefoot">
-    <div id="membtn" title="Ted's memory">&#9783; Memory</div>
-    <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
+<div id="side" class="panel">
+  <div class="panel-body">
+    <div class="brand"><span class="t">TED</span><span class="v" id="hdr-v">v4</span></div>
+    <button id="newchat">+ New chat</button>
+    <div id="chats"></div>
+    <div id="sidefoot">
+      <div id="membtn" title="Ted's memory">&#9783; Memory</div>
+      <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
+    </div>
   </div>
+  <button class="panel-rail" id="side-rail"></button>
 </div>
 
 <div id="main">
   <div id="top">
-    <button class="hbtn" id="side-toggle" title="Show / hide chats">&#9776;</button>
     <div id="np-stack">
       <span id="np-slot"><span>&#9834;</span><span id="np-text"></span></span>
       <button id="np-skip" title="Skip this song — goes straight to Spotify, costs nothing">&#9654;&#9654; SKIP</button>
@@ -361,7 +392,6 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
         <span id="bud-txt" class="mono">–</span>
       </span>
       <span id="status"><i></i><span id="status-t"></span></span>
-      <button class="hbtn" id="apps-toggle" title="Apps Ted has used">&#8862;</button>
     </div>
   </div>
   <div id="chips"></div>
@@ -411,10 +441,13 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   </div>
 </div>
 
-<div id="apps">
-  <div class="apps-head"><h3>COMPUTER</h3><div id="apps-summary">Reading live state…</div></div>
-  <div id="apps-list"><div id="apps-empty">Apps, windows, browser tabs, and terminal
-    branches appear here as macOS confirms them.</div></div>
+<div id="apps" class="panel collapsed">
+  <button class="panel-rail" id="apps-rail"></button>
+  <div class="panel-body">
+    <div class="apps-head"><h3>COMPUTER</h3><div id="apps-summary">Reading live state…</div></div>
+    <div id="apps-list"><div id="apps-empty">Apps, windows, browser tabs, and terminal
+      branches appear here as macOS confirms them.</div></div>
+  </div>
 </div>
 
 <div id="ctxmenu"><button id="ctx-copy">Copy</button></div>
@@ -869,15 +902,31 @@ function renderApps(){
     host.appendChild(d);
   });
 }
-function toggleSide(){
-  var c=$('side').classList.toggle('collapsed');
-  try{ localStorage.setItem('ted_side',c?'closed':'open'); }catch(e){}
+/* One collapse component, instantiated twice — chat panel on the left, computer
+   panel on the right, mirrored. The controls used to live in the header, which
+   put the button for a panel nowhere near the panel; each now has a rail on its
+   own inner edge, and that same rail is what stays behind to reopen it. */
+function makeCollapsible(panelId, railId, opts){
+  var panel=$(panelId), rail=$(railId);
+  function apply(collapsed, persist){
+    panel.classList.toggle('collapsed', collapsed);
+    /* Chevron points the way the panel will move, so the rail says what it
+       does rather than what it is. */
+    rail.innerHTML=collapsed?opts.openGlyph:opts.closeGlyph;
+    rail.title=collapsed?opts.openTitle:opts.closeTitle;
+    if(persist){ try{ localStorage.setItem(opts.key, collapsed?'closed':'open'); }catch(e){} }
+    if(opts.onChange) opts.onChange(collapsed);
+  }
+  rail.onclick=function(){ apply(!panel.classList.contains('collapsed'), true); };
+  var saved=null;
+  try{ saved=localStorage.getItem(opts.key); }catch(e){}
+  apply(saved===null ? !!opts.startCollapsed : saved==='closed', false);
+  return {
+    toggle:function(){ apply(!panel.classList.contains('collapsed'), true); },
+    isOpen:function(){ return !panel.classList.contains('collapsed'); }
+  };
 }
-function toggleApps(){
-  $('apps').classList.toggle('open');
-  $('apps-toggle').classList.remove('noted');
-  renderApps();
-}
+var sidePanel, appsPanel;   // assigned at boot, once the DOM is parsed
 
 /* ── clock / date / weather ───────────────────────────────────
    Always up. The hide button and the toggle_clock tool behind it were removed
@@ -1079,7 +1128,7 @@ var tedHud={
     var label=map[tool]; if(!label) return;
     appsUsed[label]=Date.now();
     renderApps();
-    if(!$('apps').classList.contains('open')) $('apps-toggle').classList.add('noted');
+    if(appsPanel && !appsPanel.isOpen()) $('apps-rail').classList.add('noted');
   },
 
   /* memory overlay */
@@ -1192,8 +1241,17 @@ $('tplay').onclick=function(){ transport(npPlaying?'pause':'play'); };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
-$('side-toggle').onclick=toggleSide;
-$('apps-toggle').onclick=toggleApps;
+sidePanel=makeCollapsible('side','side-rail',{
+  key:'ted_side', startCollapsed:false,
+  openGlyph:'›', closeGlyph:'‹',
+  openTitle:'Show chats', closeTitle:'Hide chats'});
+appsPanel=makeCollapsible('apps','apps-rail',{
+  key:'ted_apps', startCollapsed:true,
+  openGlyph:'‹', closeGlyph:'›',
+  openTitle:'Show what is open on your Mac', closeTitle:'Hide the computer panel',
+  onChange:function(collapsed){
+    if(!collapsed){ $('apps-rail').classList.remove('noted'); renderApps(); }
+  }});
 
 /* ── copying selected text ────────────────────────────────────
    pywebview's macOS WKWebView has no Edit menu, so the system Cmd+C and the
@@ -1226,7 +1284,7 @@ $('ctx-copy').onclick=function(){
 document.addEventListener('mousedown',function(e){
   if(!$('ctxmenu').contains(e.target)) $('ctxmenu').classList.remove('open');
 });
-setInterval(function(){ if($('apps').classList.contains('open')) renderApps(); },60000);
+setInterval(function(){ if(appsPanel && appsPanel.isOpen()) renderApps(); },60000);
 /* The minute window slides whether or not he is typing, so the bar has to move
    on its own. 10s is often enough to watch it recover after a rate limit and
    cheap enough to ignore. */
@@ -1268,7 +1326,6 @@ document.addEventListener('keydown',function(e){
   setInterval(refreshChats,60000);   // keep sidebar timestamps fresh
   tickClock(); fitHeader();
   setTimeout(fetchWeather,2500);     // give the local server a moment first
-  try{ if(localStorage.getItem('ted_side')==='closed') $('side').classList.add('collapsed'); }catch(e){}
   $('input').focus();
 })();
 </script>
