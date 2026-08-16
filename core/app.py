@@ -16,11 +16,11 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (features, lingo, llm, memory, music, routing, routines, system_state,
-                  telemetry, tool_handlers as th, voice)
+from core import (features, lingo, llm, memory, music, pet, routing, routines,
+                  system_state, telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
-from core.hud_bridge import js, set_state, add_message, show_issue
+from core.hud_bridge import js, set_state as _hud_set_state, add_message, show_issue
 from core.intents import (
     _normalize_cmd, _matches, _split_commands,
     _is_stop_command, _is_cancel_command, _is_repeat_command,
@@ -53,6 +53,33 @@ from core.voice import speak, speak_streaming, capture, engine
 # text or a tool call. Set TED_LEGACY_LADDER=1 to fall back if the new path
 # misbehaves on real hardware. Temporary — delete once it has proven itself.
 LEGACY_LADDER = os.environ.get("TED_LEGACY_LADDER") == "1"
+
+# The desk pet mirrors the HUD's own state indicator rather than being driven
+# from its own call sites. There are a dozen places that put Ted into
+# "thinking" and exactly one of them would eventually be forgotten, leaving a
+# bear that lies about whether Ted is working. Wrapping the shared helper means
+# the pet cannot drift from the HUD by construction.
+#
+# "idle" here means only "not mid-turn". Whether resting actually looks bored
+# depends on how long it has been since Charlie said anything, which apps_watch
+# owns because it is the loop that already ticks every five seconds.
+_PET_FOR_HUD_STATE = {
+    "thinking": "thinking",
+    "listening": "idle",
+    "speaking": "idle",
+    "idle": "idle",
+    "error": "idle",
+}
+
+
+def set_state(window, s):
+    """Drive the HUD state indicator, and keep the pet honest about it."""
+    _hud_set_state(window, s)
+    try:
+        pet.set_state(_PET_FOR_HUD_STATE.get(s, "idle"))
+    except Exception:
+        pass          # the pet is decoration; it never breaks a turn
+
 
 # Gate-5 usage logging. See TedApi._assistant_command for why this exists.
 _GATE5_TRACE = os.environ.get("TED_GATE5_TRACE") == "1"
@@ -291,6 +318,10 @@ class TedApi:
         # sink is registered once and core/memory.py owns the decision about
         # what counts as an event; this end only draws it.
         memory.set_event_sink(self._on_memory_event)
+        # The floating pet's window, assigned by hud.py once it exists. None
+        # whenever Charlie has closed it or the platform refused to open it,
+        # and core/pet.py tolerates that everywhere.
+        self.pet_window          = None
         self._session_exchanges  = 0
         self._memory_lock        = threading.Lock()
         self._pattern_check_done = False           # proactive offer fires at most once per startup
@@ -325,6 +356,11 @@ class TedApi:
                 "at": time.time(),
             }
             js(self.window, f"tedHud.memoryEvent({json.dumps(ev)})")
+            # Learning something worth keeping is the one moment the bear has
+            # an opinion about. Only importance 3, or it would be excited most
+            # of the day and the signal would mean nothing.
+            if ev.get("kind") == "added" and int(ev.get("importance", 2)) >= 3:
+                pet.react("excited")
         except Exception as e:
             error_log.error(f"[memory] event to HUD failed: {e}")
 
@@ -3095,6 +3131,15 @@ class TedApi:
                     js(self.window, f"tedHud.setOpenApps({json.dumps(apps)})")
             except Exception:
                 pass
+            # Boredom is a function of elapsed silence, so it needs a clock
+            # rather than an event. This loop already has one. Only ever moves
+            # the bear between its two resting states — a turn in flight owns
+            # the pet and must not be interrupted by a tick.
+            try:
+                if not self.busy:
+                    pet.set_state(self._pet_resting_state())
+            except Exception:
+                pass
             # Connection health dots — Groq / Neo4j memory / Spotify.
             # Groq uses a tracked flag (no wasteful ping); memory checks the driver;
             # Spotify reads the apps list we already have, or the Web API toggle.
@@ -3147,6 +3192,10 @@ class TedApi:
         # as Ted freezing. The reason was already known — it was just recorded
         # for telemetry after the wait instead of shown during it.
         llm.providers.set_fallback_notice(self._announce_local_handover)
+        # The HUD's pet button has to agree with reality from the first frame,
+        # including the case where the pet was enabled but the platform refused
+        # to open its window.
+        self._push_pet_state()
         threading.Thread(target=self.conversation_loop,     daemon=True).start()
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
@@ -3253,6 +3302,46 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    # ── the floating pet ───────────────────────────────────────────────────
+    # Two entry points, because the bear can be dismissed from itself but can
+    # only be brought back from the HUD — a pet with no way back would be a
+    # one-way door on a feature Charlie asked to be able to close.
+
+    def pet_close(self):
+        """The × on the bear. Closes it and remembers that across launches."""
+        pet.close_pet(remember=True)
+        self.pet_window = None
+        self._push_pet_state()
+        return False
+
+    def pet_toggle(self):
+        """HUD control: show or hide the pet. Returns whether it is now visible."""
+        if pet.is_open():
+            return self.pet_close()
+        try:
+            import webview
+            pet.set_enabled(True)
+            self.pet_window = pet.open_pet(webview, js_api=self)
+        except Exception as exc:
+            error_log.error(f"[pet] could not reopen: {exc}")
+            self.show_issue("I couldn't open the pet window.")
+            return False
+        self._push_pet_state()
+        pet.set_state(self._pet_resting_state())
+        return pet.is_open()
+
+    def pet_visible(self):
+        """Whether the pet is on screen right now, for the HUD's button state."""
+        return pet.is_open()
+
+    def _push_pet_state(self):
+        """Keep the HUD's pet button in step with whether the bear exists."""
+        js(self.window, f"tedHud.setPetVisible({json.dumps(pet.is_open())})")
+
+    def _pet_resting_state(self):
+        """What the bear should sit at when Ted is not doing anything."""
+        return pet.idle_or_bored(self.last_exchange_time)
 
     def toggle_mute(self):
         """Mic button: full voice mode on/off — capture and speech together."""

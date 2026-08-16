@@ -149,8 +149,10 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#voicebtn{cursor:pointer;padding:6px 0;color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#voicebtn:hover{color:var(--text)}
+#membtn,#diagbtn,#voicebtn,#petbtn{cursor:pointer;padding:6px 0;color:var(--dim);transition:color .2s}
+#membtn:hover,#diagbtn:hover,#voicebtn:hover,#petbtn:hover{color:var(--text)}
+/* Lit only while the bear is actually on screen. */
+#petbtn.on{color:var(--accent)}
 /* Voice identity. A label on a turn, never a permission — so it is styled like
    a status line and not like a lock. */
 #voicebtn.known{color:var(--accent)}
@@ -440,6 +442,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="voicebtn" title="Whose voice Ted last heard">&#9679; Voice</div>
       <div id="membtn" title="Ted's memory">&#9783; Memory</div>
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
+      <!-- The only way back once the bear has been dismissed from its own
+           close button. Without this, closing the pet is a one-way door. -->
+      <div id="petbtn" title="Show or hide the floating pet">&#128053; Pet</div>
     </div>
   </div>
 </div>
@@ -1295,6 +1300,13 @@ var tedHud={
       t.classList.remove('show','memory','keyfact'); t.onclick=null;
     },key?13000:9000);
   },
+  /* Pushed by core/app.py whenever the pet is opened or closed, from either
+     side — the bear's own × or this button. */
+  setPetVisible:function(on){
+    var b=$('petbtn'); if(!b) return;
+    b.classList.toggle('on',!!on);
+    b.title=on?'Hide the floating pet':'Show the floating pet';
+  },
   setMuted:function(m){
     muted=!!m;
     $('mic').classList.toggle('on',!muted);
@@ -1601,6 +1613,12 @@ $('chatqx').onclick=function(){ $('chatq').value=''; setSearch(''); $('chatq').f
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
+$('petbtn').onclick=function(){
+  /* Optimism here would be a lie: opening a native window can fail, so the
+     button only lights up once Python says the window actually exists. */
+  if(!window.pywebview||!pywebview.api||!pywebview.api.pet_toggle) return;
+  pywebview.api.pet_toggle().then(function(on){ tedHud.setPetVisible(on); });
+};
 sidePanel=makeCollapsible('side','side-tab',{
   key:'ted_side', startCollapsed:false,
   openGlyph:'&#9776;', closeGlyph:'&#10094;',
