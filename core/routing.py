@@ -75,7 +75,7 @@ _FAMILIES = (
     (r"\b(?:message|text|imessage|send .*? to|tell .*? that)\b",
      ("send_message",)),
     (r"\b(?:remind|reminder|timer|alarm|clock)\b",
-     ("set_reminder", "set_timer", "get_reminders", "toggle_clock")),
+     ("set_reminder", "set_timer", "get_reminders")),
     (r"\b(?:weather|forecast|temperature|rain|snow)\b", ("get_weather",)),
     (r"\b(?:email|mail|inbox|subject|reply|flag|unread)\b",
      ("get_emails", "read_email", "email_action", "send_email")),

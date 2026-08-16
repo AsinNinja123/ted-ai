@@ -1985,10 +1985,6 @@ class TedApi:
                 return th.tool_set_timer(args.get("duration", ""))
             if name == "get_reminders":
                 return th.tool_get_reminders()
-            if name == "toggle_clock":
-                _mode = args.get("mode", "toggle")
-                js(self.window, f"tedHud.toggleClock({json.dumps(_mode)})")
-                return {"on": "Clock is up.", "off": "Clock hidden."}.get(_mode, "Toggled the clock.")
             if name == "get_weather":
                 return th.tool_get_weather()
             if name == "get_emails":

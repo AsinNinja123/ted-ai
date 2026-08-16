@@ -91,7 +91,13 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 
 /* ── main column ─────────────────────────────────────────── */
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
-#top{padding:10px 16px;border-bottom:1px solid var(--line);position:relative;
+/* Everything in the header is a real flex item. Nothing is absolutely
+   positioned any more: the clock used to be pinned to the centre of #top with
+   left:50%/translate, which meant that opening the apps panel narrowed #main
+   and slid the clock straight under the token widget. Flex items cannot
+   overlap — they shrink and, at the narrowest widths, drop out in the order
+   set by the media queries below. */
+#top{padding:10px 16px;border-bottom:1px solid var(--line);
   display:flex;align-items:center;gap:10px;min-height:58px}
 #chat-title{display:none}
 .hbtn{background:none;border:none;color:var(--dim);cursor:pointer;font-size:15px;
@@ -111,17 +117,24 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 /* now playing — top left, out of the chat's way */
 #np-slot{font-size:11.5px;color:var(--dim);display:none;align-items:center;gap:5px;
   background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:3px 11px;
-  max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  flex:0 1 auto;min-width:0}
 #np-slot.show{display:flex}
+#np-text{overflow:hidden;text-overflow:ellipsis}
 
-/* clock — dead centre: time on top, date+weather under it */
-#clock{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
-  text-align:center;line-height:1.35}
-#clock.hidden{display:none}
+/* clock — centred by equal auto margins rather than by absolute positioning,
+   so it is pushed aside by its neighbours instead of drawn on top of them.
+   min-width:0 lets it give up space before anything is clipped. */
+#clock{margin:0 auto;text-align:center;line-height:1.35;min-width:0;
+  white-space:nowrap;overflow:hidden}
 #clk-time{font:600 16px ui-monospace,Menlo,monospace;letter-spacing:.05em}
-#clk-sub{font-size:11px;color:var(--dim)}
+#clk-sub{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis}
 #clk-sub .wx{color:var(--accent)}
-#topright{margin-left:auto;display:flex;align-items:center;gap:2px;flex:none}
+/* The right-hand stack. flex-wrap:nowrap with each child flex:none keeps the
+   budget gauge, the status lamp and the panel buttons on one line at any width
+   the window can actually take. */
+#topright{margin-left:auto;display:flex;align-items:center;gap:2px;flex:none;
+  flex-wrap:nowrap}
 #chips{display:flex;gap:8px;padding:0 22px;flex-wrap:wrap}
 .chip{margin-top:8px;background:var(--panel);border:1px solid var(--line);border-radius:16px;
   padding:3px 12px;font-size:11.5px;color:var(--dim);display:flex;gap:6px;align-items:center}
@@ -246,9 +259,18 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #remlist div{font-size:12.5px;padding:4px 0;border-bottom:1px solid var(--line)}
 #remlist div:last-child{border:none}
 
+/* Header crowding is driven by the width of #top itself, not the window: opening
+   the apps panel narrows #main without changing the viewport, so a media query
+   would miss exactly the case A5 is about. A ResizeObserver sets these classes
+   from the measured width instead. Order of sacrifice, least useful first:
+   the now-playing pill (the transport strip above the input box says the same
+   thing), then the clock. The budget gauge and status lamp never drop. */
+#top.tight #np-slot{display:none}
+#top.xtight #clock{display:none}
+
 /* live token budget + which brain answered */
 #budget{display:flex;align-items:center;gap:7px;margin-right:10px;font-size:11px;
-  color:var(--dim)}
+  color:var(--dim);flex:none}
 #bud-bar{width:66px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);
   overflow:hidden;display:inline-block}
 #bud-bar i{display:block;height:100%;width:0;background:#3ecf8e;
@@ -324,7 +346,6 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
         <span id="bud-txt" class="mono">–</span>
       </span>
       <span id="status"><i></i><span id="status-t"></span></span>
-      <button class="hbtn" id="clk-toggle" title="Show / hide clock &amp; weather">&#9716;</button>
       <button class="hbtn" id="apps-toggle" title="Apps Ted has used">&#8862;</button>
     </div>
   </div>
@@ -840,27 +861,35 @@ function toggleApps(){
   renderApps();
 }
 
-/* ── clock / date / weather ───────────────────────────────── */
-var clockOn=true;
-try{ clockOn=(localStorage.getItem('ted_clock')!=='off'); }catch(e){}
-function applyClock(){
-  $('clock').classList.toggle('hidden',!clockOn);
-  try{ localStorage.setItem('ted_clock',clockOn?'on':'off'); }catch(e){}
-}
+/* ── clock / date / weather ───────────────────────────────────
+   Always up. The hide button and the toggle_clock tool behind it were removed
+   on 2026-08-16: one control that only ever hid a clock is not worth a button
+   in the header, a branch in the dispatcher, and a schema on every turn that
+   mentions a timer. */
 function tickClock(){
-  if(!clockOn) return;
   var d=new Date();
   $('clk-time').textContent=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit',second:'2-digit'});
   $('clk-date').textContent=d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});
 }
 function fetchWeather(){
-  if(!clockOn) return;
   apiFetch('/weather').then(function(w){
     if(w&&w.temp!=null) $('clk-wx').textContent=' · '+w.temp+'° '+(w.desc||'');
   }).catch(function(){ $('clk-wx').textContent=''; });
 }
 setInterval(tickClock,1000);
 setInterval(fetchWeather,15*60*1000);
+
+/* Header crowding, measured rather than guessed. Watching #top covers both
+   causes at once — the window being resized and the apps panel opening — so
+   there is one rule instead of two that can disagree. */
+function fitHeader(){
+  var top=$('top'); if(!top) return;
+  var w=top.clientWidth;
+  top.classList.toggle('tight', w<620);
+  top.classList.toggle('xtight', w<470);
+}
+if(window.ResizeObserver){ new ResizeObserver(fitHeader).observe($('top')); }
+else{ window.addEventListener('resize',fitHeader); }
 
 /* ── tedHud: the full API Python calls ────────────────────── */
 var toastT=null, heardT=null;
@@ -1035,15 +1064,6 @@ var tedHud={
     if(!$('apps').classList.contains('open')) $('apps-toggle').classList.add('noted');
   },
 
-  /* clock widget — Ted can toggle this himself via the toggle_clock tool */
-  toggleClock:function(mode){
-    if(mode==='on') clockOn=true;
-    else if(mode==='off') clockOn=false;
-    else clockOn=!clockOn;
-    applyClock();
-    if(clockOn){ tickClock(); fetchWeather(); }
-  },
-
   /* memory overlay */
   showMemory:function(){
     var f=$('memframe'); if(!f.src) f.src='http://127.0.0.1:5175';
@@ -1148,7 +1168,6 @@ $('tplay').onclick=function(){ transport(npPlaying?'pause':'play'); };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
-$('clk-toggle').onclick=function(){ tedHud.toggleClock(); };
 $('side-toggle').onclick=toggleSide;
 $('apps-toggle').onclick=toggleApps;
 
@@ -1223,7 +1242,7 @@ document.addEventListener('keydown',function(e){
     });
   })();
   setInterval(refreshChats,60000);   // keep sidebar timestamps fresh
-  applyClock(); tickClock();
+  tickClock(); fitHeader();
   setTimeout(fetchWeather,2500);     // give the local server a moment first
   try{ if(localStorage.getItem('ted_side')==='closed') $('side').classList.add('collapsed'); }catch(e){}
   $('input').focus();

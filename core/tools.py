@@ -314,26 +314,9 @@ TOOL_SCHEMAS = [
 
     # (named-list / to-do tools removed 2026-08 — feature retired)
 
-    # ── HUD widgets ───────────────────────────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "toggle_clock",
-            "description": (
-                "Show or hide the clock/date/weather widget in the chat window. "
-                "Use when the user asks to show, hide, or toggle the clock, the "
-                "time display, or the weather widget."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mode": {"type": "string", "enum": ["on", "off", "toggle"],
-                             "description": "'on' shows it, 'off' hides it, 'toggle' flips it"}
-                },
-                "required": []
-            }
-        }
-    },
+    # (toggle_clock removed 2026-08-16 — the clock is always up now, so there is
+    #  nothing for the model to toggle and no schema to pay for on every
+    #  "set a timer".)
 
     # ── Weather ───────────────────────────────────────────────────────────────
     {

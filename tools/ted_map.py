@@ -170,7 +170,7 @@ TOOL_GROUPS = [
     ("Music", ["play_music", "play_playlist", "spotify_control"]),
     ("Messages and mail", ["send_message", "get_emails", "read_email",
                            "email_action", "send_email"]),
-    ("Time", ["set_reminder", "set_timer", "get_reminders", "toggle_clock"]),
+    ("Time", ["set_reminder", "set_timer", "get_reminders"]),
     ("Calendar and notes", ["calendar_get", "calendar_add", "notes_add", "notes_get"]),
     ("Your documents", ["search_knowledge", "add_knowledge"]),
     ("Numbers and habits", ["calculate", "log_habit", "get_habit_streak"]),
