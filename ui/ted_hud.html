@@ -288,6 +288,25 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #heard{max-width:740px;margin:0 auto 6px;font-size:12px;color:var(--dim);
   min-height:16px;padding:0 4px;opacity:0;transition:opacity .25s}
 #heard.show{opacity:1}
+/* staged attachments, above the composer */
+#attachments{max-width:740px;margin:0 auto 7px;display:none;flex-wrap:wrap;gap:6px}
+#attachments.has{display:flex}
+.att{display:flex;align-items:center;gap:7px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:9px;padding:5px 8px;font-size:11.5px;
+  color:var(--text);max-width:330px}
+.att .ic{flex:none;opacity:.75}
+.att .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.att .sub{color:var(--dim);font-size:10.5px;white-space:nowrap;flex:none}
+.att .x{cursor:pointer;color:var(--dim);flex:none;padding:0 2px;border-radius:4px}
+.att .x:hover{color:var(--warn)}
+/* A drop target that only appears mid-drag. A permanent dashed outline around
+   the chat would be UI clutter for a thing done once a week. */
+#drop{position:fixed;inset:0;z-index:60;display:none;align-items:center;
+  justify-content:center;background:rgba(12,11,10,.78);
+  border:2px dashed var(--accent);border-radius:14px;
+  color:var(--accent);font-size:15px;letter-spacing:.04em;pointer-events:none}
+#drop.on{display:flex}
+
 #bar{max-width:740px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;
   background:var(--panel);border:1px solid var(--line);border-radius:22px;padding:8px 10px}
 #bar:focus-within{border-color:#3a3a3a}
@@ -495,6 +514,10 @@ falls back to the local model; the other two are pinned and never fall back.">
       <span id="nptext"></span>
     </div>
     <div id="heard"></div>
+    <!-- Staged files, above the box they will be sent with. Empty and
+         display:none until something is attached, so an ordinary session never
+         sees it. -->
+    <div id="attachments"></div>
     <div id="bar">
       <button class="ibtn" id="mic" title="Voice mode on/off">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -502,6 +525,16 @@ falls back to the local model; the other two are pinned and never fall back.">
           <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
           <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
           <line x1="12" y1="18" x2="12" y2="22"/>
+        </svg>
+      </button>
+      <!-- Attach. The native picker is the reliable path because it hands
+           Python a real filesystem path; dragging and pasting have to go
+           through bytes, since the webview sandbox never gives one up. -->
+      <button class="ibtn" id="attach" title="Attach a file, photo, or PDF">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.4 11.05 12.25 20.2a5.5 5.5 0 0 1-7.78-7.78l9.2-9.2a3.67
+                   3.67 0 0 1 5.18 5.18l-9.2 9.2a1.83 1.83 0 0 1-2.6-2.6l8.5-8.48"/>
         </svg>
       </button>
       <textarea id="input" rows="1" placeholder="Message Ted…"></textarea>
@@ -534,6 +567,8 @@ falls back to the local model; the other two are pinned and never fall back.">
       branches appear here as macOS confirms them.</div></div>
   </div>
 </div>
+
+<div id="drop">Drop it anywhere to attach</div>
 
 <div id="ctxmenu"><button id="ctx-copy">Copy</button></div>
 
@@ -1498,16 +1533,30 @@ window.tedHud=tedHud;
 /* ── controls ─────────────────────────────────────────────── */
 function sendMsg(){
   var input=$('input');
-  var txt=input.value.trim(); if(!txt) return;
+  var txt=input.value.trim();
+  /* An attachment on its own is a complete message — "what is this?" is the
+     obvious follow-up and Ted can infer it, so an empty box with a file
+     staged must not be treated as nothing to send. */
+  if(!txt && !staged.length) return;
+  var sending=staged.slice();
   input.value=''; input.style.height='auto';
+  staged=[]; renderAttachments();
   /* Timed from the keypress, not from when the request was accepted — the
      second number flatters itself by excluding retrieval, retries and the
      entire local-brain attempt, which is exactly where the waiting was. */
   turnT0=Date.now();
-  addBubble('user',txt);
-  recordTurn('user',txt);
+  /* The bubble names what went with the message. Without this the transcript
+     shows a question about a document that is not in it, which is unreadable
+     a week later. */
+  var shown=txt;
+  if(sending.length){
+    var names=sending.map(function(a){ return a.name; }).join(', ');
+    shown=(txt?txt+'\n\n':'')+'\u{1F4CE} '+names;
+  }
+  addBubble('user',shown);
+  recordTurn('user',shown);
   tedHud.setState('thinking');
-  if(inApp()) window.pywebview.api.ask(txt);
+  if(inApp()) window.pywebview.api.ask(txt||'What is this?');
 }
 $('send').onclick=sendMsg;
 $('input').addEventListener('keydown',function(e){
@@ -1613,6 +1662,120 @@ $('chatqx').onclick=function(){ $('chatq').value=''; setSearch(''); $('chatq').f
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
+/* ── attachments ──────────────────────────────────────────────────────────
+   Three ways in, because Charlie will try all three: the paperclip (native
+   picker, which is the only route that yields a real filesystem path), a file
+   dragged onto the window, and a screenshot pasted from the clipboard. The
+   last two can only be read as bytes — the webview sandbox never surrenders a
+   path — so they go to Python as data URLs and are written to a temp file
+   there, keeping exactly one code path for resolving an attachment.
+
+   Python owns the staged list, not this file. The chips are a redraw of what
+   attach_pending() reports, so the window can never show a file the next turn
+   will not actually send.                                                    */
+var staged=[];
+
+function api(){ return (window.pywebview && pywebview.api) ? pywebview.api : null; }
+
+function renderAttachments(){
+  var box=$('attachments');
+  box.innerHTML='';
+  box.classList.toggle('has', staged.length>0);
+  staged.forEach(function(a,i){
+    var el=document.createElement('div');
+    el.className='att';
+    var icon=a.kind==='image'?'&#128247;':(a.kind==='document'?'&#128196;':'&#128441;');
+    el.innerHTML='<span class="ic">'+icon+'</span>'+
+      '<span class="nm">'+esc(a.name)+'</span>'+
+      '<span class="sub">'+esc(prettySize(a.size))+'</span>'+
+      '<span class="x" title="Remove">&times;</span>';
+    el.querySelector('.x').onclick=function(){
+      /* Removing one means re-staging the rest: Python holds the list, and
+         there is no partial-removal call worth adding for a rare action. */
+      var keep=staged.filter(function(_,j){ return j!==i; });
+      if(!api()) return;
+      api().attach_clear().then(function(){
+        staged=[];
+        renderAttachments();
+        if(keep.length) reAttach(keep);
+      });
+    };
+    box.appendChild(el);
+  });
+}
+
+/* Re-staging after a removal needs the bytes again, which the chip does not
+   hold. Only paths can be re-sent, so dropped/pasted files are re-read from
+   the temp copies Python already made. */
+function reAttach(items){
+  var paths=items.map(function(a){ return a.path; }).filter(Boolean);
+  if(!paths.length || !api()) return;
+  api().attach_files(paths).then(function(res){
+    staged=staged.concat(res.filter(function(r){ return !r.error; }));
+    renderAttachments();
+  });
+}
+
+function prettySize(n){
+  if(!n) return '';
+  if(n < 1024) return n+' B';
+  if(n < 1024*1024) return Math.round(n/1024)+' KB';
+  return (n/1048576).toFixed(1)+' MB';
+}
+
+function stageResults(res){
+  (res||[]).forEach(function(a){ if(!a.error) staged.push(a); });
+  renderAttachments();
+}
+
+$('attach').onclick=function(){
+  if(!api()) return;
+  api().attach_pick().then(stageResults);
+};
+
+/* Read a File/Blob to a data URL and hand it over. */
+function sendBlob(file){
+  var reader=new FileReader();
+  reader.onload=function(){
+    if(!api()) return;
+    api().attach_data(file.name||'pasted', reader.result).then(stageResults);
+  };
+  reader.readAsDataURL(file);
+}
+
+/* dragover must be cancelled on BOTH document and the drop zone or WebKit
+   navigates away from the HUD to display the dropped file, which looks exactly
+   like Ted crashing. */
+var dragDepth=0;
+document.addEventListener('dragenter',function(e){
+  e.preventDefault(); dragDepth++; $('drop').classList.add('on');
+});
+document.addEventListener('dragover',function(e){ e.preventDefault(); });
+document.addEventListener('dragleave',function(e){
+  e.preventDefault();
+  if(--dragDepth<=0){ dragDepth=0; $('drop').classList.remove('on'); }
+});
+document.addEventListener('drop',function(e){
+  e.preventDefault();
+  dragDepth=0; $('drop').classList.remove('on');
+  var files=(e.dataTransfer&&e.dataTransfer.files)||[];
+  for(var i=0;i<files.length;i++) sendBlob(files[i]);
+});
+
+/* Cmd+Shift+4 into the chat box. Only intercepts when the clipboard actually
+   carries a file — pasting text must stay ordinary pasting. */
+$('input').addEventListener('paste',function(e){
+  var items=(e.clipboardData&&e.clipboardData.items)||[];
+  var took=false;
+  for(var i=0;i<items.length;i++){
+    if(items[i].kind==='file'){
+      var f=items[i].getAsFile();
+      if(f){ sendBlob(f); took=true; }
+    }
+  }
+  if(took) e.preventDefault();
+});
+
 $('petbtn').onclick=function(){
   /* Optimism here would be a lie: opening a native window can fail, so the
      button only lights up once Python says the window actually exists. */

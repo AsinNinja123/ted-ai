@@ -6,18 +6,22 @@ window exposes this object's public methods (start/listen/stop/toggle_mute/ask)
 to the JS side.
 """
 
+import base64
 import json
+import mimetypes
 import os
 import random
 import re
+import tempfile
 import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (features, lingo, llm, memory, music, pet, routing, routines,
-                  system_state, telemetry, tool_handlers as th, voice)
+from core import (attachments, features, lingo, llm, memory, music, pet,
+                  routing, routines, system_state, telemetry,
+                  tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
 from core.hud_bridge import js, set_state as _hud_set_state, add_message, show_issue
@@ -322,6 +326,9 @@ class TedApi:
         # whenever Charlie has closed it or the platform refused to open it,
         # and core/pet.py tolerates that everywhere.
         self.pet_window          = None
+        # Files staged for the NEXT message only. Filled by attach_files /
+        # attach_data, drained by the turn that sends them.
+        self._pending_attachments = []
         self._session_exchanges  = 0
         self._memory_lock        = threading.Lock()
         self._pattern_check_done = False           # proactive offer fires at most once per startup
@@ -848,6 +855,10 @@ class TedApi:
                 is_failure=th.looks_like_failure,
             )
         _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
+        # Attachments belong to exactly one turn. Taken rather than read, so a
+        # file cannot silently ride along on the next message — and cleared
+        # before the call, so a failure mid-turn does not strand it either.
+        _attached, self._pending_attachments = self._pending_attachments, []
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -857,7 +868,8 @@ class TedApi:
                                 context_scope=_context_scope,
                                 operational_context=_op_context,
                                 require_tool=routing.likely_action_request(routing_text),
-                                min_action_calls=routing.expected_action_calls(routing_text))
+                                min_action_calls=routing.expected_action_calls(routing_text),
+                                attachments=_attached)
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -3302,6 +3314,80 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    # ── attachments ────────────────────────────────────────────────────────
+    # Three ways in, because all three are things Charlie will actually try:
+    # the paperclip (native picker, real paths), dragging a file onto the
+    # window, and pasting a screenshot straight off the clipboard. The last two
+    # arrive as bytes because the browser sandbox never gives up a real path.
+
+    def attach_pick(self):
+        """Paperclip button: open the native file picker and stage what's chosen."""
+        try:
+            import webview
+            chosen = self.window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=True)
+        except Exception as exc:
+            error_log.error(f"[attach] file dialog failed: {exc}")
+            self.show_issue("I couldn't open the file picker.")
+            return []
+        return self.attach_files(list(chosen or []))
+
+    def attach_files(self, paths):
+        """Stage real filesystem paths. Returns one chip description per file."""
+        staged = []
+        for att in attachments.load_many(paths):
+            if att.error:
+                # A file that cannot be read is reported now, on the chip, and
+                # never staged — far better than Ted receiving an empty
+                # attachment and inventing what was in it.
+                self.show_issue(f"{att.name}: {att.error}")
+            else:
+                self._pending_attachments.append(att)
+            staged.append(att.as_dict())
+        print(f"[attach] staged {len(self._pending_attachments)} file(s)")
+        return staged
+
+    def attach_data(self, name, data_url):
+        """Stage a dropped or pasted file that arrived as bytes, not a path.
+
+        Written to a temp file first so exactly one code path resolves
+        attachments — a second in-memory branch is a second place for the
+        image handling to be subtly different.
+        """
+        try:
+            header, _, payload = (data_url or "").partition(",")
+            if not payload:
+                raise ValueError("empty data URL")
+            raw = base64.b64decode(payload)
+            if len(raw) > attachments.MAX_BYTES:
+                self.show_issue(f"{name} is too big to attach.")
+                return []
+            safe = os.path.basename(name or "pasted") or "pasted"
+            if "." not in safe:
+                # A pasted screenshot has no filename at all; give it the
+                # extension its own MIME type claims so kind_for works.
+                ext = mimetypes.guess_extension(
+                    header.split(":")[-1].split(";")[0]) or ".png"
+                safe += ext
+            folder = tempfile.mkdtemp(prefix="ted-attach-")
+            path = os.path.join(folder, safe)
+            with open(path, "wb") as fh:
+                fh.write(raw)
+        except Exception as exc:
+            error_log.error(f"[attach] could not stage {name!r}: {exc}")
+            self.show_issue(f"I couldn't read {name}.")
+            return []
+        return self.attach_files([path])
+
+    def attach_clear(self):
+        """The × on a staged chip, or sending a message that drops them."""
+        self._pending_attachments = []
+        return True
+
+    def attach_pending(self):
+        """What is staged right now, so the HUD can redraw its chips."""
+        return [a.as_dict() for a in self._pending_attachments]
 
     # ── the floating pet ───────────────────────────────────────────────────
     # Two entry points, because the bear can be dismissed from itself but can

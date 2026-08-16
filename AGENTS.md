@@ -27,7 +27,7 @@
 | Tools | 46 |
 | Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
 | Memory | 58 facts, ~1150 chat turns, 9 session memories |
-| Tests | 923 checks across 29 suites |
+| Tests | 960 checks across 30 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**

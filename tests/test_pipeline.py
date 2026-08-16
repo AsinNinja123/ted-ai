@@ -127,14 +127,18 @@ LLM_REQUIRE_TOOLS = []
 LLM_STREAM_REPLY = ["LLM reply."]
 
 
+LLM_ATTACHMENTS = []
+
+
 def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=False,
                         window=None, voice_mode=False, tool_runtime=None,
                         context_scope="full", operational_context="",
-                        require_tool=False, min_action_calls=0):
+                        require_tool=False, min_action_calls=0, attachments=None):
     LLM_STREAM_CALLS.append(text)
     LLM_STREAM_RUNTIMES.append(tool_runtime)
     LLM_CONTEXT_SCOPES.append(context_scope)
     LLM_REQUIRE_TOOLS.append(require_tool)
+    LLM_ATTACHMENTS.append(list(attachments or []))
     for piece in LLM_STREAM_REPLY:
         yield piece
 
@@ -142,7 +146,10 @@ def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=Fals
 llm.ask_streaming = _fake_ask_streaming
 
 EXTRACTED = []
-llm.extract_and_save_facts = lambda user_input, reply: (EXTRACTED.append(user_input), 1)[1]
+# reply is optional: ask_streaming now starts extraction when the message
+# arrives, so it is called with the user's text alone.
+llm.extract_and_save_facts = (
+    lambda user_input, reply="": (EXTRACTED.append(user_input), 1)[1])
 
 SENT_MESSAGES = []
 app_mod.search_contacts = lambda q: []
@@ -774,6 +781,30 @@ finally:
 # also pauses the music when Ted is not the one talking.
 api = make_api()
 check("with nothing running, stop is handled normally", not api.busy)
+
+print("\n— attachments belong to exactly one turn —")
+# The bug worth guarding: a file silently riding along on the next message.
+# Charlie attaches a syllabus, asks about it, then asks something unrelated —
+# the second question must not still be carrying the PDF.
+api = make_api()
+LLM_ATTACHMENTS.clear()
+
+
+class _FakeAttachment:
+    ok = True
+    kind = "document"
+    name = "syllabus.txt"
+
+
+api._pending_attachments = [_FakeAttachment()]
+api._respond("when is exam two")
+check("the staged file reaches the turn it was attached to",
+      LLM_ATTACHMENTS and len(LLM_ATTACHMENTS[-1]) == 1)
+check("…and is cleared from the staging area immediately",
+      api._pending_attachments == [])
+
+api._respond("what time is it")
+check("the next message carries nothing", LLM_ATTACHMENTS[-1] == [])
 
 print(f"\n{'=' * 50}\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

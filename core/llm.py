@@ -10,7 +10,8 @@ import time
 import traceback
 from datetime import date
 
-from core import features, intents, providers as _providers, routing, telemetry
+from core import (attachments as attachment_mod, features, intents,
+                  providers as _providers, routing, telemetry)
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
@@ -753,7 +754,7 @@ def _stream_turn(resp, calls, suppress_text=False, reasoned=None,
 def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
                   window=None, voice_mode=False, tool_runtime=None,
                   context_scope="full", operational_context="",
-                  require_tool=False, min_action_calls=0):
+                  require_tool=False, min_action_calls=0, attachments=None):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
@@ -963,9 +964,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     if tool_runtime is not None:
         _system = {"role": "system", "content": conversation[0]["content"] + (
             TOOL_RULES + TOOL_GUIDANCE if _real_tools else DISCOVERY_GUIDANCE)}
+    # With no attachment this returns user_input unchanged, so an ordinary turn
+    # is byte-identical to before — which the Groq prefix cache depends on.
+    _user_content = attachment_mod.build_user_content(user_input, attachments)
     messages = ([_system] + recent
                 + [{"role": "system", "content": context},
-                   {"role": "user", "content": user_input}])
+                   {"role": "user", "content": _user_content}])
 
     # Schemas still make one request do the old probe + response job, but they
     # are real input tokens and the free tier bills them. Routing therefore
@@ -1032,7 +1036,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # verdict is advisory — providers.chat_create still escalates to the cloud
     # if Ollama fails, so the worst case is latency, not a lost answer.
     _brain = routing.classify_brain_with_model(
-        user_input, schemas=(tool_runtime.schemas if tool_runtime else ()))
+        user_input, schemas=(tool_runtime.schemas if tool_runtime else ()),
+        has_attachment=bool(attachments))
     _turn.brain_choice = f"{_brain.brain} ({_brain.reason}, by {_brain.decided_by})"
     print(f"[router] {_brain.brain} — {_brain.reason} [{_brain.decided_by}]")
     _workload = "local_first" if _brain.is_local else "foreground"
