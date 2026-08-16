@@ -91,11 +91,84 @@ _MUTE_PHRASES = _norm_set(
     "shh", "go quiet",
 )
 
+# ── explicit memory control ──────────────────────────────────────────────────
+# The bare, referring forms. "remember that I'm 20" already had a home (the
+# _REMEMBER_VERB regex in core/app.py, which takes the body straight out of the
+# sentence); what had none was "remember this" said about something already on
+# screen, where the thing to remember is in a DIFFERENT message.
+_MEMORY_ADD_PHRASES = _norm_set(
+    "remember this", "remember that", "remember it",
+    "add this to memory", "add that to memory", "add this to your memory",
+    "save this to memory", "save that to memory", "put this in memory",
+    "keep this in memory", "note this", "note that", "note this down",
+)
+# "forget that" is deliberately in BOTH this set and _CANCEL_PHRASES. It is
+# genuinely ambiguous in English — "forget that" after Ted says he stored
+# something means unstore it; "forget that" after a half-finished request means
+# drop the request. Neither reading is wrong, so the phrase is not what settles
+# it: core/app.py prefers the memory reading only when there is a recent memory
+# to remove, and falls back to cancel otherwise. See _is_cancel_command below.
+_MEMORY_DROP_PHRASES = _norm_set(
+    "dont remember that", "do not remember that", "dont remember this",
+    "dont save that", "dont keep that", "dont store that",
+    "forget that", "forget this", "not this", "not that",
+    "remove that from memory", "delete that from memory",
+    "forget what i just said", "unremember that",
+)
+
+# Lead-ins and tail-ends to strip when the referent is in the same sentence.
+_MEM_STRIP_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?"
+    r"(?:don'?t\s+|do not\s+)?"
+    r"(?:remember|forget|note|save|store|keep|add|remove|delete|unremember)"
+    r"(?:\s+(?:this|that|it|those|them))?"
+    r"(?:\s+(?:down))?"
+    r"(?:\s+(?:to|in|into|from)\s+(?:your\s+|my\s+)?(?:memory|notes|knowledge))?"
+    r"\s*[:,\-–—]?\s*", re.I)
+
+
+def is_memory_add_command(text):
+    """'remember this', 'add this to memory' — an instruction to store."""
+    return _matches(text, _MEMORY_ADD_PHRASES)
+
+
+def is_memory_drop_command(text):
+    """'forget that', 'not this' — an instruction to unstore."""
+    return _matches(text, _MEMORY_DROP_PHRASES)
+
+
+def memory_referent(text, previous_user_turn=""):
+    """What a memory instruction is pointing at.
+
+    The current message if it carries anything beyond the instruction itself
+    ('remember this: the router password is on the fridge'), otherwise the
+    previous user turn — which is the whole point of the bare forms, since
+    'remember this' is nearly always said ABOUT the thing just said.
+    """
+    t = (text or "").strip()
+    if not t:
+        return (previous_user_turn or "").strip()
+    body = _MEM_STRIP_RE.sub("", t, count=1).strip(" \t:,;.!?-–—")
+    # A leftover that is itself only filler ('that', 'it') is not a referent.
+    if body and _normalize_cmd(body) and body.lower() not in (
+            "that", "this", "it", "them", "those"):
+        return body
+    return (previous_user_turn or "").strip()
+
+
 def _is_stop_command(text):   return _matches(text, _STOP_PHRASES)
-def _is_cancel_command(text):
+def _is_cancel_command(text, memory_pending=False):
+    """'never mind' — drop whatever was in flight.
+
+    memory_pending says a memory was written moments ago and is still the
+    obvious referent. When it is set, phrases that could mean either thing
+    ('forget that') are left to the memory handler instead of being eaten here.
+    """
     t = _normalize_cmd(text)
     # Timer/reminder cancels need their own handler — don't intercept them here
     if any(w in t for w in ("timer", "reminder", "alarm", "scheduled", "schedule")):
+        return False
+    if memory_pending and is_memory_drop_command(text):
         return False
     return _matches(text, _CANCEL_PHRASES)
 def _is_repeat_command(text): return _matches(text, _REPEAT_PHRASES)

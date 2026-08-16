@@ -300,6 +300,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   background:var(--panel);border:1px solid var(--warn);color:var(--text);border-radius:10px;
   padding:9px 16px;font-size:12.5px;opacity:0;pointer-events:none;transition:all .3s;z-index:30}
 #toast.show{opacity:1;transform:translateX(-50%)}
+/* A memory toast is a different kind of message from a problem: it reports
+   something that went right, and it is the handle for fixing it if it did not.
+   Teal instead of amber, and clickable — hence pointer-events back on. */
+#toast.memory{border-color:var(--accent);cursor:pointer;pointer-events:auto}
+#toast.memory:hover{background:var(--panel2);border-color:var(--accent)}
+#toast .mlabel{color:var(--accent);letter-spacing:.06em;font-size:10.5px;
+  text-transform:uppercase;margin-right:7px}
+#toast .mhint{color:var(--dim);font-size:10.5px;margin-left:9px}
 
 /* reminders dropdown */
 #rempanel{position:fixed;top:60px;right:20px;z-index:25;background:var(--side);
@@ -1051,10 +1059,38 @@ var tedHud={
     }
   },
   showIssue:function(text){
-    $('toast-b').textContent=text; $('toast').classList.add('show');
-    clearTimeout(toastT); toastT=setTimeout(function(){ $('toast').classList.remove('show'); },6000);
+    var t=$('toast');
+    t.classList.remove('memory'); t.onclick=null;
+    $('toast-b').textContent=text; t.classList.add('show');
+    clearTimeout(toastT); toastT=setTimeout(function(){ t.classList.remove('show'); },6000);
   },
   clearIssue:function(){ $('toast').classList.remove('show'); },
+
+  /* Ted's memory changed. Pushed from core/memory.py's single emitter, so this
+     fires for every path that writes — explicit "remember that…", background
+     fact extraction, and the end-of-session summary alike.
+     Clicking it opens the memory panel on that exact row, because being told
+     Ted learned something is only half useful if correcting it means going and
+     finding it. */
+  memoryEvent:function(ev){
+    if(!ev||!ev.text) return;
+    var removed=ev.kind==='removed';
+    var t=$('toast');
+    $('toast-b').innerHTML='<span class="mlabel">'+
+      (removed?'Memory removed':'Memory updated')+'</span>'+esc(ev.text)+
+      '<span class="mhint">click to edit</span>';
+    t.classList.add('show','memory');
+    t.onclick=function(){
+      t.classList.remove('show');
+      tedHud.showMemory({table:ev.table||'facts', id:ev.id});
+    };
+    clearTimeout(toastT);
+    /* Longer than a problem toast: this one is a control, and six seconds is
+       not long enough to read it and decide to click it. */
+    toastT=setTimeout(function(){
+      t.classList.remove('show','memory'); t.onclick=null;
+    },9000);
+  },
   setMuted:function(m){
     muted=!!m;
     $('mic').classList.toggle('on',!muted);
@@ -1161,9 +1197,18 @@ var tedHud={
     if(appsPanel && !appsPanel.isOpen()) $('apps-rail').classList.add('noted');
   },
 
-  /* memory overlay */
-  showMemory:function(){
-    var f=$('memframe'); if(!f.src) f.src='http://127.0.0.1:5175';
+  /* memory overlay.
+     `focus` ({table,id}) asks the dashboard to open that table and scroll the
+     row into view — passed as a hash so reopening the same panel on a
+     different row still navigates (the iframe would ignore an identical src). */
+  showMemory:function(focus){
+    var f=$('memframe');
+    var base='http://127.0.0.1:5175';
+    if(focus&&focus.table&&focus.id!=null){
+      f.src=base+'/#'+encodeURIComponent(focus.table)+'/'+encodeURIComponent(focus.id);
+    } else if(!f.src){
+      f.src=base;
+    }
     $('mempanel').classList.add('open');
   },
   hideMemory:function(){ $('mempanel').classList.remove('open'); },

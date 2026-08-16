@@ -544,7 +544,7 @@ async function renderTable(table) {
     currentRows = {};
     for (const row of data.rows) {
       currentRows[row._pk] = row;
-      html += `<tr onclick="openEditor('${table}', ${row._pk})">
+      html += `<tr data-pk="${row._pk}" onclick="openEditor('${table}', ${row._pk})">
         <td onclick="event.stopPropagation()">
           <input type="checkbox" class="rowcheck rc" value="${row._pk}" onchange="selChanged()">
         </td>`;
@@ -573,7 +573,52 @@ async function renderTable(table) {
   main.innerHTML = html;
   wireSearch();
   wirePager();
+  highlightFocused();
 }
+
+// The HUD's memory toast links straight here as #<table>/<pk>. Scroll that row
+// into view and flash it, so "Ted just learned X" and "here is X, edit it" are
+// one click apart instead of a search away.
+let pendingFocus = null;
+
+// #facts/64 opens the Facts tab on row 64; a bare #chats just opens that tab.
+function readFocusHash() {
+  const m = /^#([a-z_]+)(?:\/(\d+))?$/i.exec(location.hash || "");
+  if (!m) return null;
+  return { table: m[1], pk: m[2] || null };
+}
+
+function highlightFocused() {
+  if (!pendingFocus) return;
+  const { table, pk } = pendingFocus;
+  if (table !== state.tab) return;
+  if (!pk) { pendingFocus = null; return; }        // tab-only hash
+  // pk is digits — the hash regex guarantees it. Not CSS.escape()d on purpose:
+  // that escapes for identifiers, and it turns "64" into "\36 4", which never
+  // matches inside a quoted attribute selector.
+  const row = document.querySelector(`tr[data-pk="${pk}"]`);
+  pendingFocus = null;
+  if (!row) return;
+  row.scrollIntoView({ block: "center", behavior: "smooth" });
+  row.style.transition = "background .4s";
+  row.style.background = "rgba(22,222,222,.16)";
+  setTimeout(() => { row.style.background = ""; }, 2200);
+}
+
+function applyFocusHash() {
+  const f = readFocusHash();
+  if (!f) return false;
+  // Only tables the editor actually knows how to show; anything else just
+  // opens the dashboard normally rather than landing on a blank tab.
+  if (!(f.table in TAB_LABELS)) return false;
+  pendingFocus = f;
+  state.tab = f.table;
+  state.q = "";
+  state.offset = 0;
+  return true;
+}
+
+window.addEventListener("hashchange", () => { if (applyFocusHash()) render(); });
 
 function pager(total) {
   if (total <= PAGE) return "";
@@ -746,6 +791,7 @@ function diffHtml(e) {
   [META, ROUTINE_ACTIONS] = await Promise.all([
     api("/api/meta"), api("/api/routines/actions")
   ]);
+  applyFocusHash();      // opened from the HUD's memory toast, maybe
   render();
   setInterval(() => { if (state.tab === "history" && !document.getElementById("overlay").classList.contains("open")) render(); }, 15000);
 })();

@@ -16,8 +16,8 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (features, lingo, llm, music, routing, routines, system_state, telemetry,
-                  tool_handlers as th, voice)
+from core import (features, lingo, llm, memory, music, routing, routines, system_state,
+                  telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
 from core.hud_bridge import js, set_state, add_message, show_issue
@@ -34,13 +34,15 @@ from core.intents import (
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
     _fix_command_words, _strip_wake_phrase,
+    is_memory_add_command, is_memory_drop_command, memory_referent,
 )
 from core.logs import error_log
 from core.memory import (log_pattern, get_frequent_patterns,
                          save_session_summary, get_last_session_summary,
                          get_recent_memories, search_memories,
                          log_habit, get_habit_streak, get_all_habits,
-                         list_facts, forget_fact, get_facts_about)
+                         list_facts, forget_fact, forget_fact_by_rowid,
+                         get_facts_about)
 from core.paths import SHORTCUTS_PATH, GATE5_LOG
 from core.tools import TOOL_SCHEMAS
 from core.voice import speak, speak_streaming, capture, engine
@@ -169,6 +171,12 @@ def _use_deterministic_command(text):
     if (_parse_correction(text) or _parse_cancel_scheduled(text)
             or _is_timer_request(text) or _parse_reminder(text)):
         return True
+    # Explicit memory control. Safe to claim the ambiguous "forget that" here:
+    # the cancel branch runs earlier in the same turn and only declines the
+    # phrase when a memory was written moments ago, so a plain never-mind never
+    # reaches this gate at all.
+    if is_memory_add_command(text) or is_memory_drop_command(text):
+        return True
     return bool(re.search(
         r"\b(?:remember|remeber|rember|remmember|forget .*about me|what do you "
         r"(?:know|remember) about me|recalibrat|calibrate .*?(?:mic|microphone|ears)|"
@@ -234,6 +242,16 @@ class TedApi:
         self._pending_disambig_compose = None  # {instruction, style} saved during contact disambiguation
         self._pending_tool_confirmation = None  # {name,args,expires} awaiting yes/no
         self._pending_lingo          = None   # {term,expires} awaiting Charlie's meaning
+        # The previous user turn, so a bare "remember this" has something to
+        # point at. One message deep on purpose: "this" does not reach further
+        # back than that in real speech, and keeping a longer tail would invite
+        # Ted to store something Charlie said ten minutes ago.
+        self._prev_user_text = ""
+        self._cur_user_text  = ""
+        # The last memory written, and when. Two jobs: it is what a following
+        # "forget that" removes, and its freshness is what tells the cancel
+        # handler to keep its hands off that phrase.
+        self._last_memory = None              # {"text","table","id","at"}
         # Structured ground truth for context like "close those again". This is
         # intentionally separate from prose chat history so command reasoning
         # does not need twenty old messages just to resolve a pronoun.
@@ -267,6 +285,12 @@ class TedApi:
         # SAME row instead of leaving three near-duplicates behind.
         self._session_row_id     = None
         self._session_started_at = _dt_cls.now().isoformat()
+
+        # Every memory write in the process reports here, whichever path made
+        # it — explicit, background extraction, or the session summary. The
+        # sink is registered once and core/memory.py owns the decision about
+        # what counts as an event; this end only draws it.
+        memory.set_event_sink(self._on_memory_event)
         self._session_exchanges  = 0
         self._memory_lock        = threading.Lock()
         self._pattern_check_done = False           # proactive offer fires at most once per startup
@@ -278,6 +302,36 @@ class TedApi:
         #    doesn't get answered. Starts engaged.
         self.attention_until   = time.time() + max(ATTENTION_WINDOW, 5)
         self._last_action      = None   # {"kind","rid","task","label","ts"} — for "actually make it …"
+
+    # How long after a memory write "forget that" still means that memory
+    # rather than "never mind". Short on purpose: past this, the cancel reading
+    # is the likelier one and the ambiguous phrase goes back to meaning cancel.
+    MEMORY_REFERENT_WINDOW = 180.0
+
+    def _on_memory_event(self, ev):
+        """Draw a memory change on the HUD. Registered once, in __init__.
+
+        This is the only consumer of core/memory.memory_event, and it does not
+        decide anything — it records what was written so a following "forget
+        that" has a referent, and shows it. The toast is clickable: it opens
+        the memory panel on that exact row, because being told Ted learned
+        something is only half useful if fixing it means going to find it.
+        """
+        try:
+            self._last_memory = {
+                "text": ev.get("text", ""),
+                "table": ev.get("table", "facts"),
+                "id": ev.get("id"),
+                "at": time.time(),
+            }
+            js(self.window, f"tedHud.memoryEvent({json.dumps(ev)})")
+        except Exception as e:
+            error_log.error(f"[memory] event to HUD failed: {e}")
+
+    def _memory_pending(self):
+        """True when a memory was written recently enough to still be 'that'."""
+        m = self._last_memory
+        return bool(m) and (time.time() - m["at"]) < self.MEMORY_REFERENT_WINDOW
 
     @property
     def busy(self):
@@ -321,6 +375,11 @@ class TedApi:
         """
         w = self.window
         self._touch_attention()   # any processed input keeps the conversation open
+
+        # Roll the referent window forward before anything reads it, so that
+        # during THIS turn _prev_user_text is the message before it. That is
+        # what a bare "remember this" points at.
+        self._prev_user_text, self._cur_user_text = self._cur_user_text, text
 
         # ── mute/unmute from typed input or the remote endpoint ──
         # (Voice mute is intercepted in conversation_loop; while muted there is
@@ -382,7 +441,9 @@ class TedApi:
             return False
 
         # ── cancel command: cut off and go quiet ──
-        if _is_cancel_command(text):
+        # A fresh memory write makes "forget that" mean the memory, not the
+        # request; the memory handler in _assistant_command picks it up instead.
+        if _is_cancel_command(text, memory_pending=self._memory_pending()):
             self.interrupt_speech = True
             engine.stop_playback()
             if echo_user:
@@ -1107,6 +1168,52 @@ class TedApi:
             return f"Reminder added: {task}."
 
         # (named-list intent removed 2026-08 — feature retired)
+
+        # ── explicit memory control: "remember this" / "forget that" ──────────
+        # These are the REFERRING forms, where the thing to act on is not in
+        # this sentence. They run ahead of the _REMEMBER_VERB regex below, which
+        # handles the self-contained kind ("remember I'm 20") and would
+        # otherwise answer a bare "remember this" with "What should I remember?"
+        # while the answer was sitting in the previous message.
+        if is_memory_drop_command(text) and self._memory_pending():
+            gone = self._last_memory
+            n = 0
+            try:
+                # By row id, not by words. Fact rows are the only thing
+                # removable this way; a session summary is Ted's own note about
+                # a whole conversation and is not what "forget that" means.
+                if gone.get("table") == "facts":
+                    n = forget_fact_by_rowid(gone.get("id"))
+            except Exception as e:
+                error_log.error(f"[memory] explicit forget failed: {e}")
+            self._last_memory = None
+            if n:
+                return f"Forgotten — I've dropped \"{gone['text']}\"."
+            # Ground truth over a comfortable answer: if nothing was deleted,
+            # do not claim it was.
+            return ("I couldn't find that one to remove — open the memory panel "
+                    "and delete it there if it's still listed.")
+
+        if is_memory_add_command(text):
+            referent = memory_referent(text, self._prev_user_text)
+            if not referent:
+                return "What should I remember?"
+            saved = 0
+            try:
+                saved = llm.extract_and_save_facts(referent, "")
+            except Exception as e:
+                error_log.error(f"[memory] explicit remember failed: {e}")
+            if features.HAS_KNOWLEDGE:
+                try:
+                    features.knowledge.add_text(referent, source="voice")
+                except Exception:
+                    pass
+            if saved:
+                # The toast already named it — memory.memory_event fired inside
+                # save_fact — so the spoken reply does not repeat it back.
+                return "Got it — I'll remember that."
+            return ("Saved it to my notes, though I couldn't pin it down as a "
+                    "fact about you.")
 
         # ── remember: personal facts → facts table, everything else → knowledge base ──
         # "remember this" used to be the only phrasing that matched, and it only

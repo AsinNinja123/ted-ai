@@ -188,6 +188,55 @@ def _now():
     return datetime.now().isoformat()
 
 
+# ---- Memory events ----------------------------------------------------------
+# One emitter, and only one. Everything that changes what Ted knows announces
+# it from inside the write function that did the changing — explicit "remember
+# that…", background fact extraction, and the end-of-session summary all land
+# here without knowing they have. Nothing outside this module decides what a
+# memory event is.
+#
+# The reason it lives at the write and not at the call site: a caller that
+# announces its own writes can announce one that failed, or forget to announce
+# one that worked. Announcing from the row that was actually inserted or deleted
+# makes the toast a report rather than a prediction — the same honesty rule the
+# tools follow (§5.3).
+
+_event_sink = None
+
+
+def set_event_sink(fn):
+    """Register the one consumer of memory events; core/app.py points it at the
+    HUD. Pass None to unregister (the tests do, so they never touch a window)."""
+    global _event_sink
+    _event_sink = fn
+
+
+def _fact_phrase(subject, relationship, obj):
+    """('Charlie', 'LIKES', 'Chick-fil-A') → 'Charlie likes Chick-fil-A'."""
+    rel = (relationship or "").replace("_", " ").strip().lower()
+    return " ".join(p for p in ((subject or "").strip(), rel, (obj or "").strip()) if p)
+
+
+def memory_event(kind, text, table="facts", row_id=None):
+    """Announce one change to what Ted knows.
+
+    kind: 'added' (the HUD says "Memory updated") or 'removed'.
+    A sink that raises is swallowed — a memory write must never fail because
+    the window that wanted to draw a toast has gone away.
+    """
+    text = (text or "").strip()
+    if not text or kind not in ("added", "removed"):
+        return
+    print(f"[memory-event] {kind}: {text[:120]}")
+    sink = _event_sink
+    if sink is None:
+        return
+    try:
+        sink({"kind": kind, "text": text, "table": table, "id": row_id})
+    except Exception as e:
+        print(f"[memory-event] sink failed: {e}")
+
+
 # ---- Personal Conversation Memory ----
 
 def save_memory(user_input, ted_reply, who="ted"):
@@ -307,8 +356,14 @@ def save_fact(subject, relationship, obj):
                 (subject, rel)):
             _exec("DELETE FROM facts WHERE rowid = ?", (rowid,))
 
-    _exec("INSERT OR IGNORE INTO facts (subject, relationship, object, created) "
-          "VALUES (?,?,?,?)", (subject, rel, obj, _now()))
+    cur = _exec("INSERT OR IGNORE INTO facts (subject, relationship, object, created) "
+                "VALUES (?,?,?,?)", (subject, rel, obj, _now()))
+    # Only announce a row that was really written. INSERT OR IGNORE quietly does
+    # nothing on a duplicate, and the supersession above is part of THIS change
+    # rather than a separate forgetting — so a replaced single-valued fact
+    # reports one "updated", not an "updated" chased by a "removed".
+    if cur is not None and cur.rowcount:
+        memory_event("added", _fact_phrase(subject, rel, obj), "facts", cur.lastrowid)
 
 
 def forget_fact(subject, relationship=None, obj=None):
@@ -317,16 +372,43 @@ def forget_fact(subject, relationship=None, obj=None):
     Called with just a subject it wipes everything known about them; narrow it
     with relationship and/or object to remove one specific thing.
     """
-    sql = "DELETE FROM facts WHERE subject = ?"
+    where = " WHERE subject = ?"
     params = [subject]
     if relationship:
-        sql += " AND relationship = ?"
+        where += " AND relationship = ?"
         params.append(_norm_rel(relationship))
     if obj:
-        sql += " AND lower(object) LIKE ?"
+        where += " AND lower(object) LIKE ?"
         params.append(f"%{_norm_obj(obj)}%")
-    cur = _exec(sql, tuple(params))
-    return cur.rowcount if cur is not None else 0
+    # Read the doomed rows before deleting them: after the DELETE there is
+    # nothing left to name, and "Memory removed" with no subject is a worse
+    # message than none at all.
+    doomed = _query("SELECT subject, relationship, object FROM facts" + where,
+                    tuple(params))
+    cur = _exec("DELETE FROM facts" + where, tuple(params))
+    n = cur.rowcount if cur is not None else 0
+    if n:
+        for s, r, o in doomed[:5]:
+            memory_event("removed", _fact_phrase(s, r, o), "facts")
+    return n
+
+
+def forget_fact_by_rowid(rowid):
+    """Delete exactly one fact, by the id its memory event carried.
+
+    Exists so "forget that" removes the row Ted just announced rather than
+    whatever a phrase happens to match. Matching by words is how you delete
+    'Charlie lives in Spirit Lake' and take 'Charlie lives for hockey' with it.
+    """
+    if not rowid:
+        return 0
+    rows = _query("SELECT subject, relationship, object FROM facts WHERE rowid = ?",
+                  (rowid,))
+    cur = _exec("DELETE FROM facts WHERE rowid = ?", (rowid,))
+    n = cur.rowcount if cur is not None else 0
+    if n and rows:
+        memory_event("removed", _fact_phrase(*rows[0]), "facts", rowid)
+    return n
 
 
 def get_facts_about(subject):
@@ -425,12 +507,18 @@ def save_session_summary(summary_text, topics="", started="", exchanges=0, row_i
                     "WHERE id=?",
                     (summary_text, topics, exchanges, now, row_id))
         if cur is not None and cur.rowcount:
+            # Deliberately silent. The periodic flush rewrites this same row
+            # every few minutes of one session; announcing each pass would
+            # toast the same memory over and over for a single memory.
             return row_id
         # Row vanished (db reset mid-session) — fall through and insert a fresh one.
     cur = _exec("INSERT INTO session_summaries (text, topics, started, exchanges, created) "
                 "VALUES (?,?,?,?,?)",
                 (summary_text, topics, started or now, exchanges, now))
-    return cur.lastrowid if cur is not None else None
+    if cur is None:
+        return None
+    memory_event("added", summary_text, "session_summaries", cur.lastrowid)
+    return cur.lastrowid
 
 
 def get_last_session_summary(min_gap_hours=4.0):
