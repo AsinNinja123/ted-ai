@@ -256,6 +256,40 @@ check("foreground calls skip a cloud known to be rate-limited", out == "local")
 check("…without another doomed cloud request", len(cloud_hits) == cloud_count)
 
 
+# The handover had no user-visible signal at all. degraded_reason is recorded
+# after chat_create returns, and for a streamed local turn that is after the
+# model has loaded and started generating — so the one thing that would explain
+# an eight-second wait only existed once the wait was over.
+_notices, _order = [], []
+providers.set_fallback_notice(lambda reason, detail: (
+    _notices.append(reason), _order.append("notice")))
+providers._ollama_create = lambda **kw: _order.append("local") or "local"
+
+providers._cloud_retry_at = 0.0
+providers._groq.chat.completions.create = _limited
+_order.clear()
+providers.chat_create(messages=[])
+check("a cloud→local handover tells the user it is happening",
+      _notices == ["rate_limit"])
+check("…before the slow local call, not after it",
+      _order == ["notice", "local"])
+
+_notices.clear()
+providers.chat_create(messages=[], _ted_workload="background")
+check("background helpers route locally without toasting the user",
+      _notices == [])
+
+_notices.clear()
+providers._groq.chat.completions.create = lambda **kw: "cloud"
+providers._cloud_retry_at = 0.0
+providers.chat_create(messages=[])
+check("a healthy cloud turn says nothing", _notices == [])
+
+providers.set_fallback_notice(None)
+providers._ollama_create = lambda **kw: local_hits.append(kw) or "local"
+providers._groq.chat.completions.create = _limited
+
+
 class _LongResetHeaders:
     headers = {"x-ratelimit-reset-tokens": "4m19s"}
 

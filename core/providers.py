@@ -98,6 +98,29 @@ MAX_CLOUD_COOLDOWN = 120.0
 def last_fallback_reason() -> str:
     """`rate_limit`, `unavailable`, or '' if the last call used the cloud."""
     return _last_fallback
+
+
+# Fired the instant a foreground turn commits to the local brain. Until now the
+# handover was only knowable after it was over: degraded_reason is recorded
+# once chat_create returns, and for a streamed local turn that is after the
+# model has loaded and begun generating. An eight-second wait with nothing said
+# is indistinguishable from a freeze — which is what Charlie actually reported.
+_on_fallback = None
+
+
+def set_fallback_notice(callback) -> None:
+    """Register ``callback(reason, detail)`` for cloud→local handovers."""
+    global _on_fallback
+    _on_fallback = callback
+
+
+def _announce_fallback(reason: str, detail: str) -> None:
+    if _on_fallback is None:
+        return
+    try:
+        _on_fallback(reason, detail)
+    except Exception:
+        pass        # telling the user about a degraded turn must not fail one
 _rate_limit = {"limit_tokens": 0, "remaining_tokens": 0,
                "limit_requests": 0, "remaining_requests": 0, "reset": ""}
 
@@ -728,6 +751,11 @@ def chat_create(**kwargs):
         _active_provider, _last_model = "none", ""
         raise cloud_error if cloud_error is not None else RuntimeError(
             "Cloud brain pinned but no Groq API key is configured.")
+
+    # Announce BEFORE the local call, not after it. After it is too late to be
+    # the thing that stops a slow rescue turn from reading as a frozen app.
+    if workload != "background" and (cooling_down or cloud_error is not None):
+        _announce_fallback(_last_fallback, _last_cloud_error)
 
     try:
         result = _ollama_create(**kwargs)

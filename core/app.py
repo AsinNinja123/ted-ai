@@ -2986,12 +2986,26 @@ class TedApi:
 
     # ── JS API surface (called from the HUD) ───────────────────────────────────
 
+    def _announce_local_handover(self, reason, detail):
+        """Toast the cloud→local handover while it is happening."""
+        if not self.window:
+            return
+        show_issue(self.window, "Cloud is rate limited — switching to the local "
+                                "brain, this turn will be slower…"
+                   if reason == "rate_limit" else
+                   "Cloud is unavailable — switching to the local brain…")
+
     def start(self):
         """Launch background daemon threads. Called by webview after the
         window is ready. Safe to call multiple times — subsequent calls are no-ops."""
         if self._loop_started:
             return True
         self._loop_started = True
+        # Say when the cloud hands off. A local rescue turn is slower than a
+        # cloud one and, unexplained, that slowness is what Charlie experiences
+        # as Ted freezing. The reason was already known — it was just recorded
+        # for telemetry after the wait instead of shown during it.
+        llm.providers.set_fallback_notice(self._announce_local_handover)
         threading.Thread(target=self.conversation_loop,     daemon=True).start()
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
