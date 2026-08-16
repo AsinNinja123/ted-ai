@@ -2823,6 +2823,12 @@ class TedApi:
                     time.sleep(2)
             prearmed = False
             js(w, "tedHud.micIdle()")
+            # Label the turn with whose voice it was. A label, not a gate:
+            # VOICE_LOCK is the only thing that decides what gets ignored, and
+            # this says nothing about permission. Pushed even when the answer is
+            # "unknown", because silence would read as "recognized".
+            if text:
+                js(w, f"tedHud.setSpeaker({json.dumps(voice.last_speaker())})")
 
             if self.busy or not self.mic_on:
                 continue
@@ -3253,6 +3259,61 @@ class TedApi:
         self._apply_mic(self.mic_on)
         self._push_mic_state()
         return self.muted
+
+    # ── voice recognition (a label, never a lock) ──────────────────────────
+    # Enrollment already worked by saying "learn my voice". These exist so it
+    # also works from the window, which is where Charlie actually is — and so
+    # the state is visible rather than something you have to ask about.
+
+    def speaker_status(self):
+        """Enrollment state for the HUD indicator. Never raises."""
+        from core import speaker
+        try:
+            st = speaker.status()
+            st["lock"] = bool(voice.VOICE_LOCK)
+            st["last"] = voice.last_speaker()
+            st["owner"] = OWNER_NAME
+            return st
+        except Exception as e:
+            print(f"[speaker] status: {e}")
+            return {"available": False, "enrolled": False, "samples": 0,
+                    "lock": False, "last": {}}
+
+    def speaker_enroll(self):
+        """Record one sample of Charlie's voice and add it to the profile.
+
+        Returns ground truth about what happened, including the install step
+        when the optional package is missing — the window should say that
+        rather than a generic failure.
+        """
+        from core import speaker
+        if not speaker.available():
+            return {"ok": False, "say": ("Voice recognition needs one extra package. "
+                                         "Run: venv/bin/pip install resemblyzer, "
+                                         "then restart Ted.")}
+        try:
+            js(self.window, "tedHud.setSpeakerEnrolling(true)")
+            voice.play_chime(self.window, self)
+            audio = engine.capture_turn(prearmed=True)
+            if audio is None or len(audio) < 16000 * 3:
+                return {"ok": False, "say": "I didn't get enough audio — try again "
+                                            "and keep talking for a few seconds."}
+            if not speaker.enroll(audio):
+                return {"ok": False, "say": "Something went wrong saving the profile."}
+            n = speaker.profile_count()
+            return {"ok": True, "samples": n,
+                    "say": f"Voice profile saved — {n} sample{'s' if n != 1 else ''}."}
+        except Exception as e:
+            print(f"[speaker] enroll: {e}")
+            return {"ok": False, "say": f"Enrollment failed: {e}"}
+        finally:
+            js(self.window, "tedHud.setSpeakerEnrolling(false)")
+
+    def speaker_forget(self):
+        from core import speaker
+        existed = speaker.forget()
+        return {"ok": True,
+                "say": "Voice profile deleted." if existed else "No profile was saved."}
 
     def music_now_playing(self):
         """What Spotify is playing, for the HUD strip. Costs no tokens."""

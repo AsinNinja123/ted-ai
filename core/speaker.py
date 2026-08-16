@@ -81,24 +81,57 @@ def forget():
         return False
 
 
-def verify(audio_f32_16k, threshold=0.68):
-    """Return True if the audio matches the enrolled voice, False if it clearly
-    doesn't, or None when verification can't run (no profile / no package /
-    error) — callers must treat None as 'let it through'."""
+def status():
+    """What the window needs to describe voice recognition without guessing."""
+    return {
+        "available": available(),
+        "enrolled": enrolled(),
+        "samples": profile_count() if enrolled() else 0,
+    }
+
+
+def identify(audio_f32_16k, threshold=0.68):
+    """Who is talking — as a label, not a verdict.
+
+    Returns {"known", "score", "reason"}:
+      known  True  — matches the enrolled voice
+             False — clearly does not
+             None  — the question could not be asked at all
+      score  best cosine similarity against the profile, or None
+      reason why it could not be asked, for the window to show verbatim
+
+    This is deliberately NOT a security check and must not be used as one: a
+    voice is trivially clonable and this is a similarity score with a threshold.
+    It is here to LABEL a turn, and — when VOICE_LOCK is on — to stop Ted being
+    driven by whoever else is in the room. Those are the two honest uses.
+    """
     global _warned_missing
     if not enrolled():
-        return None
+        return {"known": None, "score": None, "reason": "no voice profile saved"}
     if not available():
         if not _warned_missing:
             _warned_missing = True
-            print("[speaker] VOICE_LOCK is on but resemblyzer isn't installed — "
-                  "letting all speech through. pip install resemblyzer")
-        return None
+            print("[speaker] resemblyzer isn't installed — every voice is treated "
+                  "as unknown-but-allowed. pip install resemblyzer")
+        return {"known": None, "score": None,
+                "reason": "resemblyzer is not installed"}
     try:
         emb = _embed(audio_f32_16k)
         prof = np.load(PROFILE)
         sims = prof @ emb / (np.linalg.norm(prof, axis=1) * np.linalg.norm(emb) + 1e-9)
-        return float(np.max(sims)) >= threshold
+        score = float(np.max(sims))
+        return {"known": score >= threshold, "score": score, "reason": ""}
     except Exception as e:
-        print(f"[speaker] verify failed: {e}")
-        return None
+        print(f"[speaker] identify failed: {e}")
+        return {"known": None, "score": None, "reason": str(e)}
+
+
+def verify(audio_f32_16k, threshold=0.68):
+    """Return True if the audio matches the enrolled voice, False if it clearly
+    doesn't, or None when verification can't run (no profile / no package /
+    error) — callers must treat None as 'let it through'.
+
+    Thin wrapper over identify() so there is one implementation of the
+    comparison and one threshold, not two that can drift apart.
+    """
+    return identify(audio_f32_16k, threshold=threshold)["known"]
