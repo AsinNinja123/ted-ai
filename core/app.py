@@ -217,9 +217,15 @@ class TedApi:
         self.window           = None              # set by main() after webview creates window
         self._busy            = threading.Lock()  # held during every listen→reply turn
         self._loop_started    = False             # prevents starting the loop twice
-        self.muted            = True              # ears off when True — Ted starts
-                                                  # silent (chat-first); the mic
-                                                  # button turns voice mode on
+        # One flag used to do two jobs, which is why "mic on but speakers off"
+        # was unrepresentable. Capture and speech are separate now:
+        #   (False, False)  chat only — how Ted boots
+        #   (True,  True)   voice mode, the ● button
+        #   (True,  False)  transcribe — talk, and the text lands in the input box
+        # `muted` survives as a property meaning "not speech_on"; see below.
+        self.mic_on           = False             # is capture running
+        self.speech_on        = False             # is TTS allowed to play
+        self.transcribe_only  = False             # capture routes to the input box
         self.interrupt_speech = False             # set True to cut off current playback
         self.last_reply       = ""               # stored so 'repeat that' works
         self._last_cmd        = ("", 0.0)        # (normalized_text, timestamp) for dedup
@@ -335,7 +341,7 @@ class TedApi:
         if _wants_unmute:
             if echo_user:
                 add_message(w, "user", text)
-            if self.muted:
+            if not self.mic_on or self.transcribe_only:
                 self.toggle_mute()
                 reply = "I'm back — listening."
             else:
@@ -347,10 +353,12 @@ class TedApi:
         if _wants_mute:
             if echo_user:
                 add_message(w, "user", text)
-            if not self.muted:
+            if self.mic_on:
                 # Muting is silent on purpose — speaking here would be the last
                 # thing you hear after asking for quiet.
-                self.toggle_mute()
+                self.muted = True
+                self._apply_mic(False)
+                self._push_mic_state()
             else:
                 reply = "Mic's already off."
                 self.last_reply = reply
@@ -2662,8 +2670,8 @@ class TedApi:
                 continue
             _busy_stuck_since = 0.0  # lock released normally — reset watchdog
             _busy_warning_shown = False
-            if self.muted:
-                # Muted = mic PHYSICALLY off. No listening of any kind — the old
+            if not self.mic_on:
+                # Mic off = PHYSICALLY off. No listening of any kind — the old
                 # behaviour re-enabled the mic here to catch a voice unmute, which
                 # kept flashing the orange indicator and let interference un-mute
                 # Ted on its own. Unmute with the ● button, by typing 'unmute',
@@ -2698,9 +2706,14 @@ class TedApi:
             prearmed = False
             js(w, "tedHud.micIdle()")
 
-            if self.busy or self.muted:
+            if self.busy or not self.mic_on:
                 continue
             if not text:
+                continue
+
+            # Transcribe mode: the words are the deliverable, not a request.
+            if self.transcribe_only:
+                self._transcribe_to_input(text)
                 continue
 
             # ── Whisper detection: check capture RMS ──
@@ -3080,18 +3093,76 @@ class TedApi:
         except Exception as e:
             return f"Couldn't close {name}: {e}"
 
-    def toggle_mute(self):
-        """Mute button: mic on/off only. Releases the macOS orange indicator when
-        muted and adjusts Spotify volume so music plays at full when not listening."""
-        self.muted = not self.muted
-        if self.muted:
-            engine.mute_mic()               # removes mic tap → orange dot off
-            voice.spotify_volume(100)       # full volume — not listening, enjoy the music
-        else:
+    @property
+    def muted(self):
+        """Legacy flag, now meaning exactly one thing: TTS is not allowed.
+
+        Every reader of this was asking "should Ted stay silent" — speak(),
+        speak_streaming(), the reminder loop, the proactive scheduler. Capture
+        is a separate question and its callers ask `mic_on` directly, so
+        transcribe mode (mic on, speakers off) reads as muted here and is
+        silent, which is the whole point of it.
+        """
+        return not self.speech_on
+
+    @muted.setter
+    def muted(self, value):
+        # Assigning the old flag still means "turn Ted all the way off/on".
+        self.mic_on = not value
+        self.speech_on = not value
+        if value:
+            self.transcribe_only = False
+
+    def _apply_mic(self, on):
+        """Start or stop capture, and keep the OS indicator honest about it."""
+        if on:
             engine.unmute_mic()             # reinstalls mic tap → back to listening
             voice.spotify_volume(30)        # lower so Ted doesn't pick up the music
-        js(self.window, f"tedHud.setMuted({str(self.muted).lower()})")
+        else:
+            engine.mute_mic()               # removes mic tap → orange dot off
+            voice.spotify_volume(100)       # full volume — not listening, enjoy the music
+
+    def _push_mic_state(self):
+        js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
+        js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    def toggle_mute(self):
+        """Mic button: full voice mode on/off — capture and speech together."""
+        going_on = not self.mic_on or self.transcribe_only
+        self.mic_on = going_on
+        self.speech_on = going_on
+        self.transcribe_only = False
+        self._apply_mic(self.mic_on)
+        self._push_mic_state()
         return self.muted
+
+    def _transcribe_to_input(self, text):
+        """Put a spoken transcript in the input box. Never send it.
+
+        Auto-sending is the one thing Charlie ruled out, and it is the right
+        call: a misheard word is editable in the box and unrecoverable once
+        sent. capture() has already applied the junk-fragment and Whisper
+        phantom gates, which protect the transcript regardless of where it
+        ends up — a cough must not become text any more than it should have
+        become a command.
+        """
+        cleaned = _fix_command_words(text)
+        js(self.window, f"tedHud.fillInput({json.dumps(cleaned)})")
+        return cleaned
+
+    def toggle_transcribe(self):
+        """Transcribe button: mic on, speakers off, text into the input box.
+
+        Charlie asked for this by name — talk instead of type, without Ted
+        answering out loud. It deliberately does not auto-send: the transcript
+        lands in the box so he can edit it and press enter.
+        """
+        self.transcribe_only = not self.transcribe_only
+        self.mic_on = self.transcribe_only
+        self.speech_on = False
+        self._apply_mic(self.mic_on)
+        self._push_mic_state()
+        return self.transcribe_only
 
     def ask(self, text):
         """Handle typed input from the HUD text box.

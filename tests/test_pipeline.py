@@ -277,6 +277,47 @@ music.transport = lambda action: (TRANSPORT_CALLS.append(action), "Paused.")[1]
 api._respond("mute the music")
 check("'mute the music' leaves the mic alone", not api.muted)
 
+# `muted` was one flag doing two jobs — capture AND speech — which is why
+# "mic on, speakers off" could not be expressed at all. Charlie asked for
+# exactly that: talk, and have the words land in the input box.
+print("\n— capture and speech are separate switches —")
+api = make_api()
+api.muted = True
+check("Ted boots with both off", not api.mic_on and not api.speech_on
+      and not api.transcribe_only)
+
+api.toggle_transcribe()
+check("transcribe turns the mic on", api.mic_on)
+check("…and leaves the speakers off", not api.speech_on)
+check("…so the legacy `muted` flag still reads as silent, and Ted stays quiet",
+      api.muted)
+check("…and the HUD is told it is transcribing, not that the mic is off",
+      js_containing(api, "setTranscribing(true)"))
+
+api.toggle_transcribe()
+check("pressing it again stops capture", not api.mic_on and not api.transcribe_only)
+
+api.toggle_transcribe()
+api.toggle_mute()
+check("the mic button out of transcribe mode gives full voice, not silence",
+      api.mic_on and api.speech_on and not api.transcribe_only)
+check("…and `muted` reports unmuted there", not api.muted)
+
+api.toggle_mute()
+check("the mic button then turns everything off", not api.mic_on and not api.speech_on)
+
+# A transcript is a draft. Auto-sending it is what Charlie explicitly did not
+# ask for, and a misheard word would be unrecoverable once sent.
+api = make_api()
+api.toggle_transcribe()
+api.window.js.clear()
+LLM_STREAM_CALLS.clear()
+api._transcribe_to_input("remind me to email the registrar")
+check("a transcript goes into the input box",
+      js_containing(api, "fillInput")
+      and "remind me to email the registrar" in api.window.js[-1])
+check("…and is never sent to the model on its own", LLM_STREAM_CALLS == [])
+
 print("\n— _respond: fall-through to the streaming LLM —")
 api = make_api()
 api._respond("how are you")

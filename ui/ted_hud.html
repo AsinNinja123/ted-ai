@@ -207,6 +207,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #mic.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);
   animation:micpulse 1.8s ease-in-out infinite}
 #mic svg{width:17px;height:17px}
+/* Transcribe: the mic is live but Ted stays silent, so it pulses like the mic
+   button and is deliberately a different colour — the two are not the same
+   state and must not look like they are. */
+#transcribe{border:1px solid var(--line);color:var(--dim)}
+#transcribe:hover{border-color:var(--text);color:var(--text)}
+#transcribe.on{background:rgba(224,168,74,.16);color:#e0a84a;border-color:#e0a84a;
+  animation:micpulse 1.8s ease-in-out infinite}
+#transcribe svg{width:17px;height:17px}
 @keyframes micpulse{
   0%,100%{box-shadow:0 0 0 0 rgba(22,222,222,.35)}
   50%{box-shadow:0 0 0 7px rgba(22,222,222,0)}
@@ -325,6 +333,20 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
           <line x1="12" y1="18" x2="12" y2="22"/>
         </svg>
       </button>
+      <!-- Mic on, speakers off: dictate into the box instead of typing.
+           A slashed mic would be the obvious icon and the wrong one — it reads
+           as "mic off", which is the opposite of what this does. Captions say
+           speech-becomes-text, which is exactly the promise. -->
+      <button class="ibtn" id="transcribe" title="Dictate into the box — Ted won't speak">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.5" y="5" width="19" height="14" rx="3"/>
+          <line x1="6.5" y1="10.5" x2="11" y2="10.5"/>
+          <line x1="13.5" y1="10.5" x2="17.5" y2="10.5"/>
+          <line x1="6.5" y1="14" x2="9" y2="14"/>
+          <line x1="11.5" y1="14" x2="17.5" y2="14"/>
+        </svg>
+      </button>
       <textarea id="input" rows="1" placeholder="Message Ted…"></textarea>
       <button class="ibtn" id="send" title="Send">&#8593;</button>
     </div>
@@ -363,6 +385,7 @@ var API='http://127.0.0.1:5175/api';
 
 /* ── state ────────────────────────────────────────────────── */
 var muted=true;                    // Ted now starts silent (chat-first)
+var transcribing=false;            // mic on, speakers off — dictation into the box
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
 var currentChat=null;              // active session id (created lazily)
 var chatCreatePromise=null;        // one in-flight lazy session creation
@@ -893,6 +916,26 @@ var tedHud={
     $('mic').title=muted?'Voice mode off — click to talk':'Voice mode ON — click to mute';
     if(muted) tedHud.setState('idle');
   },
+  // Transcribe mode is mic-on/speakers-off, so it is neither of the two states
+  // setMuted knows about and needs its own indicator.
+  setTranscribing:function(t){
+    transcribing=!!t;
+    $('transcribe').classList.toggle('on',transcribing);
+    $('transcribe').title=transcribing
+      ? 'Dictating — click to stop. Ted stays silent.'
+      : "Dictate into the box — Ted won't speak";
+    if(transcribing) tedHud.setState('listening');
+  },
+  // A transcript is a draft, not a message: it lands in the box so it can be
+  // edited, and is never sent on Charlie's behalf.
+  fillInput:function(text){
+    var box=$('input');
+    var cur=box.value.trim();
+    box.value=(cur?cur+' ':'')+text;
+    box.style.height='auto'; box.style.height=Math.min(box.scrollHeight,150)+'px';
+    box.focus();
+    box.selectionStart=box.selectionEnd=box.value.length;
+  },
   flashHeard:function(text,final){
     var e=$('heard'); e.textContent=(final?'':'… ')+text; e.classList.add('show');
     clearTimeout(heardT); heardT=setTimeout(function(){ e.classList.remove('show'); },final?2500:4000);
@@ -1044,8 +1087,15 @@ $('input').addEventListener('input',function(){
   this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,150)+'px';
 });
 $('mic').onclick=function(){
-  if(inApp()) window.pywebview.api.toggle_mute().then(function(m){ tedHud.setMuted(m); });
-  else tedHud.setMuted(!muted);
+  // Python pushes both indicators through setMuted/setTranscribing, so the
+  // in-app path deliberately does not set them from the return value too —
+  // two writers for one piece of state is how they drift apart.
+  if(inApp()) window.pywebview.api.toggle_mute();
+  else { tedHud.setMuted(!muted); tedHud.setTranscribing(false); }
+};
+$('transcribe').onclick=function(){
+  if(inApp()) window.pywebview.api.toggle_transcribe();
+  else { tedHud.setTranscribing(!transcribing); tedHud.setMuted(true); }
 };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
