@@ -330,6 +330,35 @@ def local_model_ready() -> bool:
         return False
 
 
+def local_model_warm() -> bool:
+    """True when Ollama already has the model resident in memory.
+
+    Distinct from local_model_ready(), which only says the weights are on disk.
+    A pulled-but-cold model can spend most of the 180-second budget loading
+    before it produces a token, and the window reads that as a freeze. Knowing
+    which of the two states the local brain is in is the difference between
+    saying "loading the local model" and saying nothing at all.
+    """
+    try:
+        res = httpx.get(f"{OLLAMA_URL}/api/ps", timeout=1.5)
+        loaded = [(m.get("name") or m.get("model") or "")
+                  for m in (res.json() or {}).get("models", [])]
+        if not loaded:
+            return False
+
+        def _warm(model):
+            if ":" in model:
+                return model in loaded
+            base = model.split(":")[0]
+            return any(n.split(":")[0] == base for n in loaded)
+
+        # Either local model being resident is enough to answer quickly; which
+        # one gets used depends on whether the turn carries tools.
+        return any(_warm(model) for model in {LOCAL_CHAT_MODEL, LOCAL_TOOL_MODEL})
+    except Exception:
+        return False
+
+
 def groq_client():
     """Expose the Groq client for Whisper STT without creating a second one."""
     return _groq

@@ -327,6 +327,19 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #top.tight #np-stack{display:none}
 #top.xtight #clock{display:none}
 
+/* Which brain, on purpose. Sits next to the health dot that reports which one
+   actually answered, so the choice and its consequence are read together —
+   "Auto" is only honest if you can see it falling back. */
+#brainpick{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  color:var(--dim);font:inherit;font-size:11px;padding:3px 6px;cursor:pointer;
+  max-width:132px;transition:color .2s,border-color .2s}
+#brainpick:hover{color:var(--text);border-color:var(--accent)}
+#brainpick:focus{outline:none;border-color:var(--accent)}
+/* Pinned to one brain is a testing state, not the shipping one. It is coloured
+   so it cannot be left on by accident for a week. */
+#brainpick.pinned{color:var(--accent);border-color:var(--accent)}
+#top.tight #brainpick{max-width:74px}
+
 /* live token budget + which brain answered */
 #budget{display:flex;align-items:center;gap:7px;margin-right:10px;font-size:11px;
   color:var(--dim);flex:none}
@@ -404,6 +417,12 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <!-- The number that decides whether the next message gets answered by
            the cloud at all. It was only visible in the diagnostics panel,
            which is the one place you are not looking while typing. -->
+      <select id="brainpick" title="Which brain answers. Auto uses the cloud and
+falls back to the local model; the other two are pinned and never fall back.">
+        <option value="auto">Auto</option>
+        <option value="cloud">Cloud</option>
+        <option value="local">Local</option>
+      </select>
       <span id="budget" title="Tokens used this minute against your account's limit">
         <span id="brain" class="dot" title="Which brain answered last"></span>
         <span id="bud-bar"><i style="width:0"></i></span>
@@ -601,10 +620,26 @@ function showThinking(){
   row.innerHTML='<span class="thinking-dots"><i></i><i></i><i></i></span>'+
     '<span class="thinking-label">Ted is thinking · 0s</span>';
   $('msgs').appendChild(row); thinkingEl=row; scrollDown();
+  /* A cold local model can spend most of a 180-second budget loading before it
+     emits a token. Without a word for it, that is indistinguishable from a
+     hang — and this app has a history of being called frozen when it was
+     working. Ask once, at the point where the wait stops looking normal. */
+  var coldChecked=false, coldLoading=false;
   thinkingTimer=setInterval(function(){
     if(!thinkingEl) return;
     var sec=Math.floor((Date.now()-thinkingT0)/1000);
-    var lead=sec>=15?'Still working':sec>=7?'Working on it':'Ted is thinking';
+    if(sec>=6&&!coldChecked){
+      coldChecked=true;
+      refreshProvider().then(function(){
+        // Only claim a load when the local brain is genuinely the one running
+        // and genuinely not resident. Otherwise this becomes its own small lie.
+        coldLoading=(providerInfo.mode==='local'||providerInfo.active==='ollama')
+                    && providerInfo.local_warm===false;
+      });
+    }
+    var lead=coldLoading
+      ? 'Loading the local model — first run can take a few minutes'
+      : sec>=15?'Still working':sec>=7?'Working on it':'Ted is thinking';
     thinkingEl.querySelector('.thinking-label').textContent=lead+' · '+sec+'s';
     scrollDown();
   },1000);
@@ -686,6 +721,62 @@ function setBrain(t){
   }
   if(cls==='cloud') $('bud-txt').classList.remove('warn');
   lastBrain=cls;
+}
+
+/* ── which brain ──────────────────────────────────────────────
+   The choice is stored server-side in data/runtime.json, not in localStorage:
+   Ted's own process reads it on every call, and the dashboard can set it from
+   a different process. One source of truth, and it survives a restart because
+   it was never in the window to begin with. */
+var providerInfo={mode:'auto',local_warm:true,local_ready:true};
+
+function labelProvider(info){
+  var sel=$('brainpick'); if(!sel) return;
+  /* Real model names, read from the server rather than typed in here — a
+     hardcoded label goes stale the day config.py changes. */
+  sel.options[1].textContent='Cloud ('+(info.cloud_model||'cloud')+')';
+  sel.options[2].textContent='Local ('+(info.local_tool_model||info.local_model||'local')+')';
+  sel.value=info.mode||'auto';
+  sel.classList.toggle('pinned',(info.mode||'auto')!=='auto');
+  var bits=[];
+  if(info.mode==='auto') bits.push('Auto: cloud first, local if the cloud fails.');
+  else bits.push('Pinned to the '+(info.mode==='cloud'?'cloud':'local')+
+                 ' brain — it will NOT fall back.');
+  if(info.active) bits.push('Last answered by: '+
+    (info.active==='groq'?'the cloud':info.active==='ollama'?'the local model':info.active)+
+    (info.active_model?' ('+info.active_model+')':''));
+  if(!info.cloud_configured) bits.push('No cloud key configured.');
+  if(!info.local_ready) bits.push('Local model is not pulled — selecting Local will fail.');
+  sel.title=bits.join('\n');
+}
+
+function refreshProvider(){
+  return fetch('http://127.0.0.1:5175/api/provider')
+    .then(function(r){ return r.json(); })
+    .then(function(info){ providerInfo=info||providerInfo; labelProvider(providerInfo); })
+    .catch(function(){});
+}
+
+function setProvider(mode){
+  var sel=$('brainpick');
+  sel.disabled=true;
+  fetch('http://127.0.0.1:5175/api/provider',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(j&&j.error) throw new Error(j.error);
+      /* Say so when the pinned brain cannot actually serve, rather than
+         letting the next message be the thing that finds out. */
+      if(mode==='local'&&providerInfo.local_ready===false)
+        tedHud.showIssue('Pinned to the local brain, but its model is not pulled yet.');
+      else if(mode==='cloud'&&providerInfo.cloud_configured===false)
+        tedHud.showIssue('Pinned to the cloud, but no API key is configured.');
+      else if(mode==='local'&&providerInfo.local_warm===false)
+        tedHud.showIssue('Pinned to the local brain. Its first reply can take '+
+                         'a couple of minutes while the model loads.');
+    })
+    .catch(function(e){ tedHud.showIssue('Could not switch brains: '+e.message); })
+    .then(function(){ sel.disabled=false; refreshProvider(); });
 }
 
 function refreshBudget(){
@@ -1312,6 +1403,7 @@ function transport(action){
 $('tprev').onclick=function(){ transport('previous'); };
 $('tnext').onclick=function(){ transport('next'); };
 $('np-skip').onclick=function(){ transport('next'); };   // same path, top of the window
+$('brainpick').onchange=function(){ setProvider(this.value); };
 $('tplay').onclick=function(){ transport(npPlaying?'pause':'play'); };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
@@ -1365,6 +1457,11 @@ setInterval(function(){ if(appsPanel && appsPanel.isOpen()) renderApps(); },6000
    cheap enough to ignore. */
 setInterval(refreshBudget, 10000);
 refreshBudget();
+/* Slower than the budget: the mode only changes when someone changes it, but
+   `active` moves on its own every time Auto falls back, and the picker's
+   tooltip is where that is admitted. */
+setInterval(refreshProvider, 20000);
+refreshProvider();
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&$('mempanel').classList.contains('open')) tedHud.hideMemory();
   if(e.key==='Escape'&&$('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();

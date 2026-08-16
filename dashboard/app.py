@@ -418,6 +418,9 @@ def api_provider_get():
         "local_tool_model": providers.LOCAL_TOOL_MODEL,
         "cloud_configured": providers.groq_client() is not None,
         "local_ready": providers.local_model_ready(),
+        # Pulled is not loaded. The HUD needs the difference to decide whether
+        # a slow turn deserves "loading the local model" or just patience.
+        "local_warm": providers.local_model_warm(),
         "last_cloud_error": providers.last_cloud_error(),
     })
 
