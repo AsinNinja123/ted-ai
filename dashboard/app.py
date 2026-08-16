@@ -253,7 +253,11 @@ def api_history():
 
 @app.get("/api/chats")
 def api_chats():
-    return jsonify([_neutral_chat_row(chat) for chat in db.list_chats()])
+    # ?include_hidden=1 is the memory dashboard's view: everything, including
+    # threads deleted from the sidebar. The HUD never passes it.
+    include_hidden = request.args.get("include_hidden") in ("1", "true", "yes")
+    return jsonify([_neutral_chat_row(chat)
+                    for chat in db.list_chats(include_hidden=include_hidden)])
 
 
 @app.post("/api/chats")
@@ -269,8 +273,25 @@ def api_chat_get(chat_id):
         return jsonify({"error": str(e)}), 404
 
 
+@app.post("/api/chats/<int:chat_id>/hidden")
+def api_chat_hidden(chat_id):
+    """Soft delete and its undo — what the sidebar's × calls.
+
+    Deliberately not wired to DELETE. DELETE on this resource destroys turns,
+    and an endpoint that sometimes destroys and sometimes hides is one typo
+    away from destroying when it meant to hide.
+    """
+    body = request.get_json(silent=True) or {}
+    hidden = body.get("hidden", True)
+    try:
+        return jsonify({"ok": True, "hidden": db.set_chat_hidden(chat_id, hidden)})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @app.delete("/api/chats/<int:chat_id>")
 def api_chat_delete(chat_id):
+    """Hard delete: thread and turns, unrecoverable. Memory dashboard only."""
     try:
         db.delete_chat(chat_id)
         return jsonify({"ok": True})

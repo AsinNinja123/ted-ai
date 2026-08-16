@@ -149,7 +149,8 @@
 <script>
 const TAB_LABELS = {
   facts: "Facts", session_summaries: "Sessions", exchanges: "Exchanges",
-  goals: "Goals", routines: "Routines", lingo: "Lingo", history: "History",
+  goals: "Goals", routines: "Routines", lingo: "Lingo", chats: "Chats",
+  history: "History",
 };
 const PAGE = 50;
 let META = {}, currentRows = {}, routineRows = {}, lingoRows = {},
@@ -219,8 +220,80 @@ async function render() {
   await refreshSummary();
   if (state.tab === "routines") return renderRoutines();
   if (state.tab === "lingo") return renderLingo();
+  if (state.tab === "chats") return renderChats();
   if (state.tab === "history") return renderHistory();
   return renderTable(state.tab);
+}
+
+// ---------------- chat threads ----------------
+// The only place a chat can actually be destroyed. The HUD sidebar's delete is
+// a soft delete: it sets hidden=1 and leaves every turn in place. That is the
+// right default — Ted is supposed to remember the conversation even after the
+// thread is off the list — but it means something has to be able to finish the
+// job, and it should be somewhere you have to go on purpose. This is it.
+async function renderChats() {
+  const rows = await api("/api/chats?include_hidden=1");
+  const hidden = rows.filter(r => r.hidden).length;
+  const main = document.getElementById("main");
+  main.innerHTML = `
+    <div class="routine-help">
+      Deleting a chat in Ted's sidebar only takes it off the list — the turns stay,
+      and Ted can still recall the conversation. This page is where a thread can be
+      put back, or destroyed for good.
+      ${hidden ? `<b>${hidden}</b> thread${hidden === 1 ? " is" : "s are"} hidden.` : ""}
+    </div>
+    <table><thead><tr>
+      <th>Thread</th><th>Turns</th><th>Last used</th><th>State</th><th></th>
+    </tr></thead><tbody id="chatbody"></tbody></table>`;
+  const body = document.getElementById("chatbody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">No chat threads yet.</td></tr>`;
+    return;
+  }
+  for (const c of rows) {
+    const tr = document.createElement("tr");
+    tr.style.cursor = "default";
+    tr.innerHTML = `
+      <td>${esc(c.title)}<div class="muted">${short(c.summary || "", 140)}</div></td>
+      <td class="nowrap">${c.turns ?? 0}</td>
+      <td class="date">${fmtDate(c.updated)}</td>
+      <td class="nowrap">${c.hidden
+        ? '<span class="badge b-forgotten">hidden</span>'
+        : '<span class="badge b-created">in sidebar</span>'}</td>`;
+    const actions = document.createElement("td");
+    actions.className = "rowactions-cell";
+    const wrap = document.createElement("div");
+    wrap.className = "rowactions";
+
+    const toggle = document.createElement("button");
+    toggle.className = "btn";
+    toggle.textContent = c.hidden ? "Restore" : "Hide";
+    toggle.title = c.hidden
+      ? "Put this thread back in Ted's sidebar"
+      : "Take it off the sidebar. Nothing is deleted.";
+    toggle.onclick = async () => {
+      await api(`/api/chats/${c.id}/hidden`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden: !c.hidden }) });
+      render();
+    };
+
+    const purge = document.createElement("button");
+    purge.className = "btn danger";
+    purge.textContent = "Delete for good";
+    purge.title = "Destroy this thread and all of its turns. Cannot be undone.";
+    purge.onclick = async () => {
+      if (!confirm(`Permanently delete "${c.title}" and all ${c.turns ?? 0} of its `
+        + `turns?\n\nThis cannot be undone. Facts and session summaries Ted already `
+        + `wrote are kept — they are not stored with the thread.`)) return;
+      await api(`/api/chats/${c.id}`, { method: "DELETE" });
+      render();
+    };
+
+    wrap.appendChild(toggle); wrap.appendChild(purge);
+    actions.appendChild(wrap); tr.appendChild(actions);
+    body.appendChild(tr);
+  }
 }
 
 // ---------------- phrase -> action routines ----------------

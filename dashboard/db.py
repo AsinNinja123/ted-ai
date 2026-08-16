@@ -190,8 +190,17 @@ def ensure_schema(conn):
             title   TEXT NOT NULL DEFAULT 'New chat',
             summary TEXT NOT NULL DEFAULT '',
             created TEXT NOT NULL,
-            updated TEXT NOT NULL
+            updated TEXT NOT NULL,
+            hidden  INTEGER NOT NULL DEFAULT 0
         )""")
+    # Deleting a chat from the sidebar hides the thread; it does not destroy
+    # what Ted learned in it. The turns, any session summary, and any fact
+    # extracted from it all stay exactly where they were, and core/memory.py's
+    # search_memories still reads this table unfiltered on purpose — that is
+    # what keeps "he still remembers it" true after a delete.
+    _add_missing_columns(conn, "chat_sessions", [
+        ("hidden", "INTEGER NOT NULL DEFAULT 0"),
+    ])
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_turns (
             id         INTEGER PRIMARY KEY,
@@ -317,20 +326,28 @@ def list_history(table="", actor="", action="", search="", limit=100, offset=0):
 
 
 def summary():
+    """Row counts for the tab bar. A table that does not exist counts zero.
+
+    memory.py's schema is authoritative for the core tables, so on a database
+    Ted has not opened yet they are simply absent. Every count here used to be
+    a bare query, which meant one missing table took the whole dashboard down
+    with a 500 on its first request — including the tabs for the tables that
+    were present.
+    """
     conn = get_conn()
-    counts = {}
-    with _lock:
-        for t in TABLES:
-            counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+
+    def count(table):
         try:
-            counts["routines"] = conn.execute("SELECT COUNT(*) FROM routines").fetchone()[0]
+            with _lock:
+                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.Error:
-            counts["routines"] = 0
-        try:
-            counts["lingo"] = conn.execute("SELECT COUNT(*) FROM lingo").fetchone()[0]
-        except sqlite3.Error:
-            counts["lingo"] = 0
-        counts["history"] = conn.execute("SELECT COUNT(*) FROM memory_audit").fetchone()[0]
+            return 0
+
+    counts = {t: count(t) for t in TABLES}
+    counts["routines"] = count("routines")
+    counts["lingo"] = count("lingo")
+    counts["chats"] = count("chat_sessions")
+    counts["history"] = count("memory_audit")
     return {"db_path": DB_PATH, "counts": counts}
 
 
@@ -427,13 +444,18 @@ def delete_row(table, pk_value):
 # Chat sessions (HUD sidebar) — plain reads/writes, no audit, no actor dance.
 # ---------------------------------------------------------------------------
 
-def list_chats(limit=100):
+def list_chats(limit=100, include_hidden=False):
+    """Threads for the sidebar. Hidden ones are left out unless asked for —
+    the memory dashboard asks for them, because that is the one place where
+    a deleted chat can be looked at again or destroyed for real."""
     conn = get_conn()
+    where = "" if include_hidden else " WHERE s.hidden = 0"
     with _lock:
         rows = conn.execute(
-            "SELECT s.id, s.title, s.summary, s.created, s.updated, "
+            "SELECT s.id, s.title, s.summary, s.created, s.updated, s.hidden, "
             "       (SELECT COUNT(*) FROM chat_turns t WHERE t.session_id = s.id) AS turns "
-            "FROM chat_sessions s ORDER BY s.updated DESC LIMIT ?", [limit]).fetchall()
+            f"FROM chat_sessions s{where} ORDER BY s.updated DESC LIMIT ?",
+            [limit]).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -491,7 +513,36 @@ def set_chat_meta(chat_id, title=None, summary=None):
         conn.commit()
 
 
+def set_chat_hidden(chat_id, hidden):
+    """Soft delete, and its undo. The only thing that changes is whether the
+    thread appears in the sidebar — no turn is touched.
+
+    One primitive for both directions on purpose: hiding and restoring are the
+    same write with a different value, and two functions would be two places
+    that could disagree about what a hidden chat is.
+    """
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute("UPDATE chat_sessions SET hidden = ? WHERE id = ?",
+                           [1 if hidden else 0, chat_id])
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"chat {chat_id} not found")
+    return bool(hidden)
+
+
 def delete_chat(chat_id):
+    """Hard delete: the thread and every turn in it, gone.
+
+    Reachable only from the memory dashboard. The sidebar's delete calls
+    set_chat_hidden instead, because "clear this off my list" and "destroy the
+    record" are different intentions and only one of them is recoverable.
+
+    Note what this does NOT cascade to: session_summaries and facts carry no
+    reference back to a chat session (facts.source_session is empty in every
+    row), so there is nothing to follow. Anything Ted learned in this thread
+    survives it, by construction rather than by choice.
+    """
     conn = get_conn()
     with _lock:
         conn.execute("DELETE FROM chat_turns WHERE session_id = ?", [chat_id])
