@@ -400,26 +400,44 @@ def tool_now_playing():
         print("[now_playing] spotify:", exc)
         parts.append("Spotify: couldn't check.")
 
-    # Whichever browser is frontmost, falling back to any that has a tab open.
+    # Browser playback, then whichever browser tab is merely open. These are
+    # different claims and are kept apart: macOS confirms the first, while the
+    # second is only "this tab exists". Collapsing them is how "what's playing?"
+    # used to get answered with the name of a tab nobody was watching.
     try:
         from core import system_state
         state = system_state.collect(include_remote=False) or {}
-        front = state.get("frontmost", "")
-        details = state.get("details", {}) or {}
-        candidates = ([front] if front in details else []) + [
-            name for name in details if name != front]
-        for name in candidates:
-            tabs = (details.get(name) or {}).get("tabs") or []
-            if not tabs:
-                continue
-            active = [t for t in tabs if t.get("active")] or tabs
-            tab = active[0]
-            title = (tab.get("title") or "").strip()
-            if title:
-                parts.append(f"{name}: {title}")
-            break
+        playing = state.get("browser_media")
+        if playing:
+            what = "a video" if playing.get("kind") == "video" else "audio"
+            if playing.get("title") and playing.get("confidence") != "browser":
+                hedge = ("" if playing["confidence"] == "certain"
+                         else ", most likely its active tab")
+                parts.append(f"{playing['app']} is playing {what}: "
+                             f"{playing['title']}{hedge}")
+            else:
+                extra = ""
+                if playing.get("candidates"):
+                    extra = " Video tabs open: " + ", ".join(playing["candidates"])
+                parts.append(f"{playing['app']} is playing {what}, but I can't "
+                             f"tell which tab.{extra}")
         else:
-            parts.append("No browser tab is open.")
+            front = state.get("frontmost", "")
+            details = state.get("details", {}) or {}
+            ordered = ([front] if front in details else []) + [
+                name for name in details if name != front]
+            for name in ordered:
+                tabs = (details.get(name) or {}).get("tabs") or []
+                if not tabs:
+                    continue
+                active = [t for t in tabs if t.get("active")] or tabs
+                title = (active[0].get("title") or "").strip()
+                if title:
+                    parts.append(f"No browser is playing anything. {name}'s "
+                                 f"open tab is {title}")
+                break
+            else:
+                parts.append("No browser is playing anything, and no tab is open.")
     except Exception as exc:
         print("[now_playing] browser:", exc)
         parts.append("Couldn't read the browser.")
@@ -451,7 +469,27 @@ def _youtube_first_video_id(query):
 
 
 def _browser_video_state(app_name):
-    """Return ``playing``, ``paused``, or ``""`` when state is unavailable."""
+    """Return ``playing``, ``paused``, or ``""`` when state is unavailable.
+
+    Asks macOS first. A browser holds a "Video Wake Lock" power assertion for
+    precisely as long as a video plays, which is an operating-system fact that
+    costs one subprocess and needs no permission. The two paths below it are
+    both conditional: Chromium disables JavaScript from Apple Events by
+    default, and the accessibility title only works while the browser is
+    frontmost. Ted used to try only those two and therefore reported "I
+    couldn't verify that playback started" while a video was plainly playing.
+    """
+    from core import system_state
+    try:
+        assertions = system_state._media_assertions()
+        if assertions:
+            by_pid = system_state._gui_pids([app_name])
+            for pid, flags in assertions.items():
+                if by_pid.get(pid) == app_name and (flags["video"] or flags["audio"]):
+                    return "playing"
+    except Exception as exc:
+        print("[browser-video] assertion check:", exc)
+
     script = (
         f'tell application "{app_name}" to execute active tab of front window '
         'javascript "(() => { const v=document.querySelector(\'video\'); '
@@ -465,8 +503,7 @@ def _browser_video_state(app_name):
             return value
     except Exception:
         pass
-    # Chromium disables JavaScript from Apple Events by default. Its
-    # Accessibility window title still exposes "Audio playing", which gives us
+    # Its Accessibility window title still exposes "Audio playing", which gives
     # a semantic, image-free verification path without asking Charlie to weaken
     # a browser security setting.
     try:

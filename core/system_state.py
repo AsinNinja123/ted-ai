@@ -8,6 +8,7 @@ later.
 
 import json
 import os
+import re
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -17,6 +18,16 @@ from core.actions import get_frontmost_app, get_running_apps, _osa
 
 _remote_cache = {"ts": 0.0, "media": None, "checked": False}
 _REMOTE_TTL = 8.0
+
+# Sites whose pages are a video player, used only to attribute a confirmed
+# browser playback to one tab. Being absent from this list never suppresses a
+# playback report — it only downgrades it from "this tab" to "this browser".
+_VIDEO_HOSTS = (
+    "youtube.com", "youtu.be", "netflix.com", "twitch.tv", "vimeo.com",
+    "hulu.com", "disneyplus.com", "max.com", "primevideo.com", "peacocktv.com",
+    "crunchyroll.com", "paramountplus.com", "tv.apple.com", "espn.com",
+    "kick.com", "dailymotion.com", "plex.tv", "tiktok.com",
+)
 
 
 def _jxa_json(source, timeout=4):
@@ -215,6 +226,97 @@ def _app_details(apps):
     return details
 
 
+_ASSERTION_LINE = re.compile(
+    r"^\s*pid (\d+)\((.+?)\):\s*\[0x[0-9a-fA-F]+\]\s+\S+\s+(\w+)\s+named:\s*\"(.*?)\"")
+
+
+def _media_assertions():
+    """Ask macOS which processes are currently holding playback awake.
+
+    A Chromium or WebKit browser takes a NoDisplaySleepAssertion named
+    "Video Wake Lock" for exactly as long as a <video> element is playing, and
+    a NoIdleSleepAssertion named "Playing audio" for anything audible. Both
+    disappear the moment playback pauses.
+
+    This is the operating system's own record rather than a guess read off a
+    tab title. It costs one cheap subprocess, needs no permission, and needs no
+    browser security setting relaxed — unlike executing JavaScript through
+    Apple Events, which Chromium disables by default and which is why Ted could
+    not answer this question before.
+
+    The record is per-process, not per-tab: it settles "is this browser playing
+    a video" exactly, and "which tab" only in combination with the tab list.
+    """
+    playing = {}
+    try:
+        result = subprocess.run(
+            ["pmset", "-g", "assertions"],
+            capture_output=True, text=True, timeout=4)
+    except Exception as exc:
+        print("[state] playback assertion check:", exc)
+        return playing
+    if result.returncode != 0:
+        return playing
+    for line in result.stdout.splitlines():
+        match = _ASSERTION_LINE.match(line)
+        if not match:
+            continue
+        pid, _owner, kind, name = match.groups()
+        label = name.strip().lower()
+        entry = playing.setdefault(int(pid), {"video": False, "audio": False})
+        if kind == "NoDisplaySleepAssertion" and "video wake lock" in label:
+            entry["video"] = True
+        elif kind == "NoIdleSleepAssertion" and "playing audio" in label:
+            entry["audio"] = True
+    return {pid: flags for pid, flags in playing.items()
+            if flags["video"] or flags["audio"]}
+
+
+def _browser_playback(apps, details):
+    """Name what a browser is confirmed to be playing, and how sure that is.
+
+    Returns None unless macOS confirmed playback. When it did, a tab is named
+    only where the evidence supports naming one — a single open tab is certain,
+    an active tab on a video site is likely, and anything else names the browser
+    and offers the video tabs as candidates. Reporting the shape of the evidence
+    is the point: Ted may say "Brave is playing something" without inventing
+    which of eleven tabs it is.
+    """
+    assertions = _media_assertions()
+    if not assertions:
+        return None
+    by_pid = _gui_pids(apps)
+    for pid, flags in assertions.items():
+        app = by_pid.get(pid)
+        if not app:
+            continue
+        detail = details.get(app) or {}
+        if detail.get("kind") != "browser":
+            continue
+        tabs = detail.get("tabs") or []
+        active = next((t for t in tabs if t.get("active")), None)
+        candidates = [t for t in tabs
+                      if any(host in (t.get("host") or "") for host in _VIDEO_HOSTS)]
+        tab, confidence = None, "browser"
+        if len(tabs) == 1:
+            tab, confidence = tabs[0], "certain"
+        elif active and any(host in (active.get("host") or "")
+                            for host in _VIDEO_HOSTS):
+            tab, confidence = active, "likely"
+        elif len(candidates) == 1:
+            tab, confidence = candidates[0], "likely"
+        return {
+            "app": app,
+            "kind": "video" if flags["video"] else "audio",
+            "title": (tab or {}).get("title", ""),
+            "host": (tab or {}).get("host", ""),
+            "url": (tab or {}).get("url", ""),
+            "confidence": confidence,
+            "candidates": [t.get("title", "") for t in candidates[:4]],
+        }
+    return None
+
+
 def _apple_music(apps):
     if "Music" not in apps:
         return None
@@ -282,6 +384,7 @@ def collect(apps=None, include_remote=True):
     """Collect visible apps, their children, focus, and verified media."""
     apps = list(apps if apps is not None else get_running_apps())
     frontmost = get_frontmost_app()
+    details = _app_details(apps)
     media = _local_spotify(apps) or _apple_music(apps)
     remote_checked = False
     if media is None and include_remote:
@@ -291,9 +394,10 @@ def collect(apps=None, include_remote=True):
         "apps": apps,
         "frontmost": frontmost,
         "front_window": _front_window(frontmost),
-        "details": _app_details(apps),
+        "details": details,
         "media": media,
-        "media_scope": "Spotify and Apple Music",
+        "media_scope": "Spotify, Apple Music, and browser video",
+        "browser_media": _browser_playback(apps, details),
         "remote_spotify_checked": remote_checked,
     }
 
@@ -315,10 +419,29 @@ def format_for_prompt(state):
             label += " on " + media["device"]
         media_line = f"Verified playing: {label} ({media.get('source', 'media')})."
     else:
-        media_line = (
-            "Verified media: nothing playing in Spotify or Apple Music. "
-            "Browser audio is unknown until the browser accessibility tree is inspected. "
-            "Do not claim a song is playing from conversation history.")
+        media_line = ("Verified media: nothing playing in Spotify or Apple Music. "
+                      "Do not claim a song is playing from conversation history.")
+    # Browser playback is a separate, independently verified fact: Spotify can be
+    # silent while a YouTube tab plays. macOS confirms the browser; the tab name
+    # is attributed only as far as the evidence goes, and the confidence word is
+    # kept in the sentence so Ted repeats the uncertainty instead of dropping it.
+    browser = state.get("browser_media")
+    if browser:
+        what = "a video" if browser.get("kind") == "video" else "audio"
+        app = browser.get("app", "A browser")
+        if browser.get("confidence") in ("certain", "likely") and browser.get("title"):
+            hedge = "" if browser["confidence"] == "certain" else " (its active tab, most likely this one)"
+            media_line += (f" macOS confirms {app} is playing {what}: "
+                           f"\"{browser['title']}\"{hedge}.")
+        else:
+            extra = ""
+            if browser.get("candidates"):
+                extra = " Video tabs open: " + " | ".join(browser["candidates"]) + "."
+            media_line += (f" macOS confirms {app} is playing {what}, but not which "
+                           f"tab.{extra}")
+    else:
+        media_line += (" No browser is playing video or audio either — macOS "
+                       "reports no playback wake lock from any browser.")
     app_line = ", ".join(apps) if apps else "none detected"
     detail_parts = []
     for app, detail in (state.get("details") or {}).items():

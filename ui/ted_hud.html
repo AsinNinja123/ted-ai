@@ -21,44 +21,48 @@ body{background:var(--bg);color:var(--text);overflow:hidden;
 button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 
 /* ── the collapse component, used by both side panels ──────────
-   One set of rules for the chat panel and the computer panel, mirrored. The
-   panel is a row: a full-width body plus a 16px rail on its INNER edge. The
-   panel animates its own width down to the rail and no further, so the rail is
-   always on screen to reopen with, and the body is only ever clipped — never
-   unmounted. Nothing is rebuilt on reopen and no scroll position is lost.
+   One set of rules for the chat panel and the computer panel, mirrored. Each
+   panel animates its own width to zero, and the body is only ever clipped —
+   never unmounted. Nothing is rebuilt on reopen and no scroll position is lost.
 
-   The body is pinned to the panel's OUTER edge and the rail to its inner one,
-   both absolutely. That is what makes the collapse a reveal: the body stays put
-   in the window at a fixed width while the panel's width — and therefore the
-   clip — animates over it, so no text reflows on the way and the rail is never
-   the thing that gets clipped away. */
+   The body is pinned to the panel's OUTER edge, absolutely. That is what makes
+   the collapse a reveal: the body stays put in the window at a fixed width
+   while the panel's width — and therefore the clip — animates over it, so no
+   text reflows on the way.
+
+   The buttons that drive this live in the header (see .paneltab), not on the
+   panel. A full-height rail on each inner edge put a 16px stripe down both
+   sides of the window at all times and cost 32px of chat width; a small tab at
+   the top is the pattern Claude and ChatGPT use, and it is what Charlie
+   asked for. */
 .panel{flex:none;position:relative;background:var(--side);overflow:hidden;
   transition:width .25s ease}
 .panel-body{position:absolute;top:0;bottom:0;display:flex;flex-direction:column;
   overflow:hidden}
-.panel-rail{position:absolute;top:0;bottom:0;width:16px;z-index:2;
-  cursor:pointer;border:none;background:var(--side);
-  color:var(--dim);font-size:11px;line-height:1;padding:0;
-  display:flex;align-items:center;justify-content:center;
-  transition:background .18s,color .18s}
-.panel-rail:hover{background:var(--panel);color:var(--accent)}
-/* Ted used an app while the panel was shut. The rail is the only thing on
+
+/* Small header tabs, one per panel, each sitting at the top on that panel's
+   side of the window so the control still points at the thing it opens. */
+.paneltab{background:none;border:1px solid transparent;color:var(--dim);
+  cursor:pointer;font-size:13px;line-height:1;padding:0;flex:none;width:26px;
+  height:26px;border-radius:7px;display:flex;align-items:center;
+  justify-content:center;transition:color .18s,background .18s,border-color .18s}
+.paneltab:hover{color:var(--text);background:var(--panel)}
+/* Ted used an app while the panel was shut. The tab is the only thing on
    screen to say so, so it is what lights up. */
-.panel-rail.noted{color:var(--accent);background:var(--accent-soft)}
+.paneltab.noted{color:var(--accent);border-color:rgba(22,222,222,.35);
+  background:var(--accent-soft)}
 
 /* ── sidebar ─────────────────────────────────────────────── */
-#side{width:266px;border-right:1px solid var(--line)}   /* 250 body + 16 rail */
-#side.collapsed{width:16px}
+#side{width:250px;border-right:1px solid var(--line)}
+#side.collapsed{width:0;border-right-color:transparent}
 #side .panel-body{left:0;width:250px}
-#side .panel-rail{right:0;border-left:1px solid var(--line)}
 #side .panel-body>*{min-width:230px}
 
-/* right panel — live computer hierarchy. Starts collapsed, so by default the
-   only part of it on screen is its 16px rail. */
-#apps{width:336px;border-left:1px solid var(--line)}    /* 320 body + 16 rail */
-#apps.collapsed{width:16px}
+/* right panel — live computer hierarchy. Starts collapsed, so by default it
+   takes no width at all and only its header tab is on screen. */
+#apps{width:320px;border-left:1px solid var(--line)}
+#apps.collapsed{width:0;border-left-color:transparent}
 #apps .panel-body{right:0;width:320px}
-#apps .panel-rail{left:0;border-right:1px solid var(--line)}
 #apps .panel-body>*{min-width:300px}
 .apps-head{padding:15px 15px 9px;border-bottom:1px solid var(--line)}
 .apps-head h3{font-size:10px;letter-spacing:.22em;color:var(--dim)}
@@ -433,11 +437,11 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
     </div>
   </div>
-  <button class="panel-rail" id="side-rail"></button>
 </div>
 
 <div id="main">
   <div id="top">
+    <button class="paneltab" id="side-tab"></button>
     <div id="np-stack">
       <span id="np-slot"><span>&#9834;</span><span id="np-text"></span></span>
       <button id="np-skip" title="Skip this song — goes straight to Spotify, costs nothing">&#9654;&#9654; SKIP</button>
@@ -463,6 +467,7 @@ falls back to the local model; the other two are pinned and never fall back.">
         <span id="bud-txt" class="mono">–</span>
       </span>
       <span id="status"><i></i><span id="status-t"></span></span>
+      <button class="paneltab" id="apps-tab"></button>
     </div>
   </div>
   <div id="chips"></div>
@@ -513,7 +518,6 @@ falls back to the local model; the other two are pinned and never fall back.">
 </div>
 
 <div id="apps" class="panel collapsed">
-  <button class="panel-rail" id="apps-rail"></button>
   <div class="panel-body">
     <div class="apps-head"><h3>COMPUTER</h3><div id="apps-summary">Reading live state…</div></div>
     <div id="apps-list"><div id="apps-empty">Apps, windows, browser tabs, and terminal
@@ -1130,21 +1134,21 @@ function renderApps(){
   });
 }
 /* One collapse component, instantiated twice — chat panel on the left, computer
-   panel on the right, mirrored. The controls used to live in the header, which
-   put the button for a panel nowhere near the panel; each now has a rail on its
-   own inner edge, and that same rail is what stays behind to reopen it. */
-function makeCollapsible(panelId, railId, opts){
-  var panel=$(panelId), rail=$(railId);
+   panel on the right, mirrored. Each panel's tab sits at the top of the window
+   on that panel's own side, so the control still points at the thing it opens
+   without a full-height rail standing down the edge of the screen forever. */
+function makeCollapsible(panelId, tabId, opts){
+  var panel=$(panelId), tab=$(tabId);
   function apply(collapsed, persist){
     panel.classList.toggle('collapsed', collapsed);
-    /* Chevron points the way the panel will move, so the rail says what it
+    /* Chevron points the way the panel will move, so the tab says what it
        does rather than what it is. */
-    rail.innerHTML=collapsed?opts.openGlyph:opts.closeGlyph;
-    rail.title=collapsed?opts.openTitle:opts.closeTitle;
+    tab.innerHTML=collapsed?opts.openGlyph:opts.closeGlyph;
+    tab.title=collapsed?opts.openTitle:opts.closeTitle;
     if(persist){ try{ localStorage.setItem(opts.key, collapsed?'closed':'open'); }catch(e){} }
     if(opts.onChange) opts.onChange(collapsed);
   }
-  rail.onclick=function(){ apply(!panel.classList.contains('collapsed'), true); };
+  tab.onclick=function(){ apply(!panel.classList.contains('collapsed'), true); };
   var saved=null;
   try{ saved=localStorage.getItem(opts.key); }catch(e){}
   apply(saved===null ? !!opts.startCollapsed : saved==='closed', false);
@@ -1417,7 +1421,7 @@ var tedHud={
     var label=map[tool]; if(!label) return;
     appsUsed[label]=Date.now();
     renderApps();
-    if(appsPanel && !appsPanel.isOpen()) $('apps-rail').classList.add('noted');
+    if(appsPanel && !appsPanel.isOpen()) $('apps-tab').classList.add('noted');
   },
 
   /* memory overlay.
@@ -1586,16 +1590,16 @@ $('chatqx').onclick=function(){ $('chatq').value=''; setSearch(''); $('chatq').f
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
-sidePanel=makeCollapsible('side','side-rail',{
+sidePanel=makeCollapsible('side','side-tab',{
   key:'ted_side', startCollapsed:false,
-  openGlyph:'›', closeGlyph:'‹',
+  openGlyph:'&#9776;', closeGlyph:'&#10094;',
   openTitle:'Show chats', closeTitle:'Hide chats'});
-appsPanel=makeCollapsible('apps','apps-rail',{
+appsPanel=makeCollapsible('apps','apps-tab',{
   key:'ted_apps', startCollapsed:true,
-  openGlyph:'‹', closeGlyph:'›',
+  openGlyph:'&#9707;', closeGlyph:'&#10095;',
   openTitle:'Show what is open on your Mac', closeTitle:'Hide the computer panel',
   onChange:function(collapsed){
-    if(!collapsed){ $('apps-rail').classList.remove('noted'); renderApps(); }
+    if(!collapsed){ $('apps-tab').classList.remove('noted'); renderApps(); }
   }});
 
 /* ── copying selected text ────────────────────────────────────

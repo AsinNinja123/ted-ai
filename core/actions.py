@@ -84,6 +84,44 @@ APPS = {
     "stocks": "Stocks",
     "news": "News",
     "weather": "Weather",
+    # Installed on this Mac but previously unresolvable, so Ted could neither
+    # open them nor answer "is Contacts open?" while Contacts sat in the very
+    # app list he was reading from. Audited against /Applications and
+    # /System/Applications rather than guessed.
+    "contacts": "Contacts",
+    "address book": "Contacts",
+    "my contacts": "Contacts",
+    "calculator": "Calculator",
+    "app store": "App Store",
+    "freeform": "Freeform",
+    "home": "Home",
+    "passwords": "Passwords",
+    "phone": "Phone",
+    "journal": "Journal",
+    "clock": "Clock",
+    "dictionary": "Dictionary",
+    "find my": "FindMy",
+    "findmy": "FindMy",
+    "stickies": "Stickies",
+    "photo booth": "Photo Booth",
+    "iphone mirroring": "iPhone Mirroring",
+    "mirror my phone": "iPhone Mirroring",
+    "steam": "Steam",
+    "automator": "Automator",
+    "disk utility": "Disk Utility",
+    "console": "Console",
+    "screenshot": "Screenshot",
+    "script editor": "Script Editor",
+    "system information": "System Information",
+    "font book": "Font Book",
+    "image capture": "Image Capture",
+    "time machine": "Time Machine",
+    # Charlie's own tooling.
+    "db browser": "DB Browser for SQLite",
+    "db browser for sqlite": "DB Browser for SQLite",
+    "sqlite browser": "DB Browser for SQLite",
+    "neo4j": "Neo4j Desktop 2",
+    "neo4j desktop": "Neo4j Desktop 2",
 }
 
 # Web services that have no macOS app — "open YouTube" opens the URL in Chrome

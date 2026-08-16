@@ -1953,11 +1953,13 @@ class TedApi:
         def _run(step):
             return self._dispatch_and_record(step["tool"], step.get("args") or {})
 
-        # A semantic press acts on whichever app is frontmost, so it must never
-        # race the app/browser launch that establishes that state. Other listed
-        # routine actions are independent and intentionally safe to fan out.
+        # Keystrokes, scrolls and semantic presses act on whichever app is
+        # frontmost, so they must never race the app/browser launch that
+        # establishes that state. Other listed routine actions are independent
+        # and intentionally safe to fan out.
         can_parallel = (routine.get("parallel") and len(steps) > 1
-                        and not any(step["tool"] == "ui_press" for step in steps))
+                        and not any(step["tool"] in routines.FOCUS_DEPENDENT_ACTIONS
+                                    for step in steps))
         if can_parallel:
             with ThreadPoolExecutor(max_workers=min(4, len(steps))) as pool:
                 results = list(pool.map(_run, steps))

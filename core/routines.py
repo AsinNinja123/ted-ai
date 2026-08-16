@@ -32,6 +32,13 @@ ROUTINE_ACTIONS = {
                      "placeholder": "Claude, ChatGPT, VS Code…"},
         },
     },
+    "close_app": {
+        "label": "Close an app",
+        "fields": {
+            "name": {"label": "App name", "type": "text", "required": True,
+                     "placeholder": "Spotify, Discord, Steam…"},
+        },
+    },
     "browse_to": {
         "label": "Open a website",
         "fields": {
@@ -95,7 +102,53 @@ ROUTINE_ACTIONS = {
                        "options": ["up", "down"]},
         },
     },
+    "set_timer": {
+        "label": "Start a timer",
+        "fields": {
+            "duration": {"label": "Duration", "type": "text", "required": True,
+                         "placeholder": "25 minutes"},
+        },
+    },
+    "notes_add": {
+        "label": "Write a note",
+        "fields": {
+            "title": {"label": "Note title", "type": "text", "required": True,
+                      "placeholder": "Study log"},
+            "body": {"label": "Text", "type": "text", "required": True},
+            "mode": {"label": "If it exists", "type": "select", "required": False,
+                     "options": ["", "new", "append"]},
+        },
+    },
+    "clipboard_write": {
+        "label": "Put text on the clipboard",
+        "fields": {
+            "text": {"label": "Text", "type": "text", "required": True},
+        },
+    },
+    "press_key": {
+        "label": "Press a key",
+        "fields": {
+            "key": {"label": "Key", "type": "select", "required": True,
+                    "options": ["enter", "tab", "escape", "space", "delete",
+                                "backspace", "left", "right", "up", "down",
+                                "copy", "paste", "cut", "undo", "redo",
+                                "select all", "save"]},
+        },
+    },
+    "scroll": {
+        "label": "Scroll the window",
+        "fields": {
+            "direction": {"label": "Direction", "type": "select", "required": True,
+                          "options": ["up", "down"]},
+            "amount": {"label": "Amount", "type": "number", "required": False},
+        },
+    },
 }
+
+# Actions that act on whatever happens to be frontmost. A routine containing
+# one of these must run its steps in order, or the keystroke lands in the app
+# that was focused before the routine started opening things.
+FOCUS_DEPENDENT_ACTIONS = {"ui_press", "press_key", "scroll", "type_text"}
 
 
 _SCHEMA = """

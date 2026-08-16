@@ -26,8 +26,8 @@
 | Hears / speaks | `whisper-large-v3-turbo` / `kokoro-v1.0.onnx` (local) |
 | Tools | 46 |
 | Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
-| Memory | 58 facts, ~1100 chat turns, 9 session memories |
-| Tests | 866 checks across 28 suites |
+| Memory | 58 facts, ~1150 chat turns, 9 session memories |
+| Tests | 872 checks across 28 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**
@@ -35,7 +35,6 @@
 - **The calendar daemon has never run.** ted_daemon.py is built and tested but no data/ted_daemon.log exists, so it has not started on this machine. Proactive class reminders do nothing until it does. See docs/DAEMON_HANDOFF.md.
 - **Empty tables.** goals, habit_logs, routines — built and never used, or left over from a deleted feature.
 - **Data nothing reads.** patterns has 141 rows and nothing in the code reads it. Either use it or drop it.
-- **Ted has fallen back to the local brain.** It has happened at least once in the current launch log, so the Groq to Ollama handover does fire in practice — grep '[provider]' in data/ted_launch.log for how often.
 
 Run `git log --oneline -10` and `git status` for anything about the working tree — that is deliberately not duplicated here.
 
