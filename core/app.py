@@ -2066,6 +2066,8 @@ class TedApi:
                 return features.spotify_web.play_playlist(args.get("name", ""), args.get("shuffle", False))
             if name == "spotify_control":
                 return th.tool_spotify_control(args.get("action", ""))
+            if name == "now_playing":
+                return th.tool_now_playing()
             if name == "add_to_playlist":
                 # track omitted = whatever is playing; that is the common ask.
                 return features.spotify_web.add_to_playlist(

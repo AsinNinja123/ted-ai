@@ -164,6 +164,20 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "now_playing",
+            "description": (
+                "Report what is playing right now: the current Spotify track AND the "
+                "front browser tab. Use for 'what's playing?', 'what is this song', "
+                "'what video is open', 'what am I watching', and to check what a page "
+                "actually turned out to be after opening it. This reads real state — "
+                "prefer it over saying you cannot check."
+            ),
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
 
     {
         "type": "function",

@@ -242,6 +242,63 @@ def _open_verified_browser(app_name, url, new_window=False):
     return False, "macOS window verification was unavailable"
 
 
+def _active_tab(app_name, tries=3, delay=0.7):
+    """What the browser is actually showing — title and URL of the front tab.
+
+    The window check above proves a window exists. It says nothing about what
+    is in it, which is why Ted could open a video and then honestly report that
+    he could not confirm anything: the HUD could see the tab and he could not.
+    The information was already being collected for the computer panel, so this
+    reads the same source rather than adding a second AppleScript that could
+    disagree with it.
+
+    Bounded retry, because a page that has been ASKED for is not a page that
+    has loaded: Chromium reports the URL as the title until the document
+    commits, so an immediate read gets a URL where the video title will be.
+    Returns the tab dict, or None if nothing could be read at all.
+    """
+    from core import system_state
+    best = None
+    for attempt in range(max(1, tries)):
+        try:
+            tabs, _windows = system_state._browser_tabs(app_name)
+        except Exception as exc:
+            print(f"[browse] tab read failed for {app_name}: {exc}")
+            tabs = []
+        active = [t for t in tabs if t.get("active")] or tabs
+        if active:
+            tab = active[0]
+            best = tab
+            title = (tab.get("title") or "").strip()
+            settled = (title and title != tab.get("url")
+                       and not title.lower().startswith(("about:", "new tab", "untitled")))
+            if settled:
+                return tab
+        if attempt < tries - 1:
+            time.sleep(delay)
+    return best
+
+
+def _tab_report(app_name, label):
+    """One sentence about what a browser ended up showing.
+
+    Kept separate from the opening so both the named-browser path and the
+    default-browser path say the same thing the same way, and so the honest
+    'I opened it but cannot read it back' case is written once.
+    """
+    tab = _active_tab(app_name)
+    title = (tab or {}).get("title", "").strip()
+    url = (tab or {}).get("url", "").strip()
+    if title and title != url:
+        return f"Opened {label} in {app_name} — showing \"{title}\"."
+    if url:
+        return f"Opened {label} in {app_name} — currently at {url}."
+    # Opening was verified; only the read-back failed. Say which is which
+    # rather than falling back on a blanket "I can't verify".
+    return (f"Opened {label} in {app_name}. The window is up, but I couldn't "
+            f"read the tab back, so I can't tell you what's on the page.")
+
+
 def tool_browse_to(site, browser=None, new_window=False):
     """Open a website, optionally in a SPECIFIC browser ('youtube in Brave').
     Existing browser windows are reused unless ``new_window`` is explicit.
@@ -267,7 +324,7 @@ def tool_browse_to(site, browser=None, new_window=False):
         app_name = _BROWSERS.get(browser.strip().lower(), browser.strip())
         verified, detail = _open_verified_browser(app_name, url, bool(new_window))
         if verified:
-            return f"Opened {label} in {app_name}."
+            return _tab_report(app_name, label)
         return (f"I couldn't verify that {label} opened in {app_name}; "
                 f"nothing is being claimed as complete. ({detail})")
 
@@ -281,7 +338,7 @@ def tool_browse_to(site, browser=None, new_window=False):
     try:
         r = subprocess.run(["osascript", "-e", script], capture_output=True, timeout=8)
         if r.returncode == 0:
-            return f"Opening {label}."
+            return _tab_report("Google Chrome", label)
     except Exception:
         pass
     # Chrome unavailable — try the default browser
@@ -292,6 +349,63 @@ def tool_browse_to(site, browser=None, new_window=False):
     except Exception:
         pass
     return f"I couldn't open {label}."
+
+
+def tool_now_playing():
+    """What is playing right now — the Spotify track and the front browser tab.
+
+    Exists because "what's playing?" had no answer that did not require Ted to
+    guess. The HUD could see both of these and Ted could not, so he fell back on
+    saying he was unable to check while the answer was on screen. Same source as
+    the HUD uses for each, so the two cannot contradict each other.
+    """
+    parts = []
+
+    try:
+        from core import features
+        if features.HAS_SPOTIFY_WEB and features.spotify_web is not None:
+            np = features.spotify_web.now_playing() or {}
+            title = (np.get("title") or "").strip()
+            if title:
+                artist = (np.get("artist") or "").strip()
+                label = f"{title} by {artist}" if artist else title
+                parts.append(f"Spotify: {label}"
+                             + ("" if np.get("playing") else " (paused)"))
+            else:
+                parts.append("Spotify: nothing playing.")
+        else:
+            parts.append("Spotify isn't connected.")
+    except Exception as exc:
+        print("[now_playing] spotify:", exc)
+        parts.append("Spotify: couldn't check.")
+
+    # Whichever browser is frontmost, falling back to any that has a tab open.
+    try:
+        from core import system_state
+        state = system_state.collect(include_remote=False) or {}
+        front = state.get("frontmost", "")
+        details = state.get("details", {}) or {}
+        candidates = ([front] if front in details else []) + [
+            name for name in details if name != front]
+        for name in candidates:
+            tabs = (details.get(name) or {}).get("tabs") or []
+            if not tabs:
+                continue
+            active = [t for t in tabs if t.get("active")] or tabs
+            tab = active[0]
+            title = (tab.get("title") or "").strip()
+            if title:
+                parts.append(f"{name}: {title}")
+            break
+        else:
+            parts.append("No browser tab is open.")
+    except Exception as exc:
+        print("[now_playing] browser:", exc)
+        parts.append("Couldn't read the browser.")
+
+    # Joined as sentences, not with a bullet: this string is spoken as often as
+    # it is read, and a separator that looks tidy reads as noise out loud.
+    return " ".join(p if p.endswith(".") else p + "." for p in parts)
 
 
 def _youtube_first_video_id(query):

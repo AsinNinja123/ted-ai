@@ -167,7 +167,7 @@ TOOL_GROUPS = [
                   "system_brightness", "clipboard_read", "clipboard_write",
                   "screen_describe"]),
     ("The web", ["browse_to", "web_search", "get_weather"]),
-    ("Music", ["play_music", "play_playlist", "spotify_control"]),
+    ("Music", ["play_music", "play_playlist", "spotify_control", "now_playing"]),
     ("Messages and mail", ["send_message", "get_emails", "read_email",
                            "email_action", "send_email"]),
     ("Time", ["set_reminder", "set_timer", "get_reminders"]),

@@ -63,7 +63,12 @@ _FAMILIES = (
     # is how the question is actually asked.
     (r"\b(?:play(?:ing|ed|s)?|song|music|spotify|playlist|album|artist|track|"
      r"listen(?:ing)?|pause|resume|skip|next song|previous track|volume)\b",
-     ("play_music", "play_playlist", "spotify_control")),
+     ("play_music", "play_playlist", "spotify_control", "now_playing")),
+    # "what am I watching" is the browser half of the same question and shares
+    # no words with the music family above.
+    (r"\bwhat(?:'?s| is| am i)\b[^.?!]*\b(?:playing|watching|open|on screen|"
+     r"this (?:song|video|tab))\b",
+     ("now_playing",)),
     # Playlist EDITING is its own family on purpose. Folded into the music
     # family above it would put four more schemas on every "skip this song",
     # and that family already fires on the bare word "play".

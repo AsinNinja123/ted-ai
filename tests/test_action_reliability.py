@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import actions, tool_handlers as th
+from core import actions, system_state, tool_handlers as th
 from core.tools import TOOL_SCHEMAS
 
 
@@ -41,15 +41,36 @@ def successful_browser(argv, **kwargs):
 
 th.subprocess.run = successful_browser
 th.subprocess.Popen = lambda argv, **kwargs: calls.append(argv)
+
+# The tab read is stubbed here for the same reason the window count is: this
+# suite is about what Ted CLAIMS, and the claim now includes what the browser
+# ended up showing. Patching th.subprocess.run patches the shared module, so
+# without this the real osascript path would run and land in `calls` too.
+original_browser_tabs = system_state._browser_tabs
+system_state._browser_tabs = lambda _app: (
+    [{"title": "Stub Page Title", "url": "https://youtube.com",
+      "host": "youtube.com", "active": True, "window": 1}], 1)
+
+
+def launches(recorded):
+    """Only the calls that start a browser — not the tab read-back."""
+    return [c for c in recorded if c and c[0] in ("open",) or (
+        c and str(c[0]).startswith("/Applications"))]
+
+
 window_counts = iter([1, 1])
 th._browser_window_count = lambda _app: next(window_counts, 1)
 result = th.tool_browse_to("youtube")
 check("YouTube automatically uses Charlie's Brave preference",
       calls and calls[0] == ["open", "-a", "Brave Browser", "https://youtube.com"])
 check("default navigation reuses the existing window as a new tab",
-      len(calls) == 1 and "--new-window" not in calls[0])
+      len(launches(calls)) == 1 and "--new-window" not in calls[0])
+# Success is no longer a claim that a window exists — it names the page.
 check("success is reported only after a real Brave window appears",
-      result == "Opened Youtube in Brave Browser.")
+      result.startswith("Opened Youtube in Brave Browser")
+      and not th.looks_like_failure(result))
+check("and it reports what the tab actually shows",
+      "Stub Page Title" in result)
 
 calls.clear()
 window_counts = iter([1, 1])
@@ -57,16 +78,16 @@ th._browser_window_count = lambda _app: next(window_counts, 1)
 result = th.tool_browse_to("google docs")
 check("every non-YouTube site defaults to Google Chrome",
       calls and calls[0] == ["open", "-a", "Google Chrome", "https://docs.google.com"]
-      and result == "Opened Google Docs in Google Chrome.")
+      and result.startswith("Opened Google Docs in Google Chrome"))
 
 calls.clear()
 window_counts = iter([1, 2])
 th._browser_window_count = lambda _app: next(window_counts, 2)
 result = th.tool_browse_to("youtube", "Brave", new_window=True)
 check("an explicit new-window request uses exactly one Chromium launch",
-      calls == [["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-                 "--new-window", "https://youtube.com"]]
-      and result == "Opened Youtube in Brave Browser.")
+      launches(calls) == [["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                           "--new-window", "https://youtube.com"]]
+      and result.startswith("Opened Youtube in Brave Browser"))
 
 calls.clear()
 window_counts = iter([0, 2])
@@ -88,6 +109,7 @@ th.subprocess.Popen = original_popen
 th.os.path.exists = original_exists
 th._browser_window_count = original_window_count
 th.time.sleep = original_tool_sleep
+system_state._browser_tabs = original_browser_tabs
 
 original_browse = th.tool_browse_to
 web_routes = []

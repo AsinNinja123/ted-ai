@@ -333,7 +333,21 @@ def play_playlist(name, shuffle=False):
         tail = " — though I couldn't confirm it's actually playing"
     elif shuffle and not shuffle_ok:
         tail = " — shuffle isn't available on your account or device right now"
-    return f"{verb} your {match[0]} playlist{tail}."
+    # Name the track that actually started. A playlist begins on whichever
+    # track Spotify picks, which is not ours to predict — so the only way for
+    # Ted and the HUD strip to agree on one source of truth is to read it back
+    # rather than describe the request.
+    track_tail = ""
+    if confirmed is True:
+        try:
+            np = now_playing()
+            if np.get("title"):
+                artist = np.get("artist") or ""
+                track_tail = (f" — starting with {np['title']}"
+                              + (f" by {artist}" if artist else ""))
+        except Exception as e:
+            print("[spotify] playlist track read:", e)
+    return f"{verb} your {match[0]} playlist{track_tail}{tail}."
 
 
 def play_track(query, artist=None):
