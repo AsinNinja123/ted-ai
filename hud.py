@@ -21,10 +21,23 @@ import signal
 import threading
 
 # The native Dock host uses SIGUSR1 as a private "show your window" message.
-# Ignore it during heavy startup, before the real handler is installed, so an
-# eager Dock click can never terminate the Python worker by default.
+#
+# This has to be a BLOCKED signal consumed by a dedicated sigwait thread, not a
+# signal.signal() handler. Python runs signal handlers only when the main
+# thread executes bytecode, and webview.start() hands the main thread to
+# AppKit's run loop for the rest of the session — so the handler that used to
+# be installed below never ran once Ted was actually up. The Dock host was
+# sending SIGUSR1 correctly and the interpreter was dropping it. Measured with
+# a standalone AppKit run loop, not inferred.
+#
+# Blocking must happen HERE, at import, before AppKit exists and before any
+# thread starts: threads inherit this mask, so none of them can take SIGUSR1's
+# default action and kill Ted mid-startup. A click that arrives before the
+# window is ready now stays pending and is honored when the watcher starts,
+# instead of being ignored outright.
 if os.environ.get("TED_NATIVE_HOST") == "1":
-    signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+    signal.signal(signal.SIGUSR1, signal.SIG_DFL)
 
 # Make `from core.xxx import …` work from any cwd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -184,6 +197,13 @@ if __name__ == "__main__":
     # visible window. Accessory apps can own normal windows but do not get a
     # second Dock tile; the regular native Ted host remains the Dock identity.
     native_host = os.environ.get("TED_NATIVE_HOST") == "1"
+    # Whether the Dock host launched us decides whether the SIGUSR1 handler
+    # below is installed at all, so a Dock icon that does nothing has two very
+    # different causes. Say which one applies instead of leaving it to be
+    # re-derived from a traceback that never gets written.
+    print(f"[app] native Dock host: {'yes' if native_host else 'no'} — "
+          f"window raise on Dock click is "
+          f"{'enabled' if native_host else 'disabled'}")
 
     def _make_python_accessory():
         import AppKit
@@ -196,7 +216,7 @@ if __name__ == "__main__":
         except Exception as exc:
             print(f"[app] could not prepare Python as an accessory: {exc}")
 
-        def _raise_ted_window(signum, frame):
+        def _raise_ted_window():
             """Handle the native Dock host's request inside the UI process."""
             try:
                 import AppKit
@@ -206,6 +226,14 @@ if __name__ == "__main__":
                     app = AppKit.NSApplication.sharedApplication()
                     for native_window in app.windows():
                         if native_window.title().startswith("Ted"):
+                            # deminiaturize: is the documented way back out of
+                            # the Dock. On this macOS makeKeyAndOrderFront:
+                            # happens to restore a miniaturized window too
+                            # (checked), but that is not a promise AppKit
+                            # makes, and asking for what we actually want
+                            # costs one line.
+                            if native_window.isMiniaturized():
+                                native_window.deminiaturize_(None)
                             native_window.makeKeyAndOrderFront_(None)
                             native_window.orderFrontRegardless()
                     if hasattr(app, "activate"):
@@ -218,7 +246,23 @@ if __name__ == "__main__":
             except Exception as exc:
                 print(f"[app] could not raise Ted's window: {exc}")
 
-        signal.signal(signal.SIGUSR1, _raise_ted_window)
+        def _watch_for_raise_requests():
+            """Consume Dock-host raise requests on a thread that can actually run.
+
+            sigwait blocks here instead of in the interpreter's signal
+            machinery, so delivery does not depend on the main thread ever
+            leaving AppKit's run loop — which it does not.
+            """
+            while True:
+                try:
+                    signal.sigwait({signal.SIGUSR1})
+                except Exception as exc:
+                    print(f"[app] Dock raise watcher stopped: {exc}")
+                    return
+                _raise_ted_window()
+
+        threading.Thread(target=_watch_for_raise_requests, daemon=True,
+                         name="dock-raise").start()
 
     def _ready():
         # pywebview sets its process back to a regular application while it

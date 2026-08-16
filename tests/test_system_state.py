@@ -84,6 +84,20 @@ check("a native Ted host owns the Dock identity instead of framework Python",
 check("the native Dock tile can raise the accessory Ted window",
       'SIGUSR1' in launcher and 'SIGUSR1' in hud_source
       and 'orderFrontRegardless' in hud_source)
+# The Dock host has always sent SIGUSR1 on reopen; hud.py handled it with
+# signal.signal(), and Python runs those handlers only when the MAIN thread
+# executes bytecode. webview.start() gives the main thread to AppKit's run loop
+# and never takes it back, so the signal arrived and the interpreter dropped
+# it. Verified against a standalone AppKit run loop: signal.signal never fires,
+# a blocked signal consumed by sigwait on its own thread always does.
+check("…via a sigwait thread, because a signal.signal handler never runs "
+      "under AppKit's run loop",
+      'sigwait' in hud_source and 'pthread_sigmask' in hud_source
+      and 'signal.signal(signal.SIGUSR1, _raise_ted_window)' not in hud_source)
+check("…with SIGUSR1 blocked before any thread can take its default action",
+      hud_source.index('pthread_sigmask') < hud_source.index('import webview'))
+check("…and a miniaturized window is asked to leave the Dock explicitly",
+      'isMiniaturized' in hud_source and 'deminiaturize_' in hud_source)
 check("the right rail receives and renders the full computer hierarchy",
       'setComputerState:function(state)' in ui_source
       and "term.branch" in ui_source and "tab.host" in ui_source
