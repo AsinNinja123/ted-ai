@@ -115,12 +115,24 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 @keyframes thinkStatus{from{transform:scale(.75);opacity:.45}to{transform:scale(1.45);opacity:1}}
 
 /* now playing — top left, out of the chat's way */
-#np-slot{font-size:11.5px;color:var(--dim);display:none;align-items:center;gap:5px;
+/* The now-playing pill, with skip directly under it. Stacked rather than
+   inline: Charlie asked for skip *under* the song button, and a second pill
+   beside the first would push the clock off centre every time music started. */
+#np-stack{display:none;flex-direction:column;align-items:flex-start;gap:3px;
+  flex:0 1 auto;min-width:0}
+#np-stack.show{display:flex}
+#np-slot{font-size:11.5px;color:var(--dim);display:flex;align-items:center;gap:5px;
   background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:3px 11px;
   max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  flex:0 1 auto;min-width:0}
-#np-slot.show{display:flex}
+  max-width:100%;min-width:0}
 #np-text{overflow:hidden;text-overflow:ellipsis}
+/* Same local transport path as the strip above the input box: straight to
+   Python, no model, no token, nothing that can narrate a skip that did not
+   happen. */
+#np-skip{background:transparent;border:1px solid var(--line);border-radius:11px;
+  color:var(--dim);cursor:pointer;font:inherit;font-size:10px;letter-spacing:.06em;
+  padding:1px 9px;line-height:1.5;transition:color .15s,border-color .15s,background .15s}
+#np-skip:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
 
 /* clock — centred by equal auto margins rather than by absolute positioning,
    so it is pushed aside by its neighbours instead of drawn on top of them.
@@ -265,7 +277,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
    from the measured width instead. Order of sacrifice, least useful first:
    the now-playing pill (the transport strip above the input box says the same
    thing), then the clock. The budget gauge and status lamp never drop. */
-#top.tight #np-slot{display:none}
+#top.tight #np-stack{display:none}
 #top.xtight #clock{display:none}
 
 /* live token budget + which brain answered */
@@ -330,7 +342,10 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 <div id="main">
   <div id="top">
     <button class="hbtn" id="side-toggle" title="Show / hide chats">&#9776;</button>
-    <span id="np-slot"><span>&#9834;</span><span id="np-text"></span></span>
+    <div id="np-stack">
+      <span id="np-slot"><span>&#9834;</span><span id="np-text"></span></span>
+      <button id="np-skip" title="Skip this song — goes straight to Spotify, costs nothing">&#9654;&#9654; SKIP</button>
+    </div>
     <span id="chat-title">New chat</span>
     <div id="clock">
       <div id="clk-time">--:--:--</div>
@@ -373,10 +388,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
           <line x1="12" y1="18" x2="12" y2="22"/>
         </svg>
       </button>
+      <textarea id="input" rows="1" placeholder="Message Ted…"></textarea>
       <!-- Mic on, speakers off: dictate into the box instead of typing.
            A slashed mic would be the obvious icon and the wrong one — it reads
            as "mic off", which is the opposite of what this does. Captions say
-           speech-becomes-text, which is exactly the promise. -->
+           speech-becomes-text, which is exactly the promise.
+           Sits immediately left of Send: it is the other way of filling this
+           box, so it belongs next to the button that empties it, not off past
+           the voice toggle where it read as a second mic. -->
       <button class="ibtn" id="transcribe" title="Dictate into the box — Ted won't speak">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -387,7 +406,6 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
           <line x1="11.5" y1="14" x2="17.5" y2="14"/>
         </svg>
       </button>
-      <textarea id="input" rows="1" placeholder="Message Ted…"></textarea>
       <button class="ibtn" id="send" title="Send">&#8593;</button>
     </div>
   </div>
@@ -1034,7 +1052,7 @@ var tedHud={
   setNowPlaying:function(np){
     var text=(typeof np==='string')?np:((np&&np.text)||'');
     $('np-text').textContent=text;
-    $('np-slot').classList.toggle('show',!!text);
+    $('np-stack').classList.toggle('show',!!text);
     if(text){ appsUsed['Spotify']=Date.now(); renderApps(); }
   },
 
@@ -1148,7 +1166,12 @@ function renderNowPlaying(s){
   $('nowplaying').classList.add('show');
   $('tplay').innerHTML=npPlaying?'&#10073;&#10073;':'&#9654;';
   $('tplay').title=npPlaying?'Pause':'Play';
-  $('nptext').textContent=s.artist?(s.title+' — '+s.artist):s.title;
+  var label=s.artist?(s.title+' — '+s.artist):s.title;
+  $('nptext').textContent=label;
+  /* The header pill is written by Python when Ted touches Spotify; this poll
+     is the only thing that notices a skip. Keep the two showing the same track
+     rather than letting the pill go stale and contradict the strip. */
+  if($('np-stack').classList.contains('show')) $('np-text').textContent=label;
 }
 function pollNowPlaying(){
   if(!inApp()) return;
@@ -1164,6 +1187,7 @@ function transport(action){
 }
 $('tprev').onclick=function(){ transport('previous'); };
 $('tnext').onclick=function(){ transport('next'); };
+$('np-skip').onclick=function(){ transport('next'); };   // same path, top of the window
 $('tplay').onclick=function(){ transport(npPlaying?'pause':'play'); };
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
