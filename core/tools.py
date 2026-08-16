@@ -30,6 +30,30 @@ TOOL_SCHEMAS = [
         }
     },
 
+    {
+        "type": "function",
+        "function": {
+            "name": "show_image",
+            "description": (
+                "Put pictures directly in the chat window. Use when the user asks to SEE "
+                "something — 'show me', 'what does X look like', 'find a picture of' — "
+                "instead of opening a browser. The images appear in the conversation; "
+                "afterwards, describe briefly what was shown rather than repeating URLs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "What to show, e.g. 'red panda' or "
+                                             "'1967 Mustang fastback'"},
+                    "count": {"type": "integer",
+                              "description": "How many pictures, 1-4. Default 3."}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+
     # ── Apps ──────────────────────────────────────────────────────────────────
     {
         "type": "function",

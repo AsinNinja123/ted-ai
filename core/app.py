@@ -2099,6 +2099,9 @@ class TedApi:
                 if result == "__SEARCH_ERROR__":
                     return "Live web search is unavailable right now."
                 return result
+            if name == "show_image":
+                return self._show_images(args.get("query", ""),
+                                         args.get("count", 3))
             if name == "open_app":
                 return th.tool_open_app(args.get("name", ""))
             if name == "close_app":
@@ -3314,6 +3317,54 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    def _show_images(self, query, count=3):
+        """Put pictures in the chat itself rather than opening a browser.
+
+        The images are pushed straight to the window instead of being returned
+        as markdown for the model to repeat. Model narration is not a reliable
+        renderer — it paraphrases, drops URLs, and invents captions — and this
+        project's rule is that the verified result is the truth about what
+        happened. So the HUD is told what was actually shown, and the model is
+        told only how many, in words it cannot turn into a broken image.
+        """
+        query = str(query or "").strip()
+        if not query:
+            return "I need to know what to show a picture of."
+        try:
+            count = max(1, min(int(count or 3), 4))
+        except (TypeError, ValueError):
+            count = 3
+        found = th.find_images(query, count)
+        if not found:
+            return (f"I couldn't find any pictures of {query}, so nothing was "
+                    f"added to the chat.")
+        js(self.window, "tedHud.showMedia(%s)" % json.dumps({
+            "query": query, "images": found}))
+        return (f"Showed {len(found)} picture{'s' if len(found) != 1 else ''} "
+                f"of {query} in the chat.")
+
+    def open_url_external(self, url):
+        """Open a link clicked in the chat, in the real browser.
+
+        The HUD is a page inside pywebview, so a live href would navigate the
+        window away from Ted with no way back — the app would simply become
+        the website. Every link in a reply is inert and routed through here.
+        """
+        url = str(url or "").strip()
+        # Only http(s). A chat bubble is model output, and file:// or
+        # javascript: reaching `open` would turn a hallucinated link into a
+        # local action.
+        if not url.lower().startswith(("http://", "https://")):
+            print(f"[link] refused non-web URL: {url[:80]!r}")
+            return False
+        try:
+            result = th.tool_browse_to(url)
+            print(f"[link] {url[:80]} → {result[:60]}")
+            return not th.looks_like_failure(result)
+        except Exception as exc:
+            error_log.error(f"[link] could not open {url[:80]}: {exc}")
+            return False
 
     # ── attachments ────────────────────────────────────────────────────────
     # Three ways in, because all three are things Charlie will actually try:

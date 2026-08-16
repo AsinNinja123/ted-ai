@@ -447,6 +447,44 @@ def tool_now_playing():
     return " ".join(p if p.endswith(".") else p + "." for p in parts)
 
 
+def find_images(query, count=3):
+    """Search the web for pictures. Returns a list of dicts, or [] on failure.
+
+    Kept free of any HUD reference so it stays testable and so the decision
+    about what to *show* lives with the code that owns the window.
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        with DDGS(timeout=8) as ddgs:
+            raw = list(ddgs.images(query, max_results=max(1, min(int(count), 6))))
+    except Exception as exc:
+        print(f"[images] search failed: {exc}")
+        return []
+    out = []
+    for item in raw:
+        url = (item.get("image") or "").strip()
+        if not url.startswith("http"):
+            continue
+        out.append({
+            "title": (item.get("title") or query)[:160],
+            # The full-size image can be a 4000px TIFF on a slow host. The
+            # thumbnail is what actually renders in a chat bubble; the full one
+            # is kept so clicking through is possible.
+            "url": url,
+            "thumbnail": (item.get("thumbnail") or url).strip(),
+            "source": (item.get("url") or "").strip(),
+            "width": item.get("width"),
+            "height": item.get("height"),
+        })
+    return out
+
+
 def _youtube_first_video_id(query):
     """Resolve a search to a public video ID without requiring an API key."""
     search = query.strip() or "popular videos"

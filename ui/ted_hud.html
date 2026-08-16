@@ -288,6 +288,27 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #heard{max-width:740px;margin:0 auto 6px;font-size:12px;color:var(--dim);
   min-height:16px;padding:0 4px;opacity:0;transition:opacity .25s}
 #heard.show{opacity:1}
+/* links and pictures inside a reply */
+.b a.lnk{color:var(--accent);text-decoration:none;border-bottom:1px solid
+  rgba(22,222,222,.32);cursor:pointer;word-break:break-word}
+.b a.lnk:hover{border-bottom-color:var(--accent);background:var(--accent-soft)}
+.imgcard{margin:9px 0 4px;padding:0;max-width:420px}
+.imgcard img{display:block;max-width:100%;max-height:320px;width:auto;
+  border-radius:10px;border:1px solid var(--line);cursor:pointer;
+  background:var(--panel2)}
+.imgcard figcaption{font-size:11px;color:var(--dim);margin-top:5px;
+  line-height:1.4}
+/* A broken remote image must vanish, not sit in the chat as a torn-page icon
+   looking like Ted malfunctioned. */
+.imgcard.broken{display:none}
+
+/* a row of pictures Ted fetched */
+.b.media{background:transparent;border:none;padding:0}
+.mediarow{display:flex;flex-wrap:wrap;gap:8px}
+.mediarow .imgcard{margin:0;max-width:none}
+.mediarow .imgcard img{max-height:190px;max-width:260px}
+.mediacap{font-size:11px;color:var(--dim);margin-top:6px;letter-spacing:.02em}
+
 /* staged attachments, above the composer */
 #attachments{max-width:740px;margin:0 auto 7px;display:none;flex-wrap:wrap;gap:6px}
 #attachments.has{display:flex}
@@ -688,10 +709,80 @@ function mdlite(s){
   out+=inline(s.slice(pos));
   return out;
   function inline(t){
-    return esc(t).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
-                 .replace(/`([^`]+)`/g,'<code>$1</code>');
+    var h=esc(t), slots=[];
+    /* Markdown links and images become placeholders BEFORE bare URLs are
+       linkified. Doing it in one pass instead lets the bare-URL regex match
+       the href of an anchor the previous replacement just wrote, producing an
+       anchor nested inside an anchor. */
+    /* Delimited with a control character rather than spaces and digits: " 3 "
+       in "I have 3 exams" is indistinguishable from placeholder 3, so a digit
+       delimiter would make the final pass corrupt ordinary prose. \x01 cannot
+       survive esc() into chat text. */
+    function slot(html){ return '\x01' + (slots.push(html) - 1) + '\x01'; }
+
+    h = h.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
+                  function(_, alt, url){ return slot(imgHtml(url, alt)); });
+    h = h.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+                  function(_, txt, url){ return slot(linkHtml(url, txt)); });
+    /* A bare URL is only a link when it starts a word — otherwise "see
+       https://x" and "x=https://y" behave differently for no good reason.
+       The trailing character class stops sentence punctuation being swallowed
+       into the address. */
+    h = h.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g,
+                  function(_, pre, url){
+                    return pre + slot(linkHtml(url, prettyUrl(url)));
+                  });
+    h = h.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+         .replace(/`([^`]+)`/g,'<code>$1</code>');
+    return h.replace(/\x01(\d+)\x01/g, function(_, i){ return slots[+i]; });
   }
 }
+
+/* ── links and images in the chat ─────────────────────────────────────────
+   Charlie asked for pictures and pages to appear in the conversation rather
+   than only as "I opened Chrome for you".
+
+   A link must NEVER be a live href. The HUD is a page inside pywebview, so
+   clicking a real anchor navigates the window away from Ted and there is no
+   back button — the app simply becomes the website. Every link therefore
+   carries its address in a data attribute and is opened in the real browser
+   through Python.                                                          */
+function prettyUrl(url){
+  var m=/^https?:\/\/(?:www\.)?([^/]+)(\/[^?#]*)?/.exec(url);
+  if(!m) return url;
+  var path=(m[2]||'').replace(/\/$/,'');
+  return m[1] + (path.length>28 ? path.slice(0,28)+'…' : path);
+}
+function linkHtml(url, label){
+  return '<a class="lnk" href="#" data-url="'+esc(url)+'">'+esc(label)+'</a>';
+}
+function imgHtml(url, alt){
+  /* Height is capped rather than fixed so a tall image cannot take over the
+     whole scroll view. onerror collapses the figure entirely: a broken-image
+     icon in a chat bubble looks like Ted malfunctioning. */
+  return '<figure class="imgcard">'+
+    '<img src="'+esc(url)+'" alt="'+esc(alt||'')+'" loading="lazy" '+
+      'onerror="this.closest(\'figure\').classList.add(\'broken\')">'+
+    (alt ? '<figcaption>'+esc(alt)+'</figcaption>' : '')+
+    '</figure>';
+}
+
+/* One delegated listener for every link and image, present and future. */
+document.addEventListener('click', function(e){
+  var a=e.target.closest && e.target.closest('a.lnk');
+  if(a){
+    e.preventDefault();
+    var url=a.getAttribute('data-url');
+    if(inApp() && pywebview.api.open_url_external) pywebview.api.open_url_external(url);
+    return;
+  }
+  var img=e.target.closest && e.target.closest('.imgcard img');
+  if(img && img.dataset.source){
+    e.preventDefault();
+    if(inApp() && pywebview.api.open_url_external)
+      pywebview.api.open_url_external(img.dataset.source);
+  }
+});
 
 /* ── chat rendering ───────────────────────────────────────── */
 function hideEmpty(){ var e=$('empty'); if(e) e.style.display='none'; }
@@ -1334,6 +1425,35 @@ var tedHud={
     toastT=setTimeout(function(){
       t.classList.remove('show','memory','keyfact'); t.onclick=null;
     },key?13000:9000);
+  },
+  /* Pictures Ted found, pushed straight from Python rather than parsed out of
+     his prose. The model paraphrases and drops URLs, so what it says it showed
+     and what is actually on screen would drift; this way the chat shows what
+     was really fetched and the model only describes it.
+
+     Thumbnails are used for display because the full image can be a 4000px
+     file on a slow host, and clicking through opens the source page in the
+     real browser. */
+  showMedia:function(payload){
+    if(!payload||!payload.images||!payload.images.length) return;
+    hideEmpty();
+    var row=document.createElement('div');
+    row.className='m ted';
+    var b=document.createElement('div'); b.className='b media';
+    var html='<div class="mediarow">';
+    payload.images.forEach(function(im){
+      html+='<figure class="imgcard">'+
+        '<img src="'+esc(im.thumbnail||im.url)+'" alt="'+esc(im.title||'')+'" '+
+          'loading="lazy" data-source="'+esc(im.source||im.url||'')+'" '+
+          'title="'+esc(im.title||'')+' — click to open the source" '+
+          'onerror="this.closest(\'figure\').classList.add(\'broken\')">'+
+        '</figure>';
+    });
+    html+='</div><div class="mediacap">'+esc(payload.query)+'</div>';
+    b.innerHTML=html;
+    row.appendChild(b);
+    $('msgs').appendChild(row);
+    scrollDown();
   },
   /* Pushed by core/app.py whenever the pet is opened or closed, from either
      side — the bear's own × or this button. */
