@@ -142,12 +142,58 @@ check("blank write left the table alone",
 check("stale memories fall out of the window",
       memory.get_recent_memories(limit=10, max_age_days=0) == [])
 
+print("\n— importance decides what survives the prompt cap —")
+# Recency alone meant a preference stated today evicted something that
+# actually matters stated last month. These go in oldest-first so that
+# recency ordering and importance ordering disagree.
+for rel, obj, imp in (("PREFERS", "dark mode", 1),
+                      ("HAS_MOTHER", "Beth", 3),
+                      ("OWNS", "a blue mug", 1),
+                      ("HAS_EXAM", "calc 2 on Thursday", 3),
+                      ("LIKES", "jazz", 2)):
+    memory.save_fact("Importance Test", rel, obj, importance=imp)
+
+ordered = [rel for rel, _obj in memory.list_facts("Importance Test")]
+check("important facts are listed before ordinary ones",
+      ordered.index("HAS_MOTHER") < ordered.index("LIKES")
+      and ordered.index("HAS_EXAM") < ordered.index("LIKES"))
+check("…and ordinary before incidental",
+      ordered.index("LIKES") < ordered.index("PREFERS"))
+prompt_text = memory.get_facts_about("Importance Test")
+check("the prompt string leads with what matters",
+      prompt_text.index("Beth") < prompt_text.index("blue mug"))
+
+check("importance is clamped into 1–3",
+      (memory.save_fact("Clamp Test", "A", "high", importance=99) or True)
+      and memory._query(
+          "SELECT importance FROM facts WHERE subject='Clamp Test'")[0][0] == 3)
+check("a non-numeric importance falls back to ordinary rather than failing",
+      (memory.save_fact("Clamp Test", "B", "junk", importance="very") or True)
+      and memory._query(
+          "SELECT importance FROM facts WHERE subject='Clamp Test' "
+          "AND relationship='B'")[0][0] == 2)
+check("a fact saved with no importance at all is ordinary",
+      (memory.save_fact("Clamp Test", "C", "default") or True)
+      and memory._query(
+          "SELECT importance FROM facts WHERE subject='Clamp Test' "
+          "AND relationship='C'")[0][0] == 2)
+
+_seen = []
+memory.set_event_sink(lambda ev: _seen.append(ev))
+memory.save_fact("Toast Test", "HAS_SISTER", "Nora", importance=3)
+memory.set_event_sink(None)
+check("the HUD is told how important the new fact is",
+      len(_seen) == 1 and _seen[0]["importance"] == 3
+      and "Nora" in _seen[0]["text"])
+
 print("\n— migration is idempotent —")
 memory.close()
 memory._conn = None
 check("reopening an existing db still works",
       memory._get_driver() is not None and
       len(memory.get_recent_memories(limit=50)) == before)
+check("the importance column survives a reopen",
+      memory._query("SELECT importance FROM facts WHERE subject='Toast Test'")[0][0] == 3)
 
 memory.close()
 print(f"\n{'='*50}\n{PASS} passed, {FAIL} failed")

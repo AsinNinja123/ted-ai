@@ -338,6 +338,11 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
    Teal instead of amber, and clickable — hence pointer-events back on. */
 #toast.memory{border-color:var(--accent);cursor:pointer;pointer-events:auto}
 #toast.memory:hover{background:var(--panel2);border-color:var(--accent)}
+/* An importance-3 fact is one Ted expects to still matter in a month, so it
+   gets a heavier frame and stays up longer. A passing preference should not
+   look like Ted learning your mother's name. */
+#toast.memory.keyfact{border-color:#e0b341;box-shadow:0 0 0 1px rgba(224,179,65,.25)}
+#toast.memory.keyfact .mlabel{color:#e0b341}
 #toast .mlabel{color:var(--accent);letter-spacing:.06em;font-size:10.5px;
   text-transform:uppercase;margin-right:7px}
 #toast .mhint{color:var(--dim);font-size:10.5px;margin-left:9px}
@@ -1268,21 +1273,27 @@ var tedHud={
   memoryEvent:function(ev){
     if(!ev||!ev.text) return;
     var removed=ev.kind==='removed';
+    /* 3 = Ted expects this to still matter in a month. Said out loud in the
+       label rather than only implied by the colour, so the distinction
+       survives a glance and a screenshot. */
+    var key=(ev.importance||2)>=3 && !removed;
     var t=$('toast');
     $('toast-b').innerHTML='<span class="mlabel">'+
-      (removed?'Memory removed':'Memory updated')+'</span>'+esc(ev.text)+
-      '<span class="mhint">click to edit</span>';
+      (removed?'Memory removed':(key?'Worth remembering':'Memory updated'))+'</span>'+
+      esc(ev.text)+'<span class="mhint">click to edit</span>';
     t.classList.add('show','memory');
+    t.classList.toggle('keyfact',key);
     t.onclick=function(){
       t.classList.remove('show');
       tedHud.showMemory({table:ev.table||'facts', id:ev.id});
     };
     clearTimeout(toastT);
     /* Longer than a problem toast: this one is a control, and six seconds is
-       not long enough to read it and decide to click it. */
+       not long enough to read it and decide to click it. An important fact
+       gets longer still — it is the one most worth correcting on the spot. */
     toastT=setTimeout(function(){
-      t.classList.remove('show','memory'); t.onclick=null;
-    },9000);
+      t.classList.remove('show','memory','keyfact'); t.onclick=null;
+    },key?13000:9000);
   },
   setMuted:function(m){
     muted=!!m;

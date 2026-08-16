@@ -10,7 +10,7 @@ import time
 import traceback
 from datetime import date
 
-from core import features, intents, providers as _providers, telemetry
+from core import features, intents, providers as _providers, routing, telemetry
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
@@ -286,10 +286,16 @@ def _parse_fact_payload(raw):
     return []
 
 
-def extract_and_save_facts(user_input, ted_reply):
+def extract_and_save_facts(user_input, ted_reply=""):
     """Fire-and-forget background task: ask the fast LLM to extract structured
     facts from the exchange and persist them. Never raises — it runs on a daemon
-    thread and must not be able to take the conversation loop down with it."""
+    thread and must not be able to take the conversation loop down with it.
+
+    ``ted_reply`` is optional and usually absent: ask_streaming starts this the
+    moment the user's message arrives so the write lands while Ted is still
+    talking, rather than seven seconds after he stops.
+    """
+    today = date.today().strftime("%A %B %d, %Y")
     try:
         resp = chat_create(
             # JSON mode: the model is constrained to emit a parseable object, so
@@ -301,10 +307,20 @@ def extract_and_save_facts(user_input, ted_reply):
                     "things about him, his family, friends, pets, school, work, preferences, "
                     "possessions, plans. Only clear, explicit facts — not guesses. "
                     'Respond with a JSON object of the form {"facts": [...]} where each element '
-                    "has the keys: subject, relationship, object. "
+                    "has the keys: subject, relationship, object, importance. "
                     "Use short uppercase relationship names like WORKS_AT, LIKES, OWNS, STUDIES, "
                     "LIVES_IN, PREFERS, IS_AGE, HAS_PET, DISLIKES. "
-                    f'Example: {{"facts": [{{"subject": "{OWNER_NAME}", "relationship": "LIKES", "object": "jazz"}}]}}. '
+                    "importance is 1, 2 or 3. "
+                    "3 = would matter months from now (people in his life, health, money, "
+                    "commitments, deadlines, big plans, strong preferences). "
+                    "2 = ordinary personal detail. "
+                    "1 = passing or trivial. "
+                    "KEEP THE DETAIL THAT MAKES A FACT USEFUL. Put dates, times, names and "
+                    f"places INSIDE the object. Today is {today}, so resolve relative dates: "
+                    '"exam Thursday" becomes the object "calc 2 exam on Thursday", not "calc 2". '
+                    "A fact stripped of its when and where is usually not worth storing. "
+                    f'Example: {{"facts": [{{"subject": "{OWNER_NAME}", "relationship": "LIKES", '
+                    '"object": "jazz", "importance": 2}}]}}. '
                     "HARD RULES — return {\"facts\": []} rather than break these: "
                     "NEVER extract general knowledge, trivia, or facts about the world, even if "
                     "they appear in Ted's reply (e.g. 'bananas are berries' is trivia, NOT a fact "
@@ -312,10 +328,12 @@ def extract_and_save_facts(user_input, ted_reply):
                     "the user only; facts must come from what the USER revealed about himself. "
                     "Never include Ted's statements about himself. Never include questions as facts."
                 )},
-                {"role": "user", "content": f"User said: {user_input}\nTed replied: {ted_reply}"}
+                {"role": "user", "content": (
+                    f"User said: {user_input}"
+                    + (f"\nTed replied: {ted_reply}" if ted_reply else ""))}
             ],
-            max_tokens=300,
-            timeout=10.0,
+            max_tokens=400,
+            timeout=15.0,
             _ted_workload="background",
         )
         raw = _strip_json_fences(resp.choices[0].message.content or "")
@@ -349,9 +367,14 @@ def extract_and_save_facts(user_input, ted_reply):
                     print(f"[memory] fact rejected (subject not from user): "
                           f"{subj} → {f['relationship']} → {f['object']}")
                     continue
-                save_fact(subj, f["relationship"], f["object"])
+                # importance is advisory and optional: an older or smaller model
+                # that omits it, or returns "high", still gets its fact stored
+                # at the ordinary weight rather than dropped.
+                save_fact(subj, f["relationship"], f["object"],
+                          importance=f.get("importance", 2))
                 saved += 1
-                print(f"[memory] fact saved: {subj} → {f['relationship']} → {f['object']}")
+                print(f"[memory] fact saved: {subj} → {f['relationship']} → "
+                      f"{f['object']} (importance {f.get('importance', 2)})")
         return saved
     except Exception as e:
         print(f"[memory] fact extraction skipped: {e}")
@@ -455,9 +478,9 @@ def _remember_exchange(user_input, full_reply, conversation):
         del conversation[1:len(conversation) - MAX_CONV_MESSAGES]
     threading.Thread(target=save_memory,
                      args=(user_input, full_reply), daemon=True).start()
-    if intents._worth_extracting(user_input):
-        threading.Thread(target=extract_and_save_facts,
-                         args=(user_input, full_reply), daemon=True).start()
+    # Fact extraction is deliberately NOT started here any more — ask_streaming
+    # kicks it off when the message arrives, so it overlaps the reply instead of
+    # queueing behind it. Starting it again here would double every write.
 
 # ---------- tool runtime ----------
 def validate_tool_arguments(schema, args, user_input=""):
@@ -757,6 +780,20 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         yield action
         return
 
+    # Learn from this message NOW, not after the reply has finished streaming.
+    #
+    # Extraction used to start in _remember_exchange, i.e. once Ted had stopped
+    # talking, and then took ~7s on the local brain — so "Memory updated" landed
+    # ten or more seconds after Charlie said the thing being remembered, which
+    # reads as Ted not having noticed. Nothing in the extractor actually needs
+    # the reply: the prompt calls it context for understanding the user, and the
+    # hard gate below it already discards any fact whose subject did not come
+    # out of the user's own message. Started here it runs *alongside* the reply
+    # and the toast usually beats Ted's last sentence.
+    if intents._worth_extracting(user_input):
+        threading.Thread(target=extract_and_save_facts,
+                         args=(user_input,), daemon=True).start()
+
     today = date.today().strftime("%B %d, %Y")
 
     # --- selective memory retrieval (run concurrently when this turn earns it) ---
@@ -989,6 +1026,17 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             (sc.get("function") or {}).get("name", "") for sc in tool_runtime.schemas]
     _usage = {}
 
+    # Which brain earns this turn. The rules are instant; only a genuinely
+    # ambiguous turn pays ~0.1s to ask the small local router, and a turn
+    # carrying tool schemas never reaches that question at all. A "local"
+    # verdict is advisory — providers.chat_create still escalates to the cloud
+    # if Ollama fails, so the worst case is latency, not a lost answer.
+    _brain = routing.classify_brain_with_model(
+        user_input, schemas=(tool_runtime.schemas if tool_runtime else ()))
+    _turn.brain_choice = f"{_brain.brain} ({_brain.reason}, by {_brain.decided_by})"
+    print(f"[router] {_brain.brain} — {_brain.reason} [{_brain.decided_by}]")
+    _workload = "local_first" if _brain.is_local else "foreground"
+
     def _do_groq_call(msgs=None, force_tool=False, effort=None):
         """Inner helper so the retry logic below can call the same request.
         chat_create handles the primary → availability fallback internally."""
@@ -1005,6 +1053,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             stream=True,
             timeout=12.0 if voice_mode else 30.0,
             reasoning_effort=_effort,
+            _ted_workload=_workload,
             **tool_kwargs,
         )
 

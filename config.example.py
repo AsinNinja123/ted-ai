@@ -8,6 +8,9 @@ GROQ_API_KEY = ""          # optional free hosted brain; local Ollama works with
 CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"
 LOCAL_CHAT_MODEL = "qwen3.5:9b-q4_K_M"
 LOCAL_TOOL_MODEL = "qwen3.5:35b-a3b"
+# One-word "does this need the cloud?" verdicts only, never an answer to you.
+# Keep it small: asking has to be cheaper than guessing wrong. ~0.2s here.
+LOCAL_ROUTER_MODEL = "llama3.2:3b"
 OLLAMA_URL = "http://127.0.0.1:11434"
 SITE_BROWSER_PREFERENCES = {"youtube": "Brave"}
 USE_GROQ_STT = True        # True = Groq Whisper cloud STT; False = local Whisper

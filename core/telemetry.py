@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS turn_log (
     degraded_reason   TEXT    NOT NULL DEFAULT '',
     error             TEXT    NOT NULL DEFAULT '',
     ctx_breakdown     TEXT    NOT NULL DEFAULT '',
+    brain_choice      TEXT    NOT NULL DEFAULT '',
     ok                INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_turn_log_epoch ON turn_log(epoch);
@@ -138,6 +139,14 @@ def _connect():
         try:
             conn.execute("ALTER TABLE turn_log ADD COLUMN "
                          "degraded_reason TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass                     # already there
+        # Why this turn went to the brain it went to. Without it the router is
+        # unreviewable: the log would show a local answer and no way to tell a
+        # deliberate routing decision from a cloud outage.
+        try:
+            conn.execute("ALTER TABLE turn_log ADD COLUMN "
+                         "brain_choice TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass                     # already there
         conn.commit()
@@ -170,7 +179,7 @@ class Turn:
                  "history_msgs", "tools_offered", "tools_called", "tool_rounds",
                  "ms_retrieval", "ms_accepted", "ms_first_token", "retries",
                  "rate_limited", "degraded_reason", "error", "ctx_breakdown",
-                 "written")
+                 "brain_choice", "written")
 
     def __init__(self, user_text="", source="chat"):
         self.t0 = time.time()
@@ -197,6 +206,7 @@ class Turn:
         self.degraded_reason = ""
         self.error = ""
         self.ctx_breakdown = ""
+        self.brain_choice = ""
         self.written = False
 
     # -- collection ------------------------------------------------------
@@ -232,8 +242,8 @@ class Turn:
                     "history_msgs, tools_offered, tools_called, tool_rounds, "
                     "ms_retrieval, ms_accepted, ms_first_token, ms_total, "
                     "retries, rate_limited, degraded_reason, error, "
-                    "ctx_breakdown, ok) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "ctx_breakdown, brain_choice, ok) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (datetime.now().isoformat(timespec="seconds"), self.t0,
                      self.source, _trim(self.user_text, 2000),
                      _trim(self.reply, 4000), self.provider, self.model,
@@ -245,7 +255,7 @@ class Turn:
                      self.ms_first_token, self.elapsed_ms(),
                      ",".join(self.retries), 1 if self.rate_limited else 0,
                      _trim(self.degraded_reason, 1000), _trim(self.error, 1000),
-                     self.ctx_breakdown,
+                     self.ctx_breakdown, _trim(self.brain_choice, 120),
                      0 if self.error else 1))
                 conn.commit()
         except Exception as e:                               # pragma: no cover

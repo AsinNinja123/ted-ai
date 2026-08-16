@@ -353,6 +353,169 @@ def memory_scope_for(text, schemas):
     return "relevant"
 
 
+# ── which brain answers this turn ─────────────────────────────────────────
+#
+# Ted already had two tiers: a zero-model reflex for fully resolved app actions,
+# and one streamed cloud turn for everything else. Everything that was not a
+# reflex therefore spent cloud tokens, including "thanks" and "what time is it".
+#
+# This adds the missing middle. The rules below are pure and instant; only a
+# genuinely ambiguous turn pays for a tiebreak, and that tiebreak is a ~0.2s
+# call to a small local model, which is what Charlie asked for — the local brain
+# deciding what the cloud brain has to be woken up for.
+#
+# The bias is deliberate and asymmetric. Sending thinking work to the local model
+# costs answer quality, which is the product; sending a trivial turn to the cloud
+# costs tokens, which are replenished every minute. So anything uncertain goes to
+# the cloud, and only demonstrably simple turns stay local.
+
+BRAIN_LOCAL = "local"
+BRAIN_CLOUD = "cloud"
+
+
+@dataclass(frozen=True)
+class BrainChoice:
+    """Which brain should answer, and the honest reason why."""
+    brain: str
+    reason: str
+    decided_by: str            # "rule" | "model" | "pin"
+
+    @property
+    def is_local(self):
+        return self.brain == BRAIN_LOCAL
+
+
+# Work the 9B local chat model measurably does worse: anything where being
+# wrong is expensive or where the answer is longer than a couple of sentences.
+_THINKING_WORK = re.compile(
+    r"```|\b(?:code|function|class|regex|algorithm|bug|traceback|stack trace|"
+    r"refactor|compile|debug|syntax|api|schema|query|sql|python|javascript|"
+    r"swift|essay|paper|outline|draft|write (?:me|a|an)|rewrite|summar(?:ize|y)|"
+    r"translate|analy[sz]e|compare|contrast|pros and cons|explain|why (?:does|do|is|are|did)|"
+    r"how (?:does|do|did|would|should)|walk me through|step by step|plan|design|"
+    r"brainstorm|recommend|advice|should i|help me (?:with|figure)|figure out|"
+    r"what if|troubleshoot|fix)\b",
+    re.I,
+)
+
+# Turns that are their own answer. Short, closed, and socially fixed.
+_SMALL_TALK = re.compile(
+    r"^\s*(?:(?:hey|hi|hello|yo|sup|okay|ok|alright|alight|cool|nice|great|"
+    r"thanks|thank you|ty|thx|yes|yeah|yep|no|nope|nah|sure|got it|gotcha|"
+    r"never ?mind|nvm|please|sorry|goodnight|good night|bye|see ya|later)"
+    r"[\s,.!?]*)+$",
+    re.I,
+)
+
+# Questions answered from Ted's own live state or a clock, not from knowledge.
+_LOCAL_LOOKUP = re.compile(
+    r"^\s*(?:what(?:'s| is| are)?\s+)?(?:the\s+)?(?:"
+    r"time|date|day (?:is it|of the week)|today'?s date|"
+    r"playing|song is (?:this|playing)|(?:apps?|windows?|tabs?) (?:are )?open|"
+    r"battery|volume)\b",
+    re.I,
+)
+
+
+def classify_brain(text, schemas=(), has_attachment=False, pinned=""):
+    """Decide which brain answers, without calling anything.
+
+    Returns a :class:`BrainChoice`. ``brain`` is advisory: the provider layer
+    still falls back to the other side if the chosen one is unavailable, so a
+    wrong guess here costs latency, never an answer.
+
+    ``decided_by == "model"`` is never produced by this function — it is
+    reserved for :func:`classify_brain_with_model`, which consults the small
+    local router only for the turns this one declines to settle.
+    """
+    if pinned in (BRAIN_LOCAL, BRAIN_CLOUD):
+        return BrainChoice(pinned, f"pinned to the {pinned} brain", "pin")
+
+    body = (text or "").strip()
+    if not body:
+        return BrainChoice(BRAIN_LOCAL, "empty message", "rule")
+
+    # An image needs the multimodal path, and the tool menu needs the 35B local
+    # model whose whole purpose is being the rescue brain — neither is a saving.
+    if has_attachment:
+        return BrainChoice(BRAIN_CLOUD, "an attachment needs the vision model", "rule")
+    if schemas:
+        return BrainChoice(BRAIN_CLOUD, "tool use needs the stronger brain", "rule")
+
+    if _SMALL_TALK.match(body):
+        return BrainChoice(BRAIN_LOCAL, "small talk", "rule")
+    if _LOCAL_LOOKUP.match(body):
+        return BrainChoice(BRAIN_LOCAL, "answered from live state, not knowledge", "rule")
+    if _THINKING_WORK.search(body):
+        return BrainChoice(BRAIN_CLOUD, "reasoning or long-form work", "rule")
+
+    words = body.split()
+    if len(words) > 30:
+        return BrainChoice(BRAIN_CLOUD, "a long request", "rule")
+    if len([p for p in _SEQUENCE_SEP.split(body) if p.strip(" ,")]) > 1:
+        return BrainChoice(BRAIN_CLOUD, "more than one stage", "rule")
+    if len(words) <= 4:
+        return BrainChoice(BRAIN_LOCAL, "a very short turn", "rule")
+
+    return BrainChoice(BRAIN_CLOUD, "not obviously simple", "rule")
+
+
+# A 3B model asked "is this simple?" about "what's the capital of Iowa" will
+# happily reply "Des Moines". The message therefore has to arrive as quoted
+# data with the instruction on both sides of it, never as a bare question.
+_ROUTER_SYSTEM = (
+    "You label messages. You never answer them.\n"
+    "Reply with exactly one word: LOCAL or CLOUD.\n"
+    "LOCAL — a small model can handle it: greetings, chatter, acknowledgements, "
+    "one-sentence answers.\n"
+    "CLOUD — it needs reasoning, code, planning, accuracy, or a long answer.\n"
+    "If the message is a question, you are labelling the question, not "
+    "answering it. When unsure, reply CLOUD."
+)
+
+_ROUTER_USER = (
+    "Label the message between the markers. Do not answer it.\n"
+    "--- BEGIN MESSAGE ---\n{text}\n--- END MESSAGE ---\n"
+    "One word, LOCAL or CLOUD:"
+)
+
+_VERDICT = re.compile(r"\b(LOCAL|CLOUD)\b")
+
+
+def classify_brain_with_model(text, schemas=(), has_attachment=False, pinned="",
+                              ask=None):
+    """Same decision, but let the small local model settle the unclear turns.
+
+    ``ask`` is injected so this stays unit-testable and so the provider import
+    stays lazy. It receives the user's text and returns the model's raw reply.
+    Any failure, timeout or unrecognised answer keeps the rule-based choice —
+    the router is an optimisation and is never allowed to be a point of failure.
+    """
+    choice = classify_brain(text, schemas, has_attachment, pinned)
+    # Only "not obviously simple" is a genuine shrug. Every other reason above
+    # is a positive finding and does not deserve a second opinion.
+    if choice.reason != "not obviously simple":
+        return choice
+    if ask is None:
+        from core.providers import route_hint
+        ask = route_hint
+    try:
+        raw = ask(_ROUTER_SYSTEM, _ROUTER_USER.format(text=(text or "")[:500])) or ""
+    except Exception as exc:
+        print(f"[router] local tiebreak unavailable: {exc}")
+        return choice
+    # A small model that ignored the instruction and answered the question
+    # produces no verdict token at all, which is exactly the signal to keep the
+    # rule-based choice rather than to read meaning into prose.
+    found = _VERDICT.search(raw.upper())
+    if not found:
+        print(f"[router] no verdict in {raw[:60]!r} — keeping the rule")
+        return choice
+    if found.group(1) == "LOCAL":
+        return BrainChoice(BRAIN_LOCAL, "the local router took it", "model")
+    return BrainChoice(BRAIN_CLOUD, "the local router escalated it", "model")
+
+
 @dataclass(frozen=True)
 class ReflexPlan:
     calls: tuple[tuple[str, dict], ...]

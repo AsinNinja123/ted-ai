@@ -193,6 +193,82 @@ check("plain conversation removes at least 90% of tool-schema text",
 print(f"  full={full_chars} chars app/web={app_chars} chars chat={chat_chars} chars")
 
 
+print("\n— which brain answers —")
+# The bias is asymmetric on purpose: a wrong LOCAL costs answer quality, a
+# wrong CLOUD costs tokens that refill every minute. So "unsure" means cloud.
+for phrase in ("thanks", "hey ted", "yeah", "ok cool", "never mind", "goodnight"):
+    check(f"small talk stays local: {phrase!r}",
+          routing.classify_brain(phrase).is_local)
+for phrase in ("what time is it", "what's playing", "what apps are open"):
+    check(f"live-state lookup stays local: {phrase!r}",
+          routing.classify_brain(phrase).is_local)
+for phrase in ("how do i write a python decorator",
+               "explain why the fallback fires",
+               "write me an essay about the civil war",
+               "summarize this for me",
+               "should i take the 8am section"):
+    check(f"thinking work goes to the cloud: {phrase!r}",
+          not routing.classify_brain(phrase).is_local)
+check("a multi-stage request goes to the cloud",
+      not routing.classify_brain("open notes and then play some music").is_local)
+check("a long request goes to the cloud",
+      not routing.classify_brain(" ".join(["word"] * 40)).is_local)
+
+# Tools mean the 35B local model, which is the rescue brain rather than a
+# saving, and an image means the multimodal path. Neither is a local win.
+check("a turn carrying tool schemas is never routed local",
+      not routing.classify_brain("play some music", schemas=[{"x": 1}]).is_local)
+check("an attachment is never routed local",
+      not routing.classify_brain("what is this", has_attachment=True).is_local)
+check("an explicit pin beats every rule",
+      routing.classify_brain("write me an essay", pinned="local").is_local
+      and routing.classify_brain("thanks", pinned="cloud").brain == "cloud")
+
+print("\n— the local router as tiebreak —")
+# Only "not obviously simple" earns a second opinion; every other reason is a
+# positive finding and must not spend 0.1s re-asking.
+asked = []
+
+
+def _fake_ask(reply):
+    def ask(system, user):
+        asked.append(user)
+        return reply
+    return ask
+
+
+asked.clear()
+routing.classify_brain_with_model("thanks", ask=_fake_ask("CLOUD"))
+check("a rule-settled turn never consults the model", not asked)
+
+asked.clear()
+out = routing.classify_brain_with_model("is gavin coming over tonight",
+                                        ask=_fake_ask("LOCAL"))
+check("an ambiguous turn does consult the model", len(asked) == 1)
+check("…and the message reaches it wrapped as data, not as a question",
+      "BEGIN MESSAGE" in asked[0] and "Do not answer it" in asked[0])
+check("a LOCAL verdict is honoured",
+      out.is_local and out.decided_by == "model")
+check("a CLOUD verdict is honoured",
+      routing.classify_brain_with_model(
+          "is gavin coming over tonight", ask=_fake_ask("CLOUD")).brain == "cloud")
+
+# A 3B model asked "is this simple?" about "what is the capital of Iowa" will
+# reply "Des Moines". That is not a verdict and must not be read as one.
+answered = routing.classify_brain_with_model(
+    "whats the capital of iowa", ask=_fake_ask("Des Moines"))
+check("a model that answered instead of labelling keeps the rule",
+      answered.decided_by == "rule")
+
+
+def _boom(system, user):
+    raise RuntimeError("ollama is down")
+
+
+check("a router that raises never breaks the turn",
+      routing.classify_brain_with_model(
+          "is gavin coming over tonight", ask=_boom).decided_by == "rule")
+
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

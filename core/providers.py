@@ -42,6 +42,11 @@ except Exception:
     LOCAL_TOOL_MODEL = "qwen3.5:35b-a3b"
 
 try:
+    from config import LOCAL_ROUTER_MODEL
+except Exception:
+    LOCAL_ROUTER_MODEL = "llama3.2:3b"
+
+try:
     from config import OLLAMA_URL
 except Exception:
     OLLAMA_URL = "http://127.0.0.1:11434"
@@ -669,6 +674,38 @@ def _ollama_create(**kwargs):
     ))])
 
 
+_ROUTER_TIMEOUT = 2.5
+
+
+def route_hint(system, text):
+    """Ask the small local model one routing question. Never raises upward.
+
+    Deliberately not built on chat_create: this call must not be able to reach
+    the cloud, must not fall back to a large model, and must not log a provider
+    failure when it times out. It is an optimisation with a hard latency budget
+    — if it cannot answer in a couple of seconds its answer is worthless,
+    because the whole point was to be cheaper than the turn it is routing.
+    """
+    payload = {
+        "model": LOCAL_ROUTER_MODEL,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": (text or "")[:600]}],
+        "stream": False,
+        "think": False,
+        "keep_alive": "30m",
+        "options": {"num_predict": 4, "temperature": 0, "num_ctx": 2048},
+    }
+    try:
+        response = httpx.post(f"{OLLAMA_URL}/api/chat", json=payload,
+                              timeout=_ROUTER_TIMEOUT)
+        response.raise_for_status()
+        return ((response.json().get("message") or {}).get("content") or "").strip()
+    except Exception as exc:
+        print(f"[router] {LOCAL_ROUTER_MODEL} did not answer: "
+              f"{str(exc)[:80]}")
+        return ""
+
+
 def chat_create(**kwargs):
     """Run a chat request on free Groq, falling back to local Ollama.
 
@@ -693,6 +730,22 @@ def chat_create(**kwargs):
     # Titles, fact extraction and session summaries are useful, but they must
     # not consume the scarce cloud allowance needed for Charlie's next actual
     # message. Explicit cloud pinning still means cloud, including helpers.
+    #
+    # "local_first" is the router's verdict on an ordinary turn rather than a
+    # helper: the request is simple enough that the 9B should answer it. Unlike
+    # "background" it is a real answer Charlie will read, so a local failure
+    # escalates to the cloud instead of surfacing — the saving is worth trying
+    # for and never worth a dropped turn.
+    if mode == "auto" and workload == "local_first":
+        try:
+            result = _ollama_create(**kwargs)
+            _active_provider, _last_model = "ollama", local_model
+            _last_fallback = ""
+            return result
+        except Exception as exc:
+            print(f"[provider] routed local but {local_model} failed "
+                  f"({str(exc)[:90]}) — escalating to the cloud")
+
     background_local = mode == "auto" and workload == "background"
     cooling_down = mode == "auto" and cloud_cooldown_remaining() > 0
     if background_local:

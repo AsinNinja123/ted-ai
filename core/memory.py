@@ -26,7 +26,12 @@ try:
 except Exception:
     OWNER_NAME = "Charlie"
 
-DB_PATH = os.path.join(DATA, "memory.db")
+# TED_DB is honoured here for the same reason core/routines.py, core/lingo.py,
+# core/telemetry.py and dashboard/db.py honour it: this module was the only one
+# that did not, so pointing TED_DB at a scratch file redirected every store
+# except the facts table — and a harness that believed it was isolated wrote
+# invented facts straight into Charlie's real memory. Learned the hard way.
+DB_PATH = os.environ.get("TED_DB") or os.path.join(DATA, "memory.db")
 
 _conn = None
 _lock = threading.Lock()          # sqlite objects are shared across Ted's threads
@@ -134,6 +139,15 @@ def _migrate(conn):
             ("started",   "TEXT NOT NULL DEFAULT ''"),   # ISO time the session began
             ("exchanges", "INTEGER NOT NULL DEFAULT 0"),  # how many turns it covered
         ],
+        # 1 = incidental, 2 = ordinary, 3 = important. Facts are capped at
+        # MAX_FACTS_IN_PROMPT before they reach the model, and the cap used to
+        # be applied newest-first — so "Charlie prefers Brave for YouTube" could
+        # push out "Charlie's mother's name is Beth" simply by being said later.
+        # Existing rows default to 2 so nothing already learned is demoted below
+        # anything learned after this migration.
+        "facts": [
+            ("importance", "INTEGER NOT NULL DEFAULT 2"),
+        ],
     }
     for table, columns in wanted.items():
         try:
@@ -217,22 +231,25 @@ def _fact_phrase(subject, relationship, obj):
     return " ".join(p for p in ((subject or "").strip(), rel, (obj or "").strip()) if p)
 
 
-def memory_event(kind, text, table="facts", row_id=None):
+def memory_event(kind, text, table="facts", row_id=None, importance=2):
     """Announce one change to what Ted knows.
 
     kind: 'added' (the HUD says "Memory updated") or 'removed'.
+    importance: 1–3, so the HUD can make a genuinely important fact look
+    different from Ted noting a passing preference.
     A sink that raises is swallowed — a memory write must never fail because
     the window that wanted to draw a toast has gone away.
     """
     text = (text or "").strip()
     if not text or kind not in ("added", "removed"):
         return
-    print(f"[memory-event] {kind}: {text[:120]}")
+    print(f"[memory-event] {kind} (importance {importance}): {text[:120]}")
     sink = _event_sink
     if sink is None:
         return
     try:
-        sink({"kind": kind, "text": text, "table": table, "id": row_id})
+        sink({"kind": kind, "text": text, "table": table, "id": row_id,
+              "importance": importance})
     except Exception as e:
         print(f"[memory-event] sink failed: {e}")
 
@@ -315,20 +332,25 @@ def _norm_obj(obj):
     return " ".join((obj or "").strip().lower().rstrip(".!,").split())
 
 
-def save_fact(subject, relationship, obj):
+def save_fact(subject, relationship, obj, importance=2):
     """Store a fact triple, e.g. save_fact('Charlie', 'STUDIES', 'CS').
 
-    Three behaviours worth knowing:
+    Four behaviours worth knowing:
       • The relationship is normalized, so 'lives in' and 'LIVES_IN' are one thing.
       • For SINGLE_VALUED relationships the new value REPLACES any old one, so
         Ted never holds two contradictory answers to the same question.
       • Near-duplicate objects ('Spirit Lake' vs 'Spirit Lake, Iowa') collapse to
         the more specific (longer) form rather than both being kept.
+      • ``importance`` (1–3) decides what survives the prompt cap, not recency.
     """
     subject = (subject or "").strip()
     obj = (obj or "").strip()
     if not subject or not obj:
         return
+    try:
+        importance = max(1, min(3, int(importance)))
+    except (TypeError, ValueError):
+        importance = 2
     rel = _norm_rel(relationship)
     new_key = _norm_obj(obj)
 
@@ -356,14 +378,16 @@ def save_fact(subject, relationship, obj):
                 (subject, rel)):
             _exec("DELETE FROM facts WHERE rowid = ?", (rowid,))
 
-    cur = _exec("INSERT OR IGNORE INTO facts (subject, relationship, object, created) "
-                "VALUES (?,?,?,?)", (subject, rel, obj, _now()))
+    cur = _exec("INSERT OR IGNORE INTO facts "
+                "(subject, relationship, object, created, importance) "
+                "VALUES (?,?,?,?,?)", (subject, rel, obj, _now(), importance))
     # Only announce a row that was really written. INSERT OR IGNORE quietly does
     # nothing on a duplicate, and the supersession above is part of THIS change
     # rather than a separate forgetting — so a replaced single-valued fact
     # reports one "updated", not an "updated" chased by a "removed".
     if cur is not None and cur.rowcount:
-        memory_event("added", _fact_phrase(subject, rel, obj), "facts", cur.lastrowid)
+        memory_event("added", _fact_phrase(subject, rel, obj), "facts",
+                     cur.lastrowid, importance=importance)
 
 
 def forget_fact(subject, relationship=None, obj=None):
@@ -429,9 +453,14 @@ def get_facts_about(subject):
     underscores removed, and facts sharing a relationship are merged. Same
     information, and it reads more like a sentence than a database dump, which
     the model handles at least as well.
+
+    Which facts survive the cap is decided by importance first and recency
+    second. Sorting by recency alone meant a passing preference stated today
+    evicted something that actually matters stated last month.
     """
     rows = _query("SELECT relationship, object FROM facts WHERE subject = ? "
-                  "ORDER BY created DESC LIMIT ?", (subject, MAX_FACTS_IN_PROMPT))
+                  "ORDER BY importance DESC, created DESC LIMIT ?",
+                  (subject, MAX_FACTS_IN_PROMPT))
     if not rows:
         return ""
     grouped = {}
@@ -442,10 +471,13 @@ def get_facts_about(subject):
 
 
 def list_facts(subject):
-    """Return facts as a list of (relationship, object) tuples, newest first.
-    Used by the spoken 'what do you know about me' command."""
+    """Return facts as a list of (relationship, object) tuples, most important
+    first. Used by the spoken 'what do you know about me' command, where the
+    same ordering argument applies: the answer is read aloud and truncated, so
+    it should lead with what matters."""
     return _query("SELECT relationship, object FROM facts WHERE subject = ? "
-                  "ORDER BY created DESC LIMIT ?", (subject, MAX_FACTS_IN_PROMPT))
+                  "ORDER BY importance DESC, created DESC LIMIT ?",
+                  (subject, MAX_FACTS_IN_PROMPT))
 
 
 def close():
