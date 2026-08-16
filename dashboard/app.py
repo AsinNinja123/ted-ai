@@ -467,6 +467,53 @@ def api_routine_delete(routine_id):
         return jsonify({"error": str(e)}), 404
 
 
+# Charlie's shorthand is interpretation state, not a personal fact. Keeping it
+# beside Routines makes the distinction visible and lets edits affect a running
+# Ted immediately without retraining or restarting.
+@app.get("/api/lingo")
+def api_lingo_list():
+    from core import lingo
+    return jsonify(lingo.list_terms())
+
+
+@app.get("/api/lingo/expand")
+def api_lingo_expand():
+    from core import lingo
+    expanded, matched = lingo.expand(request.args.get("q", ""))
+    return jsonify({"expanded": expanded, "matched": matched})
+
+
+@app.post("/api/lingo")
+def api_lingo_create():
+    from core import lingo
+    try:
+        return jsonify(lingo.save_term(request.get_json(force=True) or {}))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/lingo/<int:term_id>")
+def api_lingo_update(term_id):
+    from core import lingo
+    try:
+        return jsonify(lingo.save_term(
+            request.get_json(force=True) or {}, term_id=term_id))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/lingo/<int:term_id>")
+def api_lingo_delete(term_id):
+    from core import lingo
+    try:
+        lingo.delete_term(term_id)
+        return jsonify({"ok": True})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
 @app.get("/api/meta")
 def api_meta():
     """Table registry for the frontend: columns, editable fields, labels."""

@@ -104,6 +104,24 @@ sites, starting music or YouTube, and changing volume. They bypass the model, us
 no inference tokens, and run immediately; messages, purchases, deletion, and other
 consequential actions cannot be hardwired around Ted's confirmation step.
 
+## Personal lingo
+
+The dashboard's **Lingo** tab stores Charlie-specific shorthand separately from
+facts and routines. A mapping such as `doc → document` is expanded before tool
+routing, routine matching, or model reasoning, without changing words such as
+`doctor`. Say “doc means document” or “when I say comp org, I mean computer
+organization” to teach Ted directly. If an unfamiliar personal term blocks a
+task, Ted can ask what it means and save the answer from the next reply.
+
+Use Lingo for vocabulary and Routines for outcomes: `comp org → computer
+organization` explains a term, while “let's do comp org homework” can launch a
+three-app study setup without spending model tokens.
+
+Document requests use a staged workflow: Ted drafts prose in a plain model call,
+then opens a verified writable Google Docs or TextEdit editor, inserts the draft,
+and sends any requested Google Docs font-size and line-spacing commands. The full
+paper is never embedded in a function-call JSON argument.
+
 ## Memory
 
 - **In-session:** recent turns are sent to the model each reply.
@@ -184,6 +202,7 @@ ted-ai/
 │   ├── voice.py           # TTS (Kokoro/ElevenLabs), STT capture, audio engine init
 │   ├── llm.py             # Groq client, persona, streaming replies, ask-Claude
 │   ├── routing.py         # reflex lane, dynamic tools/context, action completion
+│   ├── lingo.py           # Charlie-specific shorthand expansion + learning
 │   ├── intents.py         # spoken-command parsing (pure — unit-tested in tests/)
 │   ├── music.py           # spoken Spotify routing (local app + Web API fallback)
 │   ├── tool_handlers.py   # handlers behind the LLM's function-calling tools

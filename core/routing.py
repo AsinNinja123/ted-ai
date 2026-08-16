@@ -83,8 +83,10 @@ _FAMILIES = (
      ("calculate",)),
     (r"\b(?:search the web|look up|current|latest|news|score|price|verify online)\b",
      ("web_search",)),
-    (r"\b(?:remember|knowledge|document|documents|google docs?|textedit|file|files|what do you know)\b",
+    (r"\b(?:remember|knowledge|docs?|documents?|google docs?|textedit|file|files|what do you know)\b",
      ("create_document", "search_knowledge", "add_knowledge")),
+    (r"\b(?:means|meaning|when i say|my lingo|shorthand|slang)\b",
+     ("learn_lingo", "clarify_lingo")),
 )
 
 # Verbs that can only mean "do something to my Mac or my accounts". Anything a
@@ -151,6 +153,51 @@ def select_tool_schemas(text, recent_action_text=""):
             seen.add(name)
     # Discovery first makes its purpose visible even when the initial list is empty.
     return [FIND_TOOLS_SCHEMA, *chosen]
+
+
+def plan_document(text):
+    """Parse an explicit create-and-write request into a compact workflow spec."""
+    raw = " ".join(str(text or "").strip().split())
+    lower = raw.lower()
+    has_document = re.search(r"\b(?:docs?|documents?|google docs?|textedit)\b", lower)
+    has_write = re.search(r"\b(?:write|draft|type|compose|paper|essay|report|paragraph)\b", lower)
+    has_create = re.search(
+        r"^(?:(?:hey|okay|ok|alright|alight|please|ted|um|uh)[, ]+)*"
+        r"(?:(?:can|could|would|will)\s+you\s+|"
+        r"i\s+(?:want|need|would like)\s+you\s+to\s+)?"
+        r"(?:open|create|start|make|launch)\b", lower)
+    if not (has_document and has_write and has_create):
+        return None
+    pages_match = re.search(r"\b(\d{1,2})\s*pages?\b", lower)
+    pages = max(1, min(20, int(pages_match.group(1)))) if pages_match else 0
+    spacing = None
+    if re.search(r"\bdouble[ -]?spaced?\b", lower):
+        spacing = "double"
+    elif re.search(r"\b1[.]5[ -]?spaced?\b", lower):
+        spacing = "1.5"
+    elif re.search(r"\bsingle[ -]?spaced?\b", lower):
+        spacing = "single"
+    font_match = re.search(
+        r"\b(1[0-8]|[8-9])(?:\s*[- ]?\s*)(?:pt|point|font(?: size)?)\b", lower)
+    if not font_match:
+        font_match = re.search(r"\bfont(?: size)?\s*(1[0-8]|[8-9])\b", lower)
+    font_size = int(font_match.group(1)) if font_match else None
+    if pages:
+        target_words = pages * (300 if spacing == "double" else 500)
+    elif "paragraph" in lower:
+        target_words = 150
+    else:
+        target_words = 600
+    browser = next((name for name in ("Chrome", "Safari", "Brave")
+                    if name.lower() in lower), None)
+    return {
+        "instructions": raw,
+        "target_words": target_words,
+        "font_size": font_size,
+        "line_spacing": spacing,
+        "app": "textedit" if "textedit" in lower else "google_docs",
+        "browser": browser or "Chrome",
+    }
 
 
 def discover_tool_schemas(query, exclude=(), limit=8):

@@ -35,6 +35,11 @@ check("new Google Doc writing is one complete action",
       routing.likely_action_request("create a new Google Doc and write a paragraph")
       and routing.expected_action_calls(
           "create a new Google Doc and write a paragraph") == 1)
+document_schema = next(item["function"] for item in tools.TOOL_SCHEMAS
+                       if item["function"]["name"] == "create_document")
+check("document tool accepts compact instructions instead of a paper-sized JSON argument",
+      document_schema["parameters"]["required"] == ["instructions"]
+      and "text" not in document_schema["parameters"]["properties"])
 check("Retina screenshot pixels are converted to Quartz points",
       screen._to_screen_points(1512, 982, 3024, 1964, (1512, 982))
       == (756.0, 491.0))
@@ -73,6 +78,23 @@ try:
           "AXButton: Blank document" in result)
 finally:
     computer._native = real_native
+
+real_native = computer._native
+real_command = computer._docs_tool_command
+real_sleep = computer.time.sleep
+commands = []
+try:
+    computer.time.sleep = lambda _seconds: None
+    computer._native = lambda command, *args: {"ok": True}
+    computer._docs_tool_command = lambda command: (commands.append(command), True)[1]
+    sent, failed = computer._format_google_doc(12, "double")
+    check("Google Docs formatting uses font-size and double-spacing commands",
+          commands == ["font size 12", "double spacing"]
+          and sent == ["12-point font", "double line spacing"] and failed == [])
+finally:
+    computer._native = real_native
+    computer._docs_tool_command = real_command
+    computer.time.sleep = real_sleep
 
 
 print("\n— native helper source keeps the trust boundary explicit —")

@@ -302,10 +302,18 @@ def delete_routine(routine_id):
 
 def match_routine(text):
     """Return the best enabled routine for this utterance, or ``None``."""
+    variants = [text]
+    try:
+        from core import lingo
+        expanded, matched = lingo.expand(text)
+        if matched and expanded != text:
+            variants.append(expanded)
+    except Exception:
+        pass
     matches = []
     for routine in list_routines(include_disabled=False):
         for phrase in routine["phrases"]:
-            if _phrase_matches(text, phrase):
+            if any(_phrase_matches(variant, phrase) for variant in variants):
                 # Prefer the most specific phrase when two aliases overlap.
                 matches.append((len(normalize_phrase(phrase)), routine))
                 break

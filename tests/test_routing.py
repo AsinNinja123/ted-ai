@@ -73,6 +73,18 @@ check("discussion containing an action verb does not force execution",
 check("a polite direct request still requires execution",
       routing.likely_action_request("Could you pause the music?"))
 
+doc = routing.plan_document(
+    "open doc and write a 2 page paper on WW2. 12 font. Double spaced")
+check("the failed real-session document wording gets a complete staged plan",
+      doc and doc["target_words"] == 600 and doc["font_size"] == 12
+      and doc["line_spacing"] == "double" and doc["app"] == "google_docs")
+polite_doc = routing.plan_document(
+    "Hey Ted, could you open a Google Doc and draft an 11-point report?")
+check("polite document requests and hyphenated point sizes are recognized",
+      polite_doc and polite_doc["font_size"] == 11)
+check("writing prose in chat does not create a document",
+      routing.plan_document("write me a two page paper about WW2") is None)
+
 # Regression: the first version of this classifier matched any sentence opening
 # with write/check/show/find/read/tell/create/search/remove. Every line below
 # is an ordinary chatbot request that was being treated as a Mac command —

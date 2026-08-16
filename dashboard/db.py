@@ -225,6 +225,11 @@ def ensure_schema(conn):
         routines.ensure_schema(conn)
     except Exception as e:
         print(f"[dashboard] routines schema skipped: {e}")
+    try:
+        from core import lingo
+        lingo.ensure_schema(conn)
+    except Exception as e:
+        print(f"[dashboard] lingo schema skipped: {e}")
 
     for table in TABLES:
         try:
@@ -321,6 +326,10 @@ def summary():
             counts["routines"] = conn.execute("SELECT COUNT(*) FROM routines").fetchone()[0]
         except sqlite3.Error:
             counts["routines"] = 0
+        try:
+            counts["lingo"] = conn.execute("SELECT COUNT(*) FROM lingo").fetchone()[0]
+        except sqlite3.Error:
+            counts["lingo"] = 0
         counts["history"] = conn.execute("SELECT COUNT(*) FROM memory_audit").fetchone()[0]
     return {"db_path": DB_PATH, "counts": counts}
 

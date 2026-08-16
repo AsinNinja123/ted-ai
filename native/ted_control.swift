@@ -386,7 +386,9 @@ case "key":
         "copy": (8, .maskCommand), "paste": (9, .maskCommand),
         "cut": (7, .maskCommand), "undo": (6, .maskCommand),
         "redo": (6, [.maskCommand, .maskShift]), "select all": (0, .maskCommand),
-        "save": (1, .maskCommand), "new": (45, .maskCommand)]
+        "save": (1, .maskCommand), "new": (45, .maskCommand),
+        // Google Docs' official Mac shortcut for Tool finder (formerly menu search).
+        "tool finder": (44, .maskAlternate)]
     let name = args[2].lowercased()
     let spec = shortcuts[name] ?? map[name].map { ($0, CGEventFlags()) }
     guard let (code, flags) = spec else {

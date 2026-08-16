@@ -29,7 +29,7 @@ ACTION_TOOLS = frozenset({
     "spotify_control", "send_message", "set_reminder", "set_timer",
     "calendar_add", "notes_add", "clipboard_write",
     "system_volume", "system_brightness", "ui_press", "ui_fill", "type_text",
-    "create_document",
+    "create_document", "learn_lingo", "clarify_lingo",
     "press_key", "scroll", "log_habit",
     "email_action", "send_email",
 })

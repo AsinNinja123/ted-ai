@@ -638,21 +638,57 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "create_document",
             "description": (
-                "Create a fresh Google Doc or TextEdit document and type the supplied "
-                "content into it as one complete action. Use whenever the user asks to "
-                "open/start a new document and write or type something; Ted can write "
-                "directly on the computer. Google Docs reuses the existing browser window "
-                "and opens a new tab in Google Chrome by default. Never use Brave for "
-                "Google Docs unless the user explicitly asks for Brave."
+                "Draft content, create a fresh Google Doc or TextEdit document, type it, "
+                "and apply requested formatting as one complete workflow. Pass a compact "
+                "description of what to write in instructions; DO NOT generate the full "
+                "document inside this tool call. Google Docs uses Chrome by default."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Complete text to put in the new document"},
+                    "instructions": {"type": "string", "description": "Compact writing request, topic, audience, and requirements; not the drafted document"},
+                    "target_words": {"type": "integer", "description": "Approximate word count; infer about 300 words per double-spaced page"},
+                    "font_size": {"type": "integer", "description": "Requested point size, usually 10-18"},
+                    "line_spacing": {"type": "string", "enum": ["single", "1.15", "1.5", "double"], "description": "Requested line spacing"},
                     "app": {"type": "string", "enum": ["google_docs", "textedit"], "description": "Default google_docs"},
                     "browser": {"type": "string", "description": "Browser for Google Docs; default Google Chrome. Set only when the user explicitly names another browser."}
                 },
-                "required": ["text"]
+                "required": ["instructions"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn_lingo",
+            "description": (
+                "Remember an explicit explanation of Charlie's personal shorthand. Use "
+                "only when Charlie directly says what one of his terms means."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string", "description": "Charlie's shorthand"},
+                    "meaning": {"type": "string", "description": "Canonical meaning"}
+                },
+                "required": ["term", "meaning"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clarify_lingo",
+            "description": (
+                "Ask Charlie what an unfamiliar personal term means and arm the next "
+                "reply to save his explanation. Use only when that term blocks the task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string", "description": "The exact unfamiliar term"}
+                },
+                "required": ["term"]
             }
         }
     },

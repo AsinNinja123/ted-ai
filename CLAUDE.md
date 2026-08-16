@@ -24,18 +24,19 @@
 |---|---|
 | Thinks with | `qwen/qwen3.6-27b` (cloud), falling back to `qwen3.5:9b-q4_K_M` for chat / `qwen3.5:35b-a3b` for tools on local Ollama |
 | Hears / speaks | `whisper-large-v3-turbo` / `kokoro-v1.0.onnx` (local) |
-| Tools | 39 |
+| Tools | 41 |
 | Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
-| Memory | 43 facts, ~900 chat turns, 7 session memories |
-| Tests | 637 checks across 20 suites |
+| Memory | 45 facts, ~900 chat turns, 7 session memories |
+| Tests | 655 checks across 21 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**
 
 - **The calendar daemon has never run.** ted_daemon.py is built and tested but no data/ted_daemon.log exists, so it has not started on this machine. Proactive class reminders do nothing until it does. See docs/DAEMON_HANDOFF.md.
 - **Empty tables.** goals, habit_logs, routines — built and never used, or left over from a deleted feature.
-- **Data nothing reads.** patterns has 134 rows and nothing in the code reads it. Either use it or drop it.
+- **Data nothing reads.** patterns has 135 rows and nothing in the code reads it. Either use it or drop it.
 - **There are logged errors.** ted_errors.log is not empty. Only real failures are written there, so it is worth reading before assuming things are fine.
+- **Ted has fallen back to the local brain.** It has happened at least once in the current launch log, so the Groq to Ollama handover does fire in practice — grep '[provider]' in data/ted_launch.log for how often.
 
 Run `git log --oneline -10` and `git status` for anything about the working tree — that is deliberately not duplicated here.
 

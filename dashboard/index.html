@@ -149,10 +149,11 @@
 <script>
 const TAB_LABELS = {
   facts: "Facts", session_summaries: "Sessions", exchanges: "Exchanges",
-  goals: "Goals", routines: "Routines", history: "History",
+  goals: "Goals", routines: "Routines", lingo: "Lingo", history: "History",
 };
 const PAGE = 50;
-let META = {}, currentRows = {}, routineRows = {}, ROUTINE_ACTIONS = {}, routineSteps = [],
+let META = {}, currentRows = {}, routineRows = {}, lingoRows = {},
+    ROUTINE_ACTIONS = {}, routineSteps = [],
     state = { tab: "facts", q: "", offset: 0,
               hFilters: { table: "", actor: "", action: "" } };
 
@@ -217,6 +218,7 @@ function fmtDate(s) {
 async function render() {
   await refreshSummary();
   if (state.tab === "routines") return renderRoutines();
+  if (state.tab === "lingo") return renderLingo();
   if (state.tab === "history") return renderHistory();
   return renderTable(state.tab);
 }
@@ -360,6 +362,90 @@ async function toggleRoutine(id, enabled) {
 async function deleteRoutine(id) {
   if (!confirm("Delete this routine? Its phrases will go back to normal reasoning.")) return;
   await api(`/api/routines/${id}`, { method: "DELETE" }); render();
+}
+
+// ---------------- Charlie's shorthand -> canonical language ----------------
+async function renderLingo() {
+  const rows = await api("/api/lingo");
+  lingoRows = Object.fromEntries(rows.map(row => [row.id, row]));
+  const main = document.getElementById("main");
+  let html = `<div class="testbox">
+    <input type="text" id="lingoTest" placeholder="Try a sentence with your shorthand…">
+    <button class="btn" onclick="testLingo()">Expand</button>
+    <span class="muted" id="lingoTestResult">Shows what Ted understands without running anything.</span>
+  </div>
+  <div class="toolbar">
+    <button class="btn primary" onclick="openLingoEditor(null)">+ New term</button>
+    <span class="muted">Lingo is expanded before routines, routing, memory lookup, and tool selection.</span>
+  </div>`;
+  if (!rows.length) {
+    html += `<div class="empty">No personal shorthand yet. Add terms such as “doc” → “document”.</div>`;
+  } else {
+    html += `<div class="routine-grid">`;
+    for (const row of rows) {
+      html += `<div class="routine-card ${row.enabled ? "" : "off"}">
+        <div class="routine-head"><h3><span class="phrase-chip">${esc(row.term)}</span> → ${esc(row.meaning)}</h3>
+          <label class="switch"><input type="checkbox" ${row.enabled ? "checked" : ""}
+            onchange="toggleLingo(${row.id}, this.checked)">enabled</label></div>
+        ${row.note ? `<div class="muted" style="margin-bottom:10px">${esc(row.note)}</div>` : ""}
+        <div class="routine-head"><span class="muted">${row.use_count ? `used ${row.use_count} time${row.use_count === 1 ? "" : "s"}` : "not used yet"}</span>
+          <button class="btn" onclick="openLingoEditor(${row.id})">Edit</button>
+          <button class="btn danger" onclick="deleteLingo(${row.id})">Delete</button></div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  main.innerHTML = html;
+  const test = document.getElementById("lingoTest");
+  if (test) test.onkeydown = ev => { if (ev.key === "Enter") testLingo(); };
+}
+
+async function testLingo() {
+  const q = document.getElementById("lingoTest").value;
+  const result = document.getElementById("lingoTestResult");
+  if (!q.trim()) { result.textContent = "Type a sentence first."; return; }
+  const data = await api(`/api/lingo/expand?q=${encodeURIComponent(q)}`);
+  result.textContent = data.matched.length ? `Ted reads that as: “${data.expanded}”` : "No lingo term matched.";
+}
+
+function openLingoEditor(id) {
+  const row = id == null ? null : lingoRows[id];
+  editing = { table: "lingo", pk: row ? row.id : null };
+  document.getElementById("modalTitle").textContent = row ? "Edit lingo" : "New lingo term";
+  document.getElementById("modalFields").innerHTML = `
+    <label>What you say *</label><input type="text" id="lingoTerm" value="${esc(row?.term || "")}" placeholder="doc">
+    <label>What Ted should understand *</label><input type="text" id="lingoMeaning" value="${esc(row?.meaning || "")}" placeholder="document">
+    <label>Optional note</label><textarea id="lingoNote" placeholder="Used for schoolwork requests">${esc(row?.note || "")}</textarea>
+    <label class="switch" style="margin-top:14px"><input type="checkbox" id="lingoEnabled" ${row?.enabled === false ? "" : "checked"}>enabled</label>`;
+  document.getElementById("modalError").textContent = "";
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("modalSave").onclick = saveLingo;
+}
+
+async function saveLingo() {
+  const body = {
+    term: document.getElementById("lingoTerm").value,
+    meaning: document.getElementById("lingoMeaning").value,
+    note: document.getElementById("lingoNote").value,
+    enabled: document.getElementById("lingoEnabled").checked,
+  };
+  try {
+    await api(editing.pk == null ? "/api/lingo" : `/api/lingo/${editing.pk}`, {
+      method: editing.pk == null ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    closeModal(); render();
+  } catch (e) { document.getElementById("modalError").textContent = e.message; }
+}
+
+async function toggleLingo(id, enabled) {
+  await api(`/api/lingo/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...lingoRows[id], enabled }) });
+  render();
+}
+
+async function deleteLingo(id) {
+  if (!confirm("Delete this lingo term? Ted will stop expanding it immediately.")) return;
+  await api(`/api/lingo/${id}`, { method: "DELETE" }); render();
 }
 
 // ---------------- data tabs ----------------

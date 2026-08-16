@@ -16,7 +16,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (features, llm, music, routing, routines, system_state, telemetry,
+from core import (features, lingo, llm, music, routing, routines, system_state, telemetry,
                   tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -227,6 +227,7 @@ class TedApi:
         self._pending_compose         = None   # dict awaiting message/email style/content input
         self._pending_disambig_compose = None  # {instruction, style} saved during contact disambiguation
         self._pending_tool_confirmation = None  # {name,args,expires} awaiting yes/no
+        self._pending_lingo          = None   # {term,expires} awaiting Charlie's meaning
         # Structured ground truth for context like "close those again". This is
         # intentionally separate from prose chat history so command reasoning
         # does not need twenty old messages just to resolve a pronoun.
@@ -382,11 +383,13 @@ class TedApi:
             # must also clear that pending state. Previously "nevermind" went
             # silent here and the old question remained armed until expiry.
             if (self._pending_msg is not None or self._pending_compose is not None
-                    or self._pending_tool_confirmation is not None):
+                    or self._pending_tool_confirmation is not None
+                    or self._pending_lingo is not None):
                 self._pending_msg = None
                 self._pending_compose = None
                 self._pending_disambig_compose = None
                 self._pending_tool_confirmation = None
+                self._pending_lingo = None
                 reply = "Got it, canceling."
                 self.last_reply = reply
                 add_message(w, "ted", reply)
@@ -528,6 +531,38 @@ class TedApi:
                 speak(w, result, self)
             return False
 
+        # ── pending personal-lingo clarification ──
+        if self._pending_lingo is not None:
+            pending = self._pending_lingo
+            self._pending_lingo = None
+            if time.time() > pending["expires"]:
+                result = "That lingo question expired, so I didn't save anything."
+            else:
+                parsed = lingo.parse_definition(text)
+                meaning = parsed[1] if parsed else re.sub(
+                    r"^(?:it|that|the term)?\s*(?:means|is|refers to)\s+", "",
+                    text.strip(), flags=re.I).strip(" .!?\"'“”")
+                if not meaning or _is_cancel_command(text):
+                    result = "No problem — I didn't save that term."
+                else:
+                    saved = lingo.remember(
+                        pending["term"], meaning,
+                        note="Learned after Ted asked Charlie for clarification")
+                    result = (f"Got it — when you say “{saved['term']},” I'll understand "
+                              f"“{saved['meaning']}.”")
+            engine.reset_barge_in()
+            self.interrupt_speech = False
+            if echo_user:
+                add_message(w, "user", text)
+            self.last_reply = result
+            add_message(w, "ted", result)
+            speak(w, result, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": result},
+            ])
+            return False
+
         engine.reset_barge_in()
         self.interrupt_speech = False
         if echo_user:
@@ -537,6 +572,25 @@ class TedApi:
             speak(w, spoken_prefix, self)
 
         set_state(w, "thinking")
+
+        # Definitions are cheap, explicit, and should become available to the
+        # very next routing decision without waiting for fact extraction.
+        definition = lingo.parse_definition(text)
+        if definition:
+            saved = lingo.remember(*definition)
+            reply = (f"Got it — “{saved['term']}” means “{saved['meaning']}.” "
+                     "I'll use that before I choose tools or routines.")
+            self.last_reply = reply
+            add_message(w, "ted", reply)
+            speak(w, reply, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": reply},
+            ])
+            return False
+
+        routing_text, matched_lingo = lingo.expand(text, record_usage=True)
+        _lingo_context = lingo.context_line(matched_lingo)
 
         # ── email auth setup (handled here so we can speak mid-flow) ──
         if re.search(
@@ -562,7 +616,7 @@ class TedApi:
         # Personal sayings are checked before generic reflexes. They are
         # explicitly authored in the dashboard, contain only low-risk actions,
         # and therefore should never spend tokens asking a model what they mean.
-        routine = routines.match_routine(text)
+        routine = routines.match_routine(routing_text)
         if routine is not None:
             _rturn = telemetry.Turn(text, source="routine")
             _rturn.provider = "routine"
@@ -583,7 +637,27 @@ class TedApi:
 
         # Only complete, reversible app requests qualify. A partial/ambiguous
         # match declines the whole turn and reaches the reasoner below.
-        reflex = routing.plan_reflex(text)
+        document_plan = routing.plan_document(routing_text)
+        if document_plan is not None:
+            _rturn = telemetry.Turn(text, source="document")
+            result = self._create_document_workflow(document_plan)
+            _rturn.provider = llm.providers.active_provider()
+            _rturn.model = llm.providers.active_model()
+            _rturn.note_tool("create_document")
+            _failed = th.looks_like_failure(result)
+            _rturn.finish(reply=result, error=result if _failed else "")
+            self.last_reply = result
+            add_message(w, "ted", result)
+            if _failed:
+                show_issue(w, result)
+            speak(w, result, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": result},
+            ])
+            return False
+
+        reflex = routing.plan_reflex(routing_text)
         if reflex is not None:
             # Logged like any other turn. A reflex hit costs zero tokens and no
             # model call, which is the whole point of the lane — but if it is
@@ -644,9 +718,9 @@ class TedApi:
         _recent_context = routing.operational_context(self._recent_actions)
         _live_context = system_state.format_for_prompt(self._live_state)
         _op_context = "\n".join(
-            part for part in (_live_context, _recent_context) if part)
+            part for part in (_lingo_context, _live_context, _recent_context) if part)
         if not LEGACY_LADDER:
-            _selected_schemas = routing.select_tool_schemas(text, _op_context)
+            _selected_schemas = routing.select_tool_schemas(routing_text, _op_context)
 
             def _selected_dispatch(name, args):
                 if name == "find_tools":
@@ -668,7 +742,7 @@ class TedApi:
                 on_failure=_note_action_result,
                 is_failure=th.looks_like_failure,
             )
-        _context_scope = routing.memory_scope_for(text, _selected_schemas)
+        _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -677,8 +751,8 @@ class TedApi:
                                 tool_runtime=_runtime,
                                 context_scope=_context_scope,
                                 operational_context=_op_context,
-                                require_tool=routing.likely_action_request(text),
-                                min_action_calls=routing.expected_action_calls(text))
+                                require_tool=routing.likely_action_request(routing_text),
+                                min_action_calls=routing.expected_action_calls(routing_text))
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -1780,6 +1854,25 @@ class TedApi:
             print(f"[routines] couldn't update run count: {exc}")
         return [str(result or "That action did not return a result.") for result in results]
 
+    def _create_document_workflow(self, args):
+        """Draft prose first, then perform one deterministic editor workflow."""
+        instructions = str(args.get("instructions") or "").strip()
+        if not instructions:
+            return "I need to know what the document should say, so nothing was created."
+        draft = llm.generate_document_draft(
+            instructions, args.get("target_words") or 600)
+        if not draft:
+            return "I couldn't draft the document, so I didn't open an empty file."
+        if not features.HAS_COMPUTER:
+            return "I drafted the document, but computer control is unavailable, so nothing was opened."
+        return features.computer.create_document(
+            draft,
+            args.get("app", "google_docs"),
+            args.get("browser", "Chrome"),
+            font_size=args.get("font_size"),
+            line_spacing=args.get("line_spacing"),
+        )
+
     def _dispatch_tool(self, name, args, confirmed=False):
         """Route a tool call from the LLM to the right Python handler.
         Returns a spoken-style result string; on any error returns an honest
@@ -2058,10 +2151,17 @@ class TedApi:
             # ── Computer control ─────────────────────────────────────────────
             if name == "create_document":
                 if features.HAS_COMPUTER:
-                    return features.computer.create_document(
-                        args.get("text", ""), args.get("app", "google_docs"),
-                        args.get("browser", "Chrome"))
+                    return self._create_document_workflow(args)
                 return "Computer module unavailable."
+            if name == "learn_lingo":
+                saved = lingo.remember(args.get("term", ""), args.get("meaning", ""))
+                return f"Learned that “{saved['term']}” means “{saved['meaning']}.”"
+            if name == "clarify_lingo":
+                term = str(args.get("term") or "").strip()
+                if not term:
+                    return "Which term should I ask Charlie about?"
+                self._pending_lingo = {"term": term, "expires": time.time() + 120}
+                return f"What does “{term}” mean when you say it?"
             if name == "type_text":
                 if features.HAS_COMPUTER:
                     return features.computer.type_text(args.get("text", ""))
@@ -3003,6 +3103,7 @@ class TedApi:
             self._pending_compose = None
             self._pending_disambig_compose = None
             self._pending_tool_confirmation = None
+            self._pending_lingo = None
             print("[input] stop accepted while busy — cancelling in flight",
                   flush=True)
             add_message(self.window, "ted", "Stopped.")

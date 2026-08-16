@@ -66,6 +66,11 @@ def tool_chunk(index, id=None, name=None, args=None, content=None):
         delta=SimpleNamespace(content=content, tool_calls=[tc]))])
 
 
+def usage_chunk(prompt, completion):
+    return SimpleNamespace(choices=[], usage=SimpleNamespace(
+        prompt_tokens=prompt, completion_tokens=completion))
+
+
 class FakeStream:
     """One streamed completion: a list of chunks, plus a .close()."""
 
@@ -257,6 +262,30 @@ check("the follow-up provider request receives the discovered schema",
       "open_app" in {s["function"]["name"]
                      for s in llm.chat_create.kwargs[1]["tools"]})
 check("a discovered action still returns handler ground truth", out == "Opened Notes.")
+
+internal_runtime = None
+def _internal_dispatch(name, args):
+    added = internal_runtime.add_schemas(
+        routing.discover_tool_schemas(args["query"], exclude=internal_runtime.schema_by_name))
+    return "Loaded capabilities: " + ", ".join(added) + ". Now use the appropriate tool."
+
+internal_runtime = llm.ToolRuntime(
+    [routing.FIND_TOOLS_SCHEMA], _internal_dispatch, action_tools={"open_app"})
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="d1", name="find_tools",
+                           args='{"query":"open a mac app"}')]),
+    RuntimeError("Both brains failed; cloud rate limit and local timeout"),
+)
+out, _ = run("bring up a program", internal_runtime, require_tool=True,
+             context_scope="none")
+check("an internal find_tools result never leaks when the next model round fails",
+      "Loaded capabilities" not in out and "nothing ran" in out)
+
+usage = {}
+list(llm._stream_turn(FakeStream([usage_chunk(100, 10)]), {}, usage=usage))
+list(llm._stream_turn(FakeStream([usage_chunk(250, 20)]), {}, usage=usage))
+check("token usage accumulates across model rounds",
+      usage == {"prompt": 350, "completion": 30, "exact": True})
 
 calls = []
 llm.chat_create = scripted(FakeStream([

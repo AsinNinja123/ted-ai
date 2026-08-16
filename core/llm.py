@@ -556,6 +556,8 @@ TOOL_GUIDANCE = (
     "prefer the app/browser accessibility tree (ui_inspect, ui_press, ui_fill) and "
     "use screenshots only when semantic controls cannot expose what is needed. "
     "Use create_document when asked to open a new document and write in it. "
+    "When Charlie defines personal shorthand, use learn_lingo. If unfamiliar "
+    "personal lingo blocks an action, use clarify_lingo instead of guessing. "
     "Prefer known preferences "
     "and low-risk defaults; ask one short question only when a missing value "
     "changes the result or makes an action unsafe."
@@ -629,8 +631,14 @@ def _stream_turn(resp, calls, suppress_text=False, reasoned=None,
             # single turn.
             _u = getattr(chunk, "usage", None)
             if _u is not None:
-                usage["prompt"] = getattr(_u, "prompt_tokens", 0) or 0
-                usage["completion"] = getattr(_u, "completion_tokens", 0) or 0
+                # One ask_streaming turn can contain several provider calls
+                # (discover a tool, run it, then report the result). Preserve
+                # every round instead of replacing the first round's usage
+                # with the final one's smaller number.
+                usage["prompt"] = usage.get("prompt", 0) + (
+                    getattr(_u, "prompt_tokens", 0) or 0)
+                usage["completion"] = usage.get("completion", 0) + (
+                    getattr(_u, "completion_tokens", 0) or 0)
                 usage["exact"] = True
             if not getattr(chunk, "choices", None):
                 continue
@@ -1321,6 +1329,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             }]
 
             results = []
+            visible_results = []
             all_actions = True
             action_failed = False
             for n, (c, args, validation_error) in enumerate(prepared):
@@ -1346,6 +1355,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 results.append(result)
                 if c["name"] != "find_tools":
                     completed_tool_calls += 1
+                    visible_results.append(result)
                 if c["name"] not in tool_runtime.action_tools:
                     all_actions = False
                     had_non_action = True
@@ -1360,8 +1370,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                              "name": c["name"],
                              "content": str(result)})
 
-            if results:
-                last_results = results
+            # find_tools returns an internal catalog message intended only for
+            # the model's next round. Never show that machinery to Charlie if
+            # the provider fails before it can call the discovered tool.
+            if visible_results:
+                last_results = visible_results
 
             # A simple action still completes in one model call. A request that
             # explicitly contains a sequence keeps planning after successful
@@ -1394,6 +1407,10 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 resp = _do_groq_call(msgs)
             except Exception as e:
                 print(f"[groq] follow-up call failed: {e}")
+                _turn.error = f"{type(e).__name__}: {e}"
+                if (_providers.last_fallback_reason() == "rate_limit"
+                        or "429" in str(e)):
+                    _turn.rate_limited = True
                 break
     except GeneratorExit:
         # speak_streaming closes this generator when the user interrupts or the
@@ -1424,7 +1441,10 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 yield final
             else:
                 _turn.error = _turn.error or "empty stream — no text, no tool call"
-                yield "Something cut out — ask me again."
+                full_reply = (
+                    "I couldn't complete that action — nothing ran. Try again in a moment."
+                    if require_tool else "Something cut out — ask me again.")
+                yield full_reply
         _log_turn(_turn, full_reply, _usage, total_calls, rounds)
         _remember_exchange(user_input, full_reply, conversation)
 
@@ -1443,16 +1463,70 @@ def _log_turn(turn, reply, usage, total_calls, rounds):
         else:
             turn.completion_tokens = max(1, round(len(reply or "") / 4))
             turn.tokens_estimated = True
-        if not turn.provider:
-            turn.provider = _providers.active_provider()
+        active = _providers.active_provider()
+        # Provider state changes on every model round. The final round is the
+        # truthful outcome for the turn (including cloud -> local -> none), so
+        # do not leave telemetry pinned to whichever brain accepted round one.
+        if active in ("groq", "ollama"):
+            turn.provider = active
             turn.model = _providers.active_model()
-        if not turn.error and _providers.active_provider() == "none":
+        elif active == "none" and turn.error:
+            turn.provider = "none"
+            turn.model = ""
+        why = _providers.last_fallback_reason()
+        if why == "rate_limit" or "429" in str(turn.error or ""):
+            turn.rate_limited = True
+            turn.degraded_reason = (
+                "cloud rate limit — local fallback failed" if active == "none"
+                else "cloud rate limit — answered by the local brain")
+        elif why == "unavailable" and active == "ollama":
+            turn.degraded_reason = (
+                "cloud unavailable — answered by the local brain: "
+                + (_providers.last_cloud_error() or "")[:200])
+        if not turn.error and active == "none":
             turn.error = _providers.last_cloud_error() or "no provider served this turn"
         turn.finish(reply=reply)
     except Exception as e:                                   # pragma: no cover
         print(f"[telemetry] {e}")
 
 # ---------- composition helpers (messages / email) ----------
+def generate_document_draft(instructions, target_words=600):
+    """Draft long-form prose without putting it inside a tool-call argument.
+
+    The old create_document contract made the agent JSON-encode an entire paper
+    while also deciding which tool to use. Long arguments repeatedly produced
+    malformed function calls and made the 35B fallback miss its timeout. This
+    plain completion can use the fast local chat model if the cloud is limited;
+    computer.py handles the separate, deterministic editing step afterward.
+    """
+    words = max(100, min(5000, int(target_words or 600)))
+    prompt = (
+        f"Write approximately {words} words for this request:\n{instructions}\n\n"
+        "Return only the finished document text. Use clear paragraphs and a useful "
+        "title when appropriate. Follow the requested level and tone. Do not mention "
+        "these instructions. Do not invent citations, quotations, or a bibliography; "
+        "if sources were not supplied, write accurate general prose without fake sourcing."
+    )
+    try:
+        response = chat_create(
+            messages=[
+                {"role": "system", "content": (
+                    "You are Ted's document drafting stage. Produce polished prose; "
+                    "never call tools and never wrap the answer in JSON or Markdown fences.")},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max(450, min(3000, round(words * 1.65))),
+            temperature=0.35,
+            timeout=45.0,
+            reasoning_effort="none",
+            _ted_workload="foreground",
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        error_log.error(f"Document draft failed: {exc}")
+        return ""
+
+
 def generate_message_text(instruction, contact):
     """Use a quick Groq call to turn a spoken instruction into an actual message text."""
     try:

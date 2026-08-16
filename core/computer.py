@@ -159,7 +159,46 @@ def _active_browser_url(app_name):
         return ""
 
 
-def create_document(text, app="google_docs", browser="Chrome"):
+def _docs_tool_command(command):
+    """Run one Google Docs Tool finder command using its official Mac shortcut."""
+    opened = _native("key", "tool finder")
+    if not opened.get("ok"):
+        return False
+    time.sleep(0.15)
+    typed = _native("type-text", command)
+    if not typed.get("ok"):
+        return False
+    time.sleep(0.15)
+    chosen = _native("key", "enter")
+    time.sleep(0.25)
+    return bool(chosen.get("ok"))
+
+
+def _format_google_doc(font_size=None, line_spacing=None):
+    sent = []
+    failed = []
+    if not (font_size or line_spacing):
+        return sent, failed
+    selected = _native("key", "select all")
+    if not selected.get("ok"):
+        return [], ["selecting the document"]
+    time.sleep(0.15)
+    if font_size:
+        label = f"{int(font_size)}-point font"
+        (sent if _docs_tool_command(f"font size {int(font_size)}") else failed).append(label)
+    if line_spacing:
+        spacing = str(line_spacing).lower()
+        command = {"double": "double spacing", "single": "single spacing",
+                   "1.5": "1.5 spacing", "1.15": "1.15 spacing"}.get(
+                       spacing, f"{spacing} spacing")
+        label = f"{spacing} line spacing"
+        (sent if _docs_tool_command(command) else failed).append(label)
+    _native("key", "right")
+    return sent, failed
+
+
+def create_document(text, app="google_docs", browser="Chrome", font_size=None,
+                    line_spacing=None):
     """Open a fresh document, focus its editor, and type the requested text.
 
     This is intentionally one outcome-level action. Leaving the model to infer
@@ -240,8 +279,17 @@ def create_document(text, app="google_docs", browser="Chrome"):
     # snapshots and restores every clipboard representation around the paste.
     typed = _paste_text(text)
     if typed.startswith("Typed:"):
-        return (f"Opened a new Google Doc in {expected}'s existing window and "
-                "typed the text.")
+        sent, failed = _format_google_doc(font_size, line_spacing)
+        result = (f"Opened a new Google Doc in {expected}'s existing window and "
+                  "typed the text.")
+        if sent:
+            # The native helper confirms that the official Tool finder command
+            # was entered and chosen, but Docs' canvas does not expose the
+            # resulting paragraph style reliably through Accessibility.
+            result += " Sent Google Docs' formatting command for " + " and ".join(sent) + "."
+        if failed:
+            result += " I couldn't apply " + " or ".join(failed) + "."
+        return result
     return f"Opened a new Google Doc in {expected}'s existing window. " + typed
 
 
