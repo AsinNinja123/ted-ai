@@ -109,6 +109,7 @@ llm.get_memory = lambda q: ""
 llm.get_facts_about = lambda who: ""
 llm.format_memories_for_prompt = lambda: ""
 llm.save_memory = lambda *a, **k: None
+_real_extract_facts = llm.extract_and_save_facts  # kept for the fact-log tests below
 llm.extract_and_save_facts = lambda *a, **k: None
 llm.error_log = SimpleNamespace(error=lambda *a, **k: None)
 llm.intents._needs_web = lambda t: False
@@ -166,6 +167,46 @@ check("fact parser accepts Groq's escaped-whitespace JSON",
       llm._parse_fact_payload(escaped) == [{"subject": "Charlie",
                                             "relationship": "LIKES",
                                             "object": "golf"}])
+
+# Every one of the 24 ERROR lines in ted_errors.log on Aug 16 was a fenced
+# empty result being logged as a failure: the parser stripped fences on its own
+# local copy, the caller then compared the still-fenced original against two
+# exact strings, missed, and logged a success as unparseable. No facts were
+# ever lost — but a "real failures only" channel full of false alarms hides the
+# real one. Both halves are pinned here.
+check("a fenced empty result parses as no facts",
+      llm._parse_fact_payload('```json\n{"facts": []}\n```') == [])
+
+_logged = []
+_orig_error = llm.error_log.error
+_orig_extract_create = llm.chat_create
+llm.error_log.error = lambda msg, *a, **k: _logged.append(msg)
+
+
+def _fact_reply(text):
+    return lambda **kw: SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=text, tool_calls=None))])
+
+
+def _extract_with(payload):
+    """Run the REAL extractor (the module-level one is stubbed out above)."""
+    llm.chat_create = _fact_reply(payload)
+    _logged.clear()
+    _real_extract_facts("hey", "hi")
+    return list(_logged)
+
+
+for _payload in ('```json\n{"facts": []}\n```', '{"facts": []}', '[]',
+                 '  {"facts":[]}  ', '```\n[]\n```'):
+    check(f"empty result {_payload.strip()[:18]!r} logs no error",
+          _extract_with(_payload) == [])
+
+_errors = _extract_with("I could not find any facts, sorry!")
+check("genuinely unparseable output still logs an error",
+      len(_errors) == 1 and "unparseable" in _errors[0])
+
+llm.error_log.error = _orig_error
+llm.chat_create = _orig_extract_create
 
 llm.chat_create = scripted(FakeStream([text_chunk("Not much, "), text_chunk("you?")]))
 out, conv = run("how are you", runtime(lambda n, a: "unused"))

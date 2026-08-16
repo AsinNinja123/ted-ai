@@ -215,6 +215,27 @@ THINKING_CONTEXT = (
 )
 
 # ---------- fact extraction (background, never blocks Ted) ----------
+def _strip_json_fences(raw):
+    """Remove markdown code fences the small models add despite instructions.
+
+    One definition, because the caller and the parser used to strip fences in
+    different places: the parser cleaned its own local copy while the caller
+    still held the fenced original, so a correctly-empty ``{"facts": []}`` in a
+    fence parsed fine AND got logged as unparseable. Every fact-extraction
+    error in the log was that, and nothing else.
+    """
+    return (raw or "").replace("```json", "").replace("```", "").strip()
+
+
+def _is_valid_json(raw):
+    """True if the text parses as JSON — i.e. the model answered in the format."""
+    try:
+        json.loads(raw)
+        return True
+    except Exception:
+        return False
+
+
 def _parse_fact_payload(raw):
     """Pull a list of fact dicts out of whatever the model returned.
 
@@ -225,7 +246,7 @@ def _parse_fact_payload(raw):
     """
     if not raw:
         return []
-    raw = raw.replace("```json", "").replace("```", "").strip()
+    raw = _strip_json_fences(raw)
 
     def _coerce(obj):
         # JSON mode returns an object; accept {"facts": [...]}, a bare list, or
@@ -297,11 +318,17 @@ def extract_and_save_facts(user_input, ted_reply):
             timeout=10.0,
             _ted_workload="background",
         )
-        raw = (resp.choices[0].message.content or "").strip()
+        raw = _strip_json_fences(resp.choices[0].message.content or "")
         facts = _parse_fact_payload(raw)
-        if not facts and raw and raw not in ('{"facts": []}', '{"facts":[]}'):
+        if not facts and raw and not _is_valid_json(raw):
             # Nothing parsed out of a non-empty reply — that's a real failure,
             # not "no facts here". Surface it instead of losing it to a print.
+            #
+            # The test is "did the model emit valid JSON", not "does the text
+            # equal one of two exact strings". A well-formed empty result is a
+            # success however it is spelled ([], {"facts":[]}, whitespace and
+            # all); only genuinely unparseable output belongs in a log whose
+            # whole value is that it contains real failures only.
             error_log.error(f"[memory] fact extraction returned unparseable output: {raw[:200]!r}")
         # Hard gate, because the prompt alone doesn't stop the fast model from
         # harvesting trivia out of Ted's own replies ("bananas ARE berries"):

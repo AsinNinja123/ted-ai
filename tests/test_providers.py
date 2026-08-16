@@ -270,9 +270,137 @@ wait = providers._start_cloud_cooldown(
 check("the 429 retry time beats the much later full-bucket reset header",
       14.9 <= wait <= 15.1 and providers.cloud_cooldown_remaining() <= 16)
 
+
+# The docstring above _start_cloud_cooldown always promised "earliest wins",
+# but `retry-after` short-circuited the chain and was never compared against
+# anything. When that header carried a bucket-refill figure the long value won
+# outright — 38 RATE LIMITED lines in one launch log, one of them pausing the
+# cloud for 1321s while the 429 body said 13s.
+class _LongRetryAfterHeaders:
+    headers = {"retry-after": "1321s", "x-ratelimit-reset-tokens": "22m1s"}
+
+
+class _LongRetryAfter(RuntimeError):
+    response = _LongRetryAfterHeaders()
+
+
+providers._cloud_retry_at = 0.0
+wait = providers._start_cloud_cooldown(
+    _LongRetryAfter("429 rate limit; please try again in 13.185s"))
+check("a bucket-refill retry-after header loses to the 429 body's own retry",
+      13.1 <= wait <= 13.3)
+
+providers._cloud_retry_at = 0.0
+wait = providers._start_cloud_cooldown(_LongRetryAfter("429 rate limit reached"))
+check("with no body hint the cooldown is still clamped, not 22 minutes",
+      wait == providers.MAX_CLOUD_COOLDOWN)
+
+# The cooldown used to only ever extend (`max(...)`), so one bad long value
+# pinned the cloud off for its full duration even when the next 429 said the
+# request could be retried in seconds.
+providers._cloud_retry_at = _time.time() + 600.0
+providers._start_cloud_cooldown(
+    _SoonRetry("429 rate limit; please try again in 5s"))
+check("a shorter provider-approved retry replaces a longer active cooldown",
+      providers.cloud_cooldown_remaining() <= 6)
+
 providers._cloud_retry_at = 0.0
 providers._groq, providers._ollama_create = _saved_groq, _saved_ollama
 providers.set_provider_mode(_saved_mode)
+
+
+print("\n— the local rescue gets time to wake up, but not to hang —")
+
+# The streaming rescue path built its client with read=min(timeout, 25.0),
+# throwing away the 180s budget _ollama_create had just computed *because* a
+# cold 24 GB model cannot load and emit a first token in 25 seconds. So the
+# fallback failed precisely when the cloud was rate-limited and the local model
+# was cold — the one moment it existed for. First chunk and later chunks are
+# two different waits and now have two different budgets.
+import json          # noqa: E402
+import socket        # noqa: E402
+import threading     # noqa: E402
+
+_chunk = json.dumps({"message": {"content": "hi"}}).encode()
+
+
+def _stalling_server(sock):
+    """Answer one /api/chat, send a single NDJSON chunk, then go quiet."""
+    conn, _ = sock.accept()
+    try:
+        conn.recv(65536)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+                     b"Transfer-Encoding: chunked\r\n\r\n")
+        body = _chunk + b"\n"
+        conn.sendall(f"{len(body):x}\r\n".encode() + body + b"\r\n")
+        _time.sleep(10.0)          # the stall the watchdog has to catch
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_sock = socket.socket()
+_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+_sock.bind(("127.0.0.1", 0))
+_sock.listen(1)
+_orig_stream_url = providers.OLLAMA_URL
+providers.OLLAMA_URL = f"http://127.0.0.1:{_sock.getsockname()[1]}"
+threading.Thread(target=_stalling_server, args=(_sock,), daemon=True).start()
+
+_stream = providers._OllamaStream(
+    {"model": "x", "messages": [], "stream": True}, timeout=180.0, stall_timeout=1.0)
+check("the first chunk keeps the full cold-load budget, not a 25s cap",
+      _stream._client.timeout.read == 180.0)
+
+_t0 = _time.time()
+_got, _err = [], ""
+try:
+    for _c in _stream:
+        _got.append(_c.choices[0].delta.content)
+except Exception as e:
+    _err = f"{type(e).__name__}: {e}"
+_elapsed = _time.time() - _t0
+
+check("chunks that do arrive are yielded", _got and _got[0] == "hi")
+check("…and a stalled generation then fails fast instead of looking frozen",
+      0.5 < _elapsed < 5.0)
+check("…as an honest timeout, not a silently empty answer",
+      "ReadTimeout" in _err and "no output" in _err)
+
+_stream.close()
+
+# Barge-in closes a stream mid-response. At that moment the reader thread is
+# parked in a socket read, so closing inline would wait on the very connection
+# that is stuck — the caller would freeze on the interrupt meant to unfreeze it.
+_sock2 = socket.socket()
+_sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+_sock2.bind(("127.0.0.1", 0))
+_sock2.listen(1)
+providers.OLLAMA_URL = f"http://127.0.0.1:{_sock2.getsockname()[1]}"
+threading.Thread(target=_stalling_server, args=(_sock2,), daemon=True).start()
+
+_stream2 = providers._OllamaStream(
+    {"model": "x", "messages": [], "stream": True}, timeout=180.0, stall_timeout=60.0)
+for _c in _stream2:
+    break                      # barge-in: stop reading while the socket is live
+_t1 = _time.time()
+_stream2.close()
+check("closing a live stream mid-response returns immediately",
+      _time.time() - _t1 < 1.0)
+
+try:
+    _sock2.close()
+except Exception:
+    pass
+providers.OLLAMA_URL = _orig_stream_url
+try:
+    _sock.close()
+except Exception:
+    pass
 
 
 print(f"{PASS} passed, {FAIL} failed")

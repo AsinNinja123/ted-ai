@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -87,6 +89,10 @@ _last_fallback = ""
 # round trip, those probes keep the diagnostics noisy and can extend recovery.
 _cloud_retry_at = 0.0
 DEFAULT_CLOUD_COOLDOWN = 15.0
+# A retry that turns out to be premature costs one 429 and one more fallback
+# turn. A twenty-two minute blackout costs the whole session, so cap how long
+# any single provider hint is allowed to pin the cloud off.
+MAX_CLOUD_COOLDOWN = 120.0
 
 
 def last_fallback_reason() -> str:
@@ -129,15 +135,21 @@ def _start_cloud_cooldown(exc) -> float:
     bucket is full again (several minutes), while the 429 body says the request
     can be retried in fifteen seconds. Taking the maximum is why Ted stayed on
     Ollama long after the cloud was usable again.
+
+    So every hint is a candidate and the *earliest* one wins, including the
+    ``retry-after`` header — which used to short-circuit the chain and was
+    therefore the same bug the paragraph above says was fixed. The result is
+    capped, and it replaces any existing cooldown rather than only extending
+    it: a shorter provider-approved retry is better information, not a
+    regression.
     """
     global _cloud_retry_at
-    retry_after = 0.0
-    reset_candidates = []
+    candidates = []
     try:
         response = getattr(exc, "response", None)
         headers = getattr(response, "headers", None) or {}
-        retry_after = _duration_seconds(headers.get("retry-after"))
-        reset_candidates = [value for value in (
+        candidates = [value for value in (
+            _duration_seconds(headers.get("retry-after")),
             _duration_seconds(headers.get("x-ratelimit-reset-tokens")),
             _duration_seconds(headers.get("x-ratelimit-reset-requests")),
         ) if value > 0]
@@ -148,10 +160,16 @@ def _start_cloud_cooldown(exc) -> float:
         r"(?:try again in|retry(?:ing)? after)\s+([0-9.]+\s*(?:ms|s|m|h))",
         str(exc), re.I)
     body_wait = _duration_seconds(match.group(1)) if match else 0.0
-    seconds = retry_after or body_wait or (
-        min(reset_candidates) if reset_candidates else 0.0)
-    seconds = seconds or DEFAULT_CLOUD_COOLDOWN
-    _cloud_retry_at = max(_cloud_retry_at, time.time() + seconds)
+    if body_wait > 0:
+        candidates.append(body_wait)
+    seconds = min(candidates) if candidates else DEFAULT_CLOUD_COOLDOWN
+    seconds = min(seconds, MAX_CLOUD_COOLDOWN)
+    if candidates and max(candidates) - min(candidates) > 1.0:
+        # Print the disagreement rather than making the next reader re-derive it.
+        print(f"[provider] rate-limit hints disagree: "
+              f"{'/'.join(f'{value:.1f}s' for value in sorted(candidates))} "
+              f"— using {seconds:.1f}s")
+    _cloud_retry_at = time.time() + seconds
     return seconds
 
 
@@ -354,6 +372,10 @@ def _ollama_messages(messages):
 # failure buys quiet for this long instead.
 OLLAMA_RETRY_COOLDOWN = 300.0
 OLLAMA_START_BUDGET = 6.0
+# How long a streaming local turn may go between chunks once it has started
+# producing. Distinct from the first-chunk budget, which has to cover a cold
+# model load; see _OllamaStream.
+OLLAMA_STALL_TIMEOUT = 30.0
 _ollama_down_until = 0.0
 
 
@@ -416,7 +438,12 @@ def _ollama_payload(kwargs):
         "model": model,
         "messages": _ollama_messages(kwargs.get("messages") or []),
         "stream": bool(kwargs.get("stream", False)),
-        "keep_alive": "10m" if model == LOCAL_CHAT_MODEL else "5m",
+        # The TOOL model is the rescue model: it is what a rate-limited
+        # foreground turn falls back to. It used to have the SHORTER
+        # keep-alive, so it unloaded first and was reliably cold at the one
+        # moment it mattered. It gets the longer residency now. Both resident
+        # is ~30 GB of the 48 GB here, which is why chat is not also 30m.
+        "keep_alive": "30m" if model == LOCAL_TOOL_MODEL else "10m",
     }
     if kwargs.get("tools"):
         payload["tools"] = kwargs["tools"]
@@ -454,20 +481,73 @@ def _local_model_for(kwargs):
 class _OllamaStream:
     """Adapt Ollama NDJSON chunks to the shape consumed by ``_stream_turn``."""
 
-    def __init__(self, payload, timeout):
-        # A rescue provider that stays silent for minutes is indistinguishable
-        # from a frozen app. Give model load/generation a bounded first-chunk
-        # window; callers then surface the honest provider failure.
+    def __init__(self, payload, timeout, stall_timeout=OLLAMA_STALL_TIMEOUT):
+        # Two different waits, two different budgets. The FIRST chunk has to
+        # cover loading a cold 24 GB model off disk, so it gets the full
+        # timeout; capping it at 25s is what made the rate-limit rescue fail
+        # exactly when it was needed most. Every chunk after that should
+        # arrive steadily, so a stalled generation still fails fast instead of
+        # looking frozen for three minutes.
+        #
+        # httpx applies ONE read timeout to a whole stream, so the tighter
+        # inter-chunk deadline is enforced here instead: a reader thread feeds
+        # lines into a queue and the consumer waits on the queue, not on the
+        # socket. Closing httpx from a second thread is not an option — it
+        # waits on the same connection the read is blocked in, so a watchdog
+        # deadlocks rather than rescuing anything.
         self._client = httpx.Client(timeout=httpx.Timeout(
-            timeout, connect=4.0, read=min(timeout, 25.0)))
+            timeout, connect=4.0, read=timeout))
         self._ctx = self._client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload)
         self._response = self._ctx.__enter__()
         self._response.raise_for_status()
         self._closed = False
         self._call_index = 0
+        self._first_budget = timeout
+        self._stall_timeout = stall_timeout
+        self._lines = queue.Queue()
+        self._drained = threading.Event()
+        threading.Thread(target=self._read_lines, daemon=True).start()
+
+    def _read_lines(self):
+        """Drain the socket into the queue. ``(None, None)`` marks a clean end."""
+        try:
+            for line in self._response.iter_lines():
+                self._lines.put((line, None))
+        except Exception as exc:
+            self._lines.put((None, exc))
+        else:
+            self._lines.put((None, None))
+        finally:
+            self._drained.set()
+
+    def _abandon(self):
+        """Give up on a stalled stream without waiting for the socket.
+
+        The reader is blocked inside a socket read and closing the client waits
+        on that same connection, so the close is handed to a daemon thread that
+        nobody joins. The caller gets its timeout now; the connection is
+        reclaimed whenever Ollama gets around to dropping it.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        threading.Thread(target=self._shutdown, daemon=True).start()
 
     def __iter__(self):
-        for line in self._response.iter_lines():
+        budget = self._first_budget
+        while True:
+            try:
+                line, error = self._lines.get(timeout=budget)
+            except queue.Empty:
+                self._abandon()
+                raise httpx.ReadTimeout(
+                    f"local model produced no output for {budget:.0f}s") from None
+            # Every chunk that arrives moves the stream onto the short budget.
+            budget = self._stall_timeout
+            if error is not None:
+                raise error
+            if line is None:
+                return
             if not line:
                 continue
             data = json.loads(line)
@@ -492,13 +572,31 @@ class _OllamaStream:
             yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
 
     def close(self):
+        """Close, without ever blocking the caller on the reader thread.
+
+        Barge-in closes a stream mid-response, and at that moment the reader is
+        parked in a socket read the close would have to wait on. Only a stream
+        the reader has already finished with can be closed inline; anything
+        else is abandoned to a daemon thread, same as a stall.
+        """
         if self._closed:
             return
+        if not self._drained.is_set():
+            self._abandon()
+            return
         self._closed = True
+        self._shutdown()
+
+    def _shutdown(self):
         try:
             self._ctx.__exit__(None, None, None)
+        except Exception:
+            pass
         finally:
-            self._client.close()
+            try:
+                self._client.close()
+            except Exception:
+                pass
 
 
 def _ollama_create(**kwargs):
