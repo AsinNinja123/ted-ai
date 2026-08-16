@@ -162,6 +162,26 @@ check("ordinary conversation gets relevant retrieval only",
       routing.memory_scope_for("how was your day", chat) == "relevant")
 
 
+print("\n— playlist editing is its own family —")
+
+
+def _names(text):
+    return names(routing.select_tool_schemas(text))
+
+
+check("editing a playlist loads the editing tools",
+      {"add_to_playlist", "create_playlist"} <= set(_names("add this to my gym playlist")))
+check("…including when the word 'playlist' is absent from the verb phrase",
+      "remove_from_playlist" in _names("remove this song from country"))
+# Folding these into the music family would have put four extra schemas on
+# every transport command, which is the opposite of what Part 4 is trying to do.
+check("plain transport does NOT pay for the editing schemas",
+      not ({"add_to_playlist", "remove_from_playlist", "create_playlist",
+            "delete_playlist"} & set(_names("skip this song"))))
+check("…nor does starting music", "create_playlist" not in _names("play noah kahan"))
+check("'what am I listening to' reaches the music tools at all",
+      "spotify_control" in _names("what am I listening to"))
+
 print("\n— prompt weight —")
 full_chars = len(json.dumps(TOOL_SCHEMAS, separators=(",", ":")))
 app_chars = len(json.dumps(apps_web, separators=(",", ":")))

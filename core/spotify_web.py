@@ -19,6 +19,7 @@ ONE-TIME SETUP
 Needs Spotify Premium (you have it) and the Spotify app open on some device.
 """
 
+import json
 import os
 import re
 import time
@@ -27,9 +28,15 @@ HOME = os.path.expanduser("~/ted-ai")
 CACHE = os.path.join(HOME, "data", ".spotify_cache")
 
 # Permissions requested during OAuth. Covers reading playback state, controlling
-# playback, reading private/collaborative playlists, and seeing currently playing.
+# playback, reading AND editing private/collaborative playlists, and seeing
+# currently playing.
+#
+# The two playlist-modify scopes were added when playlist editing was. A token
+# granted before that lacks them, which is what can_edit_playlists() is for.
 SCOPE = ("user-read-playback-state user-modify-playback-state "
-         "playlist-read-private playlist-read-collaborative user-read-currently-playing")
+         "playlist-read-private playlist-read-collaborative "
+         "playlist-modify-private playlist-modify-public "
+         "user-read-currently-playing")
 
 try:
     from config import (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET,
@@ -51,9 +58,37 @@ def configured():
     return bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)
 
 
+def _cached_scopes():
+    """The permissions the cached token actually carries, as a set."""
+    try:
+        with open(CACHE, encoding="utf-8") as fh:
+            return set((json.load(fh).get("scope") or "").split())
+    except Exception:
+        return set()
+
+
+def missing_scopes():
+    """Permissions SCOPE asks for that the cached token does not have."""
+    if not (os.path.exists(CACHE) and os.path.getsize(CACHE) > 0):
+        return set()
+    return set(SCOPE.split()) - _cached_scopes()
+
+
 def _authorized():
     """Return True when a non-empty OAuth token cache file exists on disk."""
     return os.path.exists(CACHE) and os.path.getsize(CACHE) > 0
+
+
+def can_edit_playlists():
+    """True when the cached token actually carries the playlist-modify scopes.
+
+    Deliberately separate from _authorized(). Adding playlist editing widened
+    SCOPE, and Charlie's existing token predates it — but that token is still
+    perfectly good for everything it was granted for. Gating all of Spotify on
+    the new scopes would break working playback to add an unrelated feature,
+    so only the four editing functions ask this question.
+    """
+    return _authorized() and not missing_scopes()
 
 
 def enabled():
@@ -97,11 +132,22 @@ def _client(interactive=False):
     try:
         import spotipy
         from spotipy.oauth2 import SpotifyOAuth
+        # Ask for everything when we are allowed to prompt; otherwise ask only
+        # for what the cached token already has.
+        #
+        # spotipy rejects a cached token whose scope does not cover the
+        # requested one and falls through to an interactive flow — which, with
+        # open_browser=False, ends at input() on stdin inside one of Ted's
+        # daemon threads. That is a silent hang, not an error. Requesting the
+        # granted set keeps every previously-working call working; the four
+        # editing functions check can_edit_playlists() instead.
+        granted = _cached_scopes()
+        scope = SCOPE if (interactive or not granted) else " ".join(sorted(granted))
         auth = SpotifyOAuth(
             client_id=SPOTIFY_CLIENT_ID,
             client_secret=SPOTIFY_CLIENT_SECRET,
             redirect_uri=SPOTIFY_REDIRECT_URI,
-            scope=SCOPE,
+            scope=scope,
             cache_path=CACHE,
             open_browser=interactive,
         )
@@ -396,6 +442,248 @@ def transport(action):
     except Exception as e:
         print("[spotify] web transport:", e)
     return None
+
+
+# ---- Playlist editing ----
+#
+# Every function below re-reads the playlist after writing to it. A 200 from
+# playlist_add_items means Spotify accepted the request, not that the track is
+# in the playlist — same distinction _confirm_playing exists for, and the same
+# honesty rule (README §5.3). Ted must not report a change it has not seen.
+
+def _edit_blocked():
+    """Why playlist editing can't run right now, or None if it can."""
+    if not configured():
+        return "Spotify isn't set up — add the client ID and secret to config.py."
+    if not _authorized():
+        return "Spotify isn't connected yet — run: python authorize_spotify.py"
+    missing = missing_scopes()
+    if missing:
+        return ("Spotify hasn't given me permission to edit playlists yet "
+                f"({', '.join(sorted(missing))}). Playback still works. "
+                "Run: python authorize_spotify.py")
+    return None
+
+
+def _write_failed(exc, prefix):
+    """Turn a write failure into something that says what to do about it."""
+    text = str(exc)
+    if "403" in text:
+        return (f"{prefix} — Spotify refused it. That usually means the playlist "
+                "belongs to someone else, or the token predates playlist editing "
+                "(run: python authorize_spotify.py).")
+    return f"{prefix}: {text[:120]}"
+
+
+def _playlist_id(uri):
+    """spotify:playlist:37i9dQ… → 37i9dQ…"""
+    return (uri or "").rsplit(":", 1)[-1]
+
+
+def _resolve_playlist(sp, name):
+    """Match a spoken playlist name, re-fetching once in case it is new."""
+    match = match_playlist(name, _get_playlists(sp))
+    if match is None:
+        match = match_playlist(name, _get_playlists(sp, refresh=True))
+    return match
+
+
+def _track_label(item):
+    names = ", ".join(a["name"] for a in (item or {}).get("artists", []))
+    return (item or {}).get("name", "that track") + (f" by {names}" if names else "")
+
+
+def _resolve_track(sp, query=None):
+    """The track to act on. Returns (uri, label) or (None, message-to-say).
+
+    With no query this is the CURRENTLY PLAYING track, because "add this to my
+    running playlist" is the common case and it never names the song.
+    """
+    if not query:
+        try:
+            cur = sp.current_playback()
+        except Exception as e:
+            print("[spotify] current track:", e)
+            return None, "I couldn't reach Spotify to see what's playing."
+        item = (cur or {}).get("item")
+        if not item or not item.get("uri"):
+            return None, "Nothing's playing, so I don't know which track you mean."
+        return item["uri"], _track_label(item)
+    try:
+        res = sp.search(q=query, type="track", limit=8)
+        items = res.get("tracks", {}).get("items", [])
+    except Exception as e:
+        print("[spotify] search:", e)
+        return None, f"I couldn't search Spotify for '{query}'."
+    if not items:
+        return None, f"Couldn't find a track for '{query}'."
+    # Same popularity sort as play_track, for the same reason: a bare title
+    # should resolve to the song a person means.
+    items = sorted(items, key=lambda t: t.get("popularity", 0), reverse=True)
+    return items[0]["uri"], _track_label(items[0])
+
+
+def _playlist_track_uris(sp, playlist_id):
+    """Every track URI in a playlist, or None if it could not be read."""
+    uris = []
+    try:
+        res = sp.playlist_items(playlist_id, fields="items(track(uri)),next",
+                                limit=100, additional_types=("track",))
+        while res:
+            for row in res.get("items", []):
+                track = (row or {}).get("track") or {}
+                if track.get("uri"):
+                    uris.append(track["uri"])
+            res = sp.next(res) if res.get("next") else None
+    except Exception as e:
+        print("[spotify] playlist items:", e)
+        return None
+    return uris
+
+
+def add_to_playlist(playlist, track_query=None):
+    """Add a track (default: the one playing) to a playlist, and verify it."""
+    blocked = _edit_blocked()
+    if blocked:
+        return blocked
+    sp = _client()
+    if sp is None:
+        return "Spotify isn't connected yet — run: python authorize_spotify.py"
+    match = _resolve_playlist(sp, playlist)
+    if match is None:
+        return f"I couldn't find a playlist called '{playlist}'."
+    pl_name, pl_uri = match
+    uri, label = _resolve_track(sp, track_query)
+    if uri is None:
+        return label
+    pid = _playlist_id(pl_uri)
+    before = _playlist_track_uris(sp, pid)
+    if before is not None and uri in before:
+        return f"{label} is already in {pl_name}."
+    try:
+        sp.playlist_add_items(pid, [uri])
+    except Exception as e:
+        print("[spotify] add:", e)
+        return _write_failed(e, f"I couldn't add {label} to {pl_name}")
+    after = _playlist_track_uris(sp, pid)
+    if after is None:
+        return f"I sent {label} to {pl_name}, but couldn't read the playlist back to confirm."
+    if uri in after:
+        return f"Added {label} to {pl_name}."
+    return f"Spotify accepted that, but {label} is not in {pl_name}."
+
+
+def remove_from_playlist(playlist, track_query=None):
+    """Remove a track (default: the one playing) from a playlist, and verify it."""
+    blocked = _edit_blocked()
+    if blocked:
+        return blocked
+    sp = _client()
+    if sp is None:
+        return "Spotify isn't connected yet — run: python authorize_spotify.py"
+    match = _resolve_playlist(sp, playlist)
+    if match is None:
+        return f"I couldn't find a playlist called '{playlist}'."
+    pl_name, pl_uri = match
+    uri, label = _resolve_track(sp, track_query)
+    if uri is None:
+        return label
+    pid = _playlist_id(pl_uri)
+    before = _playlist_track_uris(sp, pid)
+    if before is not None and uri not in before:
+        return f"{label} isn't in {pl_name}."
+    try:
+        sp.playlist_remove_all_occurrences_of_items(pid, [uri])
+    except Exception as e:
+        print("[spotify] remove:", e)
+        return _write_failed(e, f"I couldn't remove {label} from {pl_name}")
+    after = _playlist_track_uris(sp, pid)
+    if after is None:
+        return f"I sent that removal to {pl_name}, but couldn't read the playlist back to confirm."
+    if uri not in after:
+        return f"Removed {label} from {pl_name}."
+    return f"Spotify accepted that, but {label} is still in {pl_name}."
+
+
+def create_playlist(name, public=False, description=""):
+    """Create a playlist on the user's account, and verify it exists after."""
+    blocked = _edit_blocked()
+    if blocked:
+        return blocked
+    sp = _client()
+    if sp is None:
+        return "Spotify isn't connected yet — run: python authorize_spotify.py"
+    name = (name or "").strip()
+    if not name:
+        return "I need a name for the playlist."
+    try:
+        me = sp.current_user()
+        created = sp.user_playlist_create(
+            me["id"], name, public=bool(public), description=description or "")
+    except Exception as e:
+        print("[spotify] create:", e)
+        return _write_failed(e, f"I couldn't create '{name}'")
+    new_uri = (created or {}).get("uri")
+    # Verify by URI, not by name: match_playlist is fuzzy and would happily
+    # confirm a create by finding some OTHER playlist with a similar name.
+    found = [n for n, u in _get_playlists(sp, refresh=True) if u == new_uri]
+    if not found:
+        return f"Spotify accepted the request but '{name}' isn't in your playlists."
+    return f"Created {found[0]} ({'public' if public else 'private'})."
+
+
+def delete_playlist(name):
+    """Unfollow a playlist — the only 'delete' Spotify has. Verified after."""
+    blocked = _edit_blocked()
+    if blocked:
+        return blocked
+    sp = _client()
+    if sp is None:
+        return "Spotify isn't connected yet — run: python authorize_spotify.py"
+    match = _resolve_playlist(sp, name)
+    if match is None:
+        return f"I couldn't find a playlist called '{name}'."
+    pl_name, pl_uri = match
+    try:
+        sp.current_user_unfollow_playlist(_playlist_id(pl_uri))
+    except Exception as e:
+        print("[spotify] unfollow:", e)
+        return _write_failed(e, f"I couldn't remove '{pl_name}'")
+    still_there = any(u == pl_uri for _, u in _get_playlists(sp, refresh=True))
+    if still_there:
+        return f"Spotify accepted that, but {pl_name} is still in your library."
+    # Say what actually happened. There is no delete endpoint; unfollowing is
+    # what the Spotify app's own "Delete playlist" button does, and it is
+    # recoverable from spotify.com for a while afterwards.
+    return (f"Removed {pl_name} from your library. Spotify has no true delete — "
+            "this unfollows it, the same thing the Spotify app does, and it can "
+            "be recovered from spotify.com for a while.")
+
+
+def now_playing():
+    """Structured currently-playing info for the HUD strip. Never raises.
+
+    Separate from transport("current") because that returns a sentence for Ted
+    to say. The UI needs fields, and it needs them cheaply — this runs on a
+    HUD poll, not on a model turn.
+    """
+    blank = {"playing": False, "title": "", "artist": ""}
+    sp = _client()
+    if sp is None:
+        return blank
+    try:
+        cur = sp.current_playback()
+    except Exception as e:
+        print("[spotify] now playing:", e)
+        return blank
+    item = (cur or {}).get("item")
+    if not item:
+        return blank
+    return {
+        "playing": bool(cur.get("is_playing")),
+        "title": item.get("name", ""),
+        "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+    }
 
 
 def list_playlist_names(limit=10):

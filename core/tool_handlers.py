@@ -27,6 +27,7 @@ except Exception:
 ACTION_TOOLS = frozenset({
     "open_app", "close_app", "browse_to", "play_youtube", "play_music", "play_playlist",
     "spotify_control", "send_message", "set_reminder", "set_timer",
+    "add_to_playlist", "remove_from_playlist", "create_playlist", "delete_playlist",
     "calendar_add", "notes_add", "clipboard_write",
     "system_volume", "system_brightness", "ui_press", "ui_fill", "type_text",
     "create_document", "learn_lingo", "clarify_lingo",
@@ -37,7 +38,8 @@ ACTION_TOOLS = frozenset({
 # Consequential actions require an explicit user confirmation in a pending
 # follow-up flow. Opening apps, typing locally, reminders, and reversible UI
 # controls remain immediate; communication and destructive email changes do not.
-CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action"})
+CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action",
+                                "delete_playlist"})
 
 # Phrases the handlers use when an action did NOT succeed. Lets the HUD surface the
 # real problem (yellow sphere / issue popup) instead of pretending everything's fine.

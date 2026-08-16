@@ -165,6 +165,79 @@ TOOL_SCHEMAS = [
         }
     },
 
+    {
+        "type": "function",
+        "function": {
+            "name": "add_to_playlist",
+            "description": (
+                "Add a track to one of the user's Spotify playlists. Leave "
+                "'track' empty to add whatever is playing right now — that is the "
+                "usual case ('add this to my gym playlist')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist": {"type": "string", "description": "Playlist name"},
+                    "track": {"type": "string", "description": "Song to add. Omit to use the currently playing track."}
+                },
+                "required": ["playlist"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_from_playlist",
+            "description": (
+                "Remove a track from one of the user's Spotify playlists. Leave "
+                "'track' empty to remove whatever is playing right now."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist": {"type": "string", "description": "Playlist name"},
+                    "track": {"type": "string", "description": "Song to remove. Omit to use the currently playing track."}
+                },
+                "required": ["playlist"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_playlist",
+            "description": "Create a new Spotify playlist on the user's account. Private unless asked otherwise.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name for the new playlist"},
+                    "public": {"type": "boolean", "description": "Make it public (default false)"},
+                    "description": {"type": "string", "description": "Optional playlist description"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_playlist",
+            "description": (
+                "Remove a playlist from the user's Spotify library. Spotify has NO "
+                "delete endpoint — this UNFOLLOWS the playlist, which is exactly what "
+                "the Spotify app's own 'Delete playlist' does. Report it as removed "
+                "from their library, never as permanently deleted."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Playlist name"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+
     # ── iMessage ──────────────────────────────────────────────────────────────
     {
         "type": "function",

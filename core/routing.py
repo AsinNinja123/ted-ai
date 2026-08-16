@@ -59,9 +59,19 @@ _FAMILIES = (
     # "play" itself was missing here, so "play a different one" arrived with an
     # empty menu, burned a find_tools round trip, hit the rate limit and fell
     # through to the local brain — 7.8 seconds to change a song.
-    (r"\b(?:play(?:ing|ed|s)?|song|music|spotify|playlist|album|artist|track|listen|"
-     r"pause|resume|skip|next song|previous track|volume)\b",
+    # "listen" without the suffix never matched "what am I listening to", which
+    # is how the question is actually asked.
+    (r"\b(?:play(?:ing|ed|s)?|song|music|spotify|playlist|album|artist|track|"
+     r"listen(?:ing)?|pause|resume|skip|next song|previous track|volume)\b",
      ("play_music", "play_playlist", "spotify_control")),
+    # Playlist EDITING is its own family on purpose. Folded into the music
+    # family above it would put four more schemas on every "skip this song",
+    # and that family already fires on the bare word "play".
+    (r"\b(?:add|remove|delete|create|make|save)\b[^.?!]*\bplaylist\b|"
+     r"\bplaylist\b[^.?!]*\b(?:add|remove|delete|create|make|save)\b|"
+     r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b",
+     ("add_to_playlist", "remove_from_playlist", "create_playlist",
+      "delete_playlist", "play_playlist")),
     (r"\b(?:message|text|imessage|send .*? to|tell .*? that)\b",
      ("send_message",)),
     (r"\b(?:remind|reminder|timer|alarm|clock)\b",

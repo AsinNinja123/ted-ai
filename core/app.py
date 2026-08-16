@@ -1959,6 +1959,19 @@ class TedApi:
                 return features.spotify_web.play_playlist(args.get("name", ""), args.get("shuffle", False))
             if name == "spotify_control":
                 return th.tool_spotify_control(args.get("action", ""))
+            if name == "add_to_playlist":
+                # track omitted = whatever is playing; that is the common ask.
+                return features.spotify_web.add_to_playlist(
+                    args.get("playlist", ""), args.get("track") or None)
+            if name == "remove_from_playlist":
+                return features.spotify_web.remove_from_playlist(
+                    args.get("playlist", ""), args.get("track") or None)
+            if name == "create_playlist":
+                return features.spotify_web.create_playlist(
+                    args.get("name", ""), args.get("public", False),
+                    args.get("description", ""))
+            if name == "delete_playlist":
+                return features.spotify_web.delete_playlist(args.get("name", ""))
             if name == "send_message":
                 return self._compose_and_send(
                     args.get("contact", ""),
@@ -3135,6 +3148,33 @@ class TedApi:
         self._apply_mic(self.mic_on)
         self._push_mic_state()
         return self.muted
+
+    def music_now_playing(self):
+        """What Spotify is playing, for the HUD strip. Costs no tokens."""
+        if not features.HAS_SPOTIFY_WEB or features.spotify_web is None:
+            return {"playing": False, "title": "", "artist": ""}
+        try:
+            return features.spotify_web.now_playing()
+        except Exception as e:
+            print(f"[music] now playing: {e}")
+            return {"playing": False, "title": "", "artist": ""}
+
+    def music_transport(self, action):
+        """HUD transport buttons: previous / play / pause / next.
+
+        Goes straight to the same handler the tool uses, deliberately NOT
+        through the model. Pressing skip should not spend a token, wait on a
+        rate limit, or risk being narrated into something it did not do.
+        """
+        if action not in ("play", "pause", "next", "previous"):
+            return {"say": f"Unknown transport action '{action}'.",
+                    "now": self.music_now_playing()}
+        try:
+            said = th.tool_spotify_control(action)
+        except Exception as e:
+            print(f"[music] transport {action}: {e}")
+            said = f"Couldn't {action}: {e}"
+        return {"say": said, "now": self.music_now_playing()}
 
     def _transcribe_to_input(self, text):
         """Put a spoken transcript in the input box. Never send it.
