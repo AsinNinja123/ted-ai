@@ -603,6 +603,79 @@ def search_memories(query, limit=3):
     return out[:limit]
 
 
+_chat_hidden_col = False
+
+
+def _chat_hidden_select():
+    """SQL for a thread's hidden flag, or a literal 0 when the column is absent.
+
+    chat_sessions.hidden is added by the dashboard's migration, and Ted's own
+    process can open this database first — on a machine where the dashboard has
+    not started yet, selecting it raises. That error was being swallowed into an
+    empty result set, so a broken search looked exactly like "no matches",
+    which is the worst of the three possible outcomes.
+
+    Only the positive answer is cached: the column can appear during a run when
+    the dashboard starts, and it never disappears.
+    """
+    global _chat_hidden_col
+    if not _chat_hidden_col:
+        try:
+            conn = _get_driver()
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(chat_sessions)")}
+            _chat_hidden_col = "hidden" in cols
+        except Exception:
+            _chat_hidden_col = False
+    return "COALESCE(s.hidden, 0)" if _chat_hidden_col else "0"
+
+
+def search_chat_turns(query, limit=8):
+    """Find individual messages in past chat threads.
+
+    search_memories() answers "which conversation was that" from titles and
+    summaries. This answers "what did we actually say", which is a different
+    question and the one with no answer before now: eleven hundred turns and no
+    way to find one.
+
+    Returns newest-first dicts: {"session_id", "title", "role", "content",
+    "ts", "hidden"}. Hidden threads are included on purpose — a chat deleted
+    from the sidebar is still something Ted knows, and excluding it here would
+    make the soft delete a real one through the back door.
+    """
+    terms = _keywords(query)[:6]
+    if not terms:
+        return []
+    hidden_sel = _chat_hidden_select()
+    rows = []
+    if _has_fts:
+        # OR-joined, quoted so a stray hyphen or asterisk in Charlie's wording
+        # is not read as FTS5 syntax.
+        match = " OR ".join('"' + t.replace('"', "") + '"' for t in terms)
+        try:
+            rows = _query(
+                f"SELECT t.session_id, s.title, t.role, t.content, t.ts, {hidden_sel} "
+                "FROM chat_turns_fts f "
+                "JOIN chat_turns t ON t.id = f.rowid "
+                "LEFT JOIN chat_sessions s ON s.id = t.session_id "
+                "WHERE chat_turns_fts MATCH ? "
+                "ORDER BY t.id DESC LIMIT ?", (match, limit))
+        except Exception as e:
+            print(f"[memory] chat search (fts): {e}")
+            rows = []
+    if not rows:
+        # No FTS5 in this Python's sqlite, or the index has not been built yet
+        # because the dashboard has not started. Slower, but it still answers.
+        like = " OR ".join("lower(t.content) LIKE ?" for _ in terms)
+        rows = _query(
+            f"SELECT t.session_id, s.title, t.role, t.content, t.ts, {hidden_sel} "
+            "FROM chat_turns t "
+            "LEFT JOIN chat_sessions s ON s.id = t.session_id "
+            f"WHERE ({like}) ORDER BY t.id DESC LIMIT ?",
+            (*[f"%{t}%" for t in terms], limit))
+    return [{"session_id": r[0], "title": r[1] or "Untitled chat", "role": r[2],
+             "content": r[3], "ts": r[4], "hidden": bool(r[5])} for r in rows]
+
+
 def format_memories_for_prompt(limit=MAX_MEMORIES_IN_PROMPT):
     """Dated one-liners for injection into the per-turn context block, e.g.
 

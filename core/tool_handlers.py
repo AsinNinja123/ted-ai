@@ -351,6 +351,27 @@ def tool_browse_to(site, browser=None, new_window=False):
     return f"I couldn't open {label}."
 
 
+def tool_search_chats(query, limit=6):
+    """Find what was actually said in an earlier chat thread."""
+    from core import memory
+    try:
+        hits = memory.search_chat_turns(query, limit=max(1, min(int(limit or 6), 20)))
+    except Exception as exc:
+        print("[search_chats]", exc)
+        return f"I couldn't search the chat history: {exc}"
+    if not hits:
+        return f"Nothing in our past chats matches '{query}'."
+    lines = []
+    for h in hits:
+        who = "You" if h["role"] == "user" else "I"
+        when = (h["ts"] or "")[:10]
+        text = " ".join((h["content"] or "").split())
+        if len(text) > 220:
+            text = text[:220].rstrip() + "…"
+        lines.append(f'[{h["title"]}, {when}] {who} said: {text}')
+    return "\n".join(lines)
+
+
 def tool_now_playing():
     """What is playing right now — the Spotify track and the front browser tab.
 

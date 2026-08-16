@@ -260,6 +260,25 @@ def api_chats():
                     for chat in db.list_chats(include_hidden=include_hidden)])
 
 
+@app.get("/api/chats/search")
+def api_chat_search():
+    """Full-text search over what was said, for the sidebar search box.
+
+    Registered before /api/chats/<int:chat_id> matters not at all to Flask —
+    the int converter cannot match "search" — but the reader lives in
+    core/memory.py either way, so Ted's tool and this box return the same rows.
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify([])
+    from core import memory
+    try:
+        limit = min(int(request.args.get("limit", 30)), 100)
+    except ValueError:
+        limit = 30
+    return jsonify(memory.search_chat_turns(q, limit=limit))
+
+
 @app.post("/api/chats")
 def api_chat_create():
     return jsonify({"id": db.create_chat()})

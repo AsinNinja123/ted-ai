@@ -178,6 +178,29 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}}
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_chats",
+            "description": (
+                "Search what was actually SAID in earlier chat threads. Use for "
+                "'what did I say about X', 'find the chat where we talked about X', "
+                "'when did I mention X', or to recover a detail from a past "
+                "conversation. Searches every thread, including ones deleted from "
+                "the sidebar."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "Words to look for in past messages"},
+                    "limit": {"type": "integer",
+                              "description": "Max messages to return (default 6)"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
 
     {
         "type": "function",

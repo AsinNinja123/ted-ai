@@ -100,6 +100,13 @@ _FAMILIES = (
      ("web_search",)),
     (r"\b(?:remember|knowledge|docs?|documents?|google docs?|textedit|file|files|what do you know)\b",
      ("create_document", "search_knowledge", "add_knowledge")),
+    # Finding a past MESSAGE is a different job from recalling a fact, and the
+    # phrasings barely overlap — "what did I say about…" names neither.
+    (r"\b(?:what did (?:i|we|you) say|did i (?:ever )?(?:say|mention|tell)|"
+     r"when did i (?:say|mention)|find the (?:chat|conversation)|"
+     r"search (?:my |our )?(?:chats?|conversations?|history)|"
+     r"earlier (?:chat|conversation)|previous conversation)\b",
+     ("search_chats",)),
     (r"\b(?:means|meaning|when i say|my lingo|shorthand|slang)\b",
      ("learn_lingo", "clarify_lingo")),
 )

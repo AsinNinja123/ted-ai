@@ -2068,6 +2068,8 @@ class TedApi:
                 return th.tool_spotify_control(args.get("action", ""))
             if name == "now_playing":
                 return th.tool_now_playing()
+            if name == "search_chats":
+                return th.tool_search_chats(args.get("query", ""), args.get("limit", 6))
             if name == "add_to_playlist":
                 # track omitted = whatever is playing; that is the common ask.
                 return features.spotify_web.add_to_playlist(

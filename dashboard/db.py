@@ -212,6 +212,43 @@ def ensure_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_turns_session "
                  "ON chat_turns(session_id, id)")
 
+    # Full-text search over chat turns. Same shape as memory.py's exchanges_fts
+    # — an external-content FTS5 index plus triggers that keep it in step — so
+    # there is one pattern for searchable text in this database rather than two.
+    # The index lives here because this is where chat_turns is defined; the
+    # reader lives in core/memory.py, which is where Ted's retrieval lives.
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chat_turns_fts USING fts5("
+            "content, content='chat_turns', content_rowid='id')")
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS chat_turns_ai AFTER INSERT ON chat_turns BEGIN
+                INSERT INTO chat_turns_fts(rowid, content) VALUES (new.id, new.content);
+            END""")
+        # Delete and update complete the contract. exchanges_fts shipped without
+        # them and drifted; there is no reason to repeat that here.
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS chat_turns_ad AFTER DELETE ON chat_turns BEGIN
+                INSERT INTO chat_turns_fts(chat_turns_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+            END""")
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS chat_turns_au AFTER UPDATE ON chat_turns BEGIN
+                INSERT INTO chat_turns_fts(chat_turns_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+                INSERT INTO chat_turns_fts(rowid, content) VALUES (new.id, new.content);
+            END""")
+        # Every turn written before the index existed is invisible to it, which
+        # would make search quietly useless on exactly the history worth
+        # searching. Rebuild when the counts disagree.
+        indexed = conn.execute("SELECT COUNT(*) FROM chat_turns_fts").fetchone()[0]
+        actual = conn.execute("SELECT COUNT(*) FROM chat_turns").fetchone()[0]
+        if indexed != actual:
+            conn.execute("INSERT INTO chat_turns_fts(chat_turns_fts) VALUES('rebuild')")
+            print(f"[dashboard] chat search index rebuilt for {actual} turns")
+    except sqlite3.Error as e:
+        print(f"[dashboard] chat search index skipped: {e}")
+
     # The audit log itself.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memory_audit (
