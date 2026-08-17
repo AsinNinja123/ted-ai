@@ -24,7 +24,8 @@ from core import (attachments, bouncer, codebase, features, lingo, llm, memory,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
-from core.hud_bridge import js, set_state as _hud_set_state, add_message, show_issue
+from core.hud_bridge import (js, set_state as _hud_set_state, add_message,
+                             show_issue as _hud_show_issue)
 from core.intents import (
     _normalize_cmd, _matches, _split_commands,
     _is_stop_command, _is_cancel_command, _is_repeat_command,
@@ -58,31 +59,59 @@ from core.voice import speak, speak_streaming, capture, engine
 # misbehaves on real hardware. Temporary — delete once it has proven itself.
 LEGACY_LADDER = os.environ.get("TED_LEGACY_LADDER") == "1"
 
-# The desk pet mirrors the HUD's own state indicator rather than being driven
-# from its own call sites. There are a dozen places that put Ted into
-# "thinking" and exactly one of them would eventually be forgotten, leaving a
-# bear that lies about whether Ted is working. Wrapping the shared helper means
-# the pet cannot drift from the HUD by construction.
+# Both bears — the one in the chat header and the floating desk pet — mirror
+# the HUD's own state indicator rather than being driven from their own call
+# sites. There are a dozen places that put Ted into "thinking" and exactly one
+# of them would eventually be forgotten, leaving a bear that lies about whether
+# Ted is working. Wrapping the shared helper makes drift impossible rather than
+# unlikely.
 #
-# "idle" here means only "not mid-turn". Whether resting actually looks bored
-# depends on how long it has been since Charlie said anything, which apps_watch
-# owns because it is the loop that already ticks every five seconds.
+# "idle" here means only "not mid-turn". Whether resting looks sleepy depends
+# on how long it has been since Charlie said anything, which apps_watch owns
+# because it is the loop that already ticks every five seconds.
 _PET_FOR_HUD_STATE = {
     "thinking": "thinking",
+    # Ted talking IS Ted responding. In text-only mode nothing sets "speaking",
+    # so the HUD raises "responding" itself when a stream starts — see
+    # streamTedText. Both routes land on the same bear state.
+    "speaking": "responding",
     "listening": "idle",
-    "speaking": "idle",
     "idle": "idle",
-    "error": "idle",
+    "error": "error",
 }
 
 
-def set_state(window, s):
-    """Drive the HUD state indicator, and keep the pet honest about it."""
-    _hud_set_state(window, s)
+def companion(window, state, hold_ms=0):
+    """Drive both bears at once. Never raises — they are never worth a turn.
+
+    One function so a new surface is one line here rather than a second set of
+    call sites that can fall behind.
+    """
     try:
-        pet.set_state(_PET_FOR_HUD_STATE.get(s, "idle"))
+        pet.set_state(state, hold_ms)
     except Exception:
-        pass          # the pet is decoration; it never breaks a turn
+        pass
+    try:
+        js(window, f"tedHud.setBearState({json.dumps(state)}, {int(hold_ms)})")
+    except Exception:
+        pass
+
+
+def set_state(window, s):
+    """Drive the HUD state indicator, and keep the bears honest about it."""
+    _hud_set_state(window, s)
+    companion(window, _PET_FOR_HUD_STATE.get(s, "idle"))
+
+
+def show_issue(window, text):
+    """Surface a real problem, and let the bears show it too.
+
+    Wrapped for the same reason as set_state: this is the one place a genuine
+    problem is reported to Charlie, so hooking it here covers every caller
+    instead of fifteen that must each remember.
+    """
+    _hud_show_issue(window, text)
+    companion(window, "error", 2600)
 
 
 # Gate-5 usage logging. See TedApi._assistant_command for why this exists.
@@ -371,7 +400,7 @@ class TedApi:
             # an opinion about. Only importance 3, or it would be excited most
             # of the day and the signal would mean nothing.
             if ev.get("kind") == "added" and int(ev.get("importance", 2)) >= 3:
-                pet.react("excited")
+                self.companion_pulse("success")
         except Exception as e:
             error_log.error(f"[memory] event to HUD failed: {e}")
 
@@ -1976,10 +2005,21 @@ class TedApi:
     def _dispatch_and_record(self, name, args, confirmed=False):
         result = self._dispatch_tool(name, args, confirmed=confirmed)
         # Consequential tools have not acted when they merely arm confirmation.
-        if (name in th.ACTION_TOOLS
-                and (name not in th.CONFIRMATION_TOOLS or confirmed)):
+        acted = (name in th.ACTION_TOOLS
+                 and (name not in th.CONFIRMATION_TOOLS or confirmed))
+        if acted:
             self._record_action(name, args, result)
+            # The bears report what the tool actually did, judged by the same
+            # failure test the HUD uses — so a success face means a verified
+            # success, not that a call returned without raising. A tool that
+            # only armed a confirmation has not acted and gets no reaction.
+            self.companion_pulse("error" if th.looks_like_failure(result)
+                                 else "success")
         return result
+
+    def companion_pulse(self, state, hold_ms=2200):
+        """A momentary bear reaction that decays back to what Ted is doing."""
+        companion(self.window, state, hold_ms)
 
     def _execute_reflex(self, plan):
         """Run independent reversible app calls concurrently and preserve order."""
@@ -3267,7 +3307,7 @@ class TedApi:
             # the pet and must not be interrupted by a tick.
             try:
                 if not self.busy:
-                    pet.set_state(self._pet_resting_state())
+                    self._companion_rest()
             except Exception:
                 pass
             # Connection health dots — Groq / Neo4j memory / Spotify.
@@ -3326,6 +3366,10 @@ class TedApi:
         # including the case where the pet was enabled but the platform refused
         # to open its window.
         self._push_pet_state()
+        # The bear in the chat window has its own preference, and the window
+        # must agree with it from the first frame rather than showing the
+        # default until something happens to correct it.
+        self._push_companion_state()
         threading.Thread(target=self.conversation_loop,     daemon=True).start()
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
@@ -3756,20 +3800,54 @@ class TedApi:
             self.show_issue("I couldn't open the pet window.")
             return False
         self._push_pet_state()
-        pet.set_state(self._pet_resting_state())
+        self._companion_rest()
         return pet.is_open()
 
     def pet_visible(self):
         """Whether the pet is on screen right now, for the HUD's button state."""
         return pet.is_open()
 
+    # ── the in-chat companion ──────────────────────────────────────────────
+    # A separate preference from the floating window: the bear beside Ted's
+    # name is part of the interface, while a window on top of every other
+    # application is a much bigger ask. Both default on.
+
+    def companion_toggle(self, on=None):
+        """Show or hide Ted Bear in the chat window. Returns what was saved."""
+        want = (not pet.companion_enabled()) if on is None else bool(on)
+        pet.set_companion_enabled(want)
+        self._push_companion_state()
+        return want
+
+    def companion_visible(self):
+        return pet.companion_enabled()
+
+    def _push_companion_state(self):
+        """Make the window agree with the saved preference."""
+        js(self.window,
+           f"tedHud.setCompanionVisible({json.dumps(pet.companion_enabled())})")
+
     def _push_pet_state(self):
         """Keep the HUD's pet button in step with whether the bear exists."""
         js(self.window, f"tedHud.setPetVisible({json.dumps(pet.is_open())})")
 
-    def _pet_resting_state(self):
-        """What the bear should sit at when Ted is not doing anything."""
-        return pet.idle_or_bored(self.last_exchange_time)
+    def _companion_rest(self):
+        """Settle both bears into idle, dozing if it has been quiet a while.
+
+        Dozing is a look rather than a state, so the five-state contract is
+        untouched and get_state() never returns something a caller has not been
+        told about.
+        """
+        drowsy = pet.is_long_idle(self.last_exchange_time)
+        try:
+            pet.set_long_idle(drowsy)
+        except Exception:
+            pass
+        try:
+            js(self.window, f"tedHud.setBearLongIdle({json.dumps(drowsy)})")
+        except Exception:
+            pass
+        companion(self.window, "idle")
 
     def toggle_mute(self):
         """Mic button: full voice mode on/off — capture and speech together."""

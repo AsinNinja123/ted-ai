@@ -11,14 +11,9 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
   width:100%;height:100%;-webkit-user-select:none;user-select:none;cursor:grab;
   display:flex;align-items:center;justify-content:center}
 body:active{cursor:grabbing}
-#wrap{position:relative;width:160px;height:160px;flex:none}
-/* Pinned to the backing-store size on purpose. Sizing the canvas with
-   percentages stretches a 160x160 buffer to whatever the viewport happens to
-   be, which turns the bear into a smear the moment the window is not exactly
-   160 square. image-rendering:pixelated is the other half: the sprite is a
-   16x16 grid scaled up, and smoothing makes a pixel teddy a blurry one. */
-#pet{display:block;width:160px;height:160px;image-rendering:pixelated;
-  image-rendering:crisp-edges}
+#wrap{position:relative;width:160px;height:160px;flex:none;
+  display:flex;align-items:center;justify-content:center}
+#pet{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
 /* Controls stay invisible until the pointer is over the pet, so the thing
    sitting on top of everything is a bear and not a bear plus chrome. */
 #close{position:absolute;top:2px;right:3px;width:15px;height:15px;border:none;
@@ -31,210 +26,34 @@ body:active{cursor:grabbing}
 </head>
 <body>
 <div id="wrap">
-  <canvas id="pet" width="160" height="160"></canvas>
+  <canvas id="pet"></canvas>
   <button id="close" title="Hide the pet. Ted keeps running.">&times;</button>
 </div>
 
+<!-- The bear itself lives in ted_bear.js and is shared with the chat window.
+     A sprite copied into both would drift the first time either was touched. -->
+<script src="ted_bear.js"></script>
 <script>
-/* ── Ted's pet ────────────────────────────────────────────────────────────
-   A 16x16 pixel teddy bear on a transparent always-on-top window.
-
-   The states are not decoration: thinking/excited/bored are pushed from
-   core/pet.py off Ted's real state, so glancing at the bear tells you whether
-   a turn is in flight without opening the HUD. Everything here is drawn with
-   fillRect on an integer grid — no images, no fonts, nothing to load, because
-   this window has to come up instantly and survive being offline.            */
-
-var C  = document.getElementById('pet');
-var X  = C.getContext('2d');
-var CELL = 8;                 /* 16 * 8 = 128px of bear inside a 160px canvas */
-var GRID = 16;
-var PAD  = (160 - GRID * CELL) / 2;
-
-var PALETTE = {
-  D: '#3f2817',   /* outline      */
-  B: '#a06f42',   /* body fur     */
-  L: '#dcb083',   /* muzzle       */
-  I: '#c98a6a',   /* inner ear    */
-  N: '#2e1b0e'    /* nose         */
-};
-
-/* Rows are exactly GRID characters wide; validated at boot so a typo in the
-   sprite is a console error rather than a bear with a dent in it. */
-var BEAR = [
-  '..DD........DD..',
-  '.DIID......DIID.',
-  '.DIID......DIID.',
-  '..DBDDDDDDDDBD..',
-  '.DBBBBBBBBBBBBD.',
-  'DBBBBBBBBBBBBBBD',
-  'DBBBBBBBBBBBBBBD',
-  'DBBBBBBBBBBBBBBD',
-  'DBBBLLLLLLLLBBBD',
-  'DBBBLLLNNLLLBBBD',
-  '.DBBLLLLLLLLBBD.',
-  '..DDBBBBBBBBDD..',
-  '.DBBBBBBBBBBBBD.',
-  'DBBDBBBBBBBBDBBD',
-  'DBBDBBBBBBBBDBBD',
-  '.DD..DDDDDD..DD.'
-];
-BEAR.forEach(function(row, i){
-  if(row.length !== GRID) console.error('pet: row ' + i + ' is ' + row.length);
-});
-
-var EYE_ROW = 7, EYE_L = 4, EYE_R = 11;
-
-var state   = 'idle';
-var t       = 0;              /* frame counter                                */
-var blinkAt = 90;             /* frame the next blink starts on               */
-var sparks  = [];
-var zzz     = [];
-
-function px(cx, cy, w, h, color){
-  X.fillStyle = color;
-  X.fillRect(Math.round(PAD + cx * CELL), Math.round(PAD + cy * CELL),
-             (w || 1) * CELL, (h || 1) * CELL);
-}
-
-/* ── per-state motion ─────────────────────────────────────────────────────
-   Each returns the offsets the body is drawn with, so the sprite itself is
-   never duplicated per state — only how it is placed and what is drawn over
-   it. Adding a state means adding a case here, not another 16-row sprite.  */
-function motion(){
-  var s = Math.sin(t / 22);
-  if(state === 'thinking')
-    /* Faster, shallower bob and a lean, so it reads as working rather than
-       resting. The lean is a whole pixel: half a pixel on a pixel-art sprite
-       is just blur. */
-    return {dx: Math.round(Math.sin(t / 9)), dy: Math.round(Math.sin(t / 11) * 0.6),
-            squash: 0};
-  if(state === 'excited')
-    return {dx: 0, dy: -Math.abs(Math.round(Math.sin(t / 5) * 2.2)),
-            squash: Math.sin(t / 5) > 0.9 ? 1 : 0};
-  if(state === 'bored')
-    /* Sits a pixel lower and barely moves. */
-    return {dx: 0, dy: 1 + Math.round(Math.sin(t / 55) * 0.5), squash: 0};
-  return {dx: 0, dy: Math.round(s * 0.9), squash: 0};       /* idle breathing */
-}
-
-function drawBody(dx, dy, squash){
-  for(var r = 0; r < BEAR.length; r++){
-    for(var c = 0; c < BEAR[r].length; c++){
-      var key = BEAR[r][c];
-      if(key === '.') continue;
-      /* squash flattens the bear by a pixel at the top of a bounce, which is
-         what sells a jump far more than the height of the jump does. */
-      var y = r + dy + (squash && r < 8 ? 1 : 0);
-      px(c + dx, y, 1, 1, PALETTE[key]);
-    }
-  }
-}
-
-function drawEyes(dx, dy){
-  var closed = (state !== 'excited') && (t - blinkAt >= 0 && t - blinkAt < 6);
-  var y = EYE_ROW + dy;
-  [EYE_L, EYE_R].forEach(function(ex, i){
-    var x = ex + dx;
-    if(state === 'excited'){
-      /* ^ ^ — two pixels up, one down, the cheapest possible happy eye. */
-      px(x,     y,     1, 1, PALETTE.D);
-      px(x + 1, y - 1, 1, 1, PALETTE.D);
-      px(x - 1, y - 1, 1, 1, PALETTE.D);
-    } else if(state === 'bored'){
-      px(x - 1, y, 3, 1, PALETTE.D);                    /* half-lidded */
-    } else if(closed){
-      px(x - 1, y, 3, 1, PALETTE.D);
-    } else if(state === 'thinking'){
-      /* Looking up and away, in the direction of the lean. */
-      px(x, y - 1, 1, 1, PALETTE.D);
-      px(x, y,     1, 1, PALETTE.D);
-    } else {
-      px(x, y, 1, 1, PALETTE.D);
-      px(x, y - 1, 1, 1, PALETTE.D);
-    }
-  });
-}
-
-/* Three dots above the head, filling left to right on a loop. */
-function drawThinking(dx, dy){
-  var lit = Math.floor(t / 14) % 4;
-  for(var i = 0; i < 3; i++){
-    if(i >= lit) continue;
-    px(6 + i * 2 + dx, -1 + dy + Math.round(Math.sin((t + i * 8) / 10) * 0.5),
-       1, 1, '#16dede');
-  }
-}
-
-function drawExcited(){
-  if(t % 7 === 0 && sparks.length < 10){
-    sparks.push({x: 1 + Math.random() * 14, y: 3 + Math.random() * 6,
-                 life: 16, hue: Math.random() < 0.5 ? '#ffd75e' : '#16dede'});
-  }
-  sparks = sparks.filter(function(s){ return --s.life > 0; });
-  sparks.forEach(function(s){
-    /* Sparks drift up and blink out — a 1px dot that simply vanishes reads as
-       a rendering glitch, so they alternate off near the end of their life. */
-    if(s.life < 6 && s.life % 2 === 0) return;
-    px(s.x, s.y - (16 - s.life) * 0.18, 1, 1, s.hue);
-  });
-}
-
-function drawBored(){
-  if(t % 75 === 0 && zzz.length < 3) zzz.push({age: 0});
-  zzz = zzz.filter(function(z){ return ++z.age < 70; });
-  zzz.forEach(function(z){
-    var p = z.age / 70;
-    var x = 12 + p * 3, y = 1 - p * 3.2;
-    var size = z.age < 24 ? 1 : 2;
-    /* A tiny pixel "Z": top bar, diagonal, bottom bar. */
-    px(x, y, size, 1, '#8d8579');
-    px(x, y + size, size, 1, '#8d8579');
-    px(x + (size > 1 ? 1 : 0), y + 1, 1, 1, '#8d8579');
-  });
-}
-
-function frame(){
-  X.clearRect(0, 0, 160, 160);
-  var m = motion();
-  if(state === 'thinking') drawThinking(m.dx, m.dy);
-  if(state === 'bored')    drawBored();
-  drawBody(m.dx, m.dy, m.squash);
-  drawEyes(m.dx, m.dy);
-  if(state === 'excited')  drawExcited();
-
-  if(t >= blinkAt + 6) blinkAt = t + 110 + Math.floor(Math.random() * 190);
-  t++;
-  requestAnimationFrame(frame);
-}
-
-/* Excitement is a reaction, not a mood: it always decays back to whatever Ted
-   is actually doing, so a successful tool call cannot leave the bear grinning
-   for the rest of the evening. */
-var revertTo = 'idle', revertTimer = null;
+/* The floating desk pet. Its states are pushed from core/pet.py off Ted's real
+   state, so glancing at the bear tells you whether a turn is in flight without
+   opening the HUD. */
+var bear = TedBear.mount(document.getElementById('pet'),
+                         { scale: 7, state: 'idle' });
 
 window.tedPet = {
-  setState: function(next, holdMs){
-    if(next === state && !holdMs) return;
-    if(next === 'excited'){
-      sparks = [];
-    }
-    state = next;
-    clearTimeout(revertTimer);
-    if(holdMs){
-      revertTimer = setTimeout(function(){ state = revertTo; }, holdMs);
-    } else {
-      revertTo = next;
-    }
-  }
+  /* core/pet.py's contract. `hold` makes a state momentary — a finished tool
+     call must not leave the bear celebrating for the rest of the evening. */
+  setState: function (next, hold) { bear.setState(next, hold); },
+  /* Long idle is a look, not a state, so the five-state contract stays intact
+     while the desk pet can still doze after a few quiet minutes. */
+  setLongIdle: function (on) { bear.setLongIdle(on); },
+  getState: function () { return bear.getState(); }
 };
 
-document.getElementById('close').onclick = function(e){
+document.getElementById('close').onclick = function (e) {
   e.stopPropagation();
-  try { window.pywebview.api.pet_close(); } catch(err) { window.close(); }
+  try { window.pywebview.api.pet_close(); } catch (err) { window.close(); }
 };
-
-frame();
 </script>
 </body>
 </html>

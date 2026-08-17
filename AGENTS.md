@@ -27,13 +27,13 @@
 | Tools | 62 |
 | Routing | local app reflex + one streamed loop; legacy path behind TED_LEGACY_LADDER=1 |
 | Memory | 58 facts, ~1150 chat turns, 9 session memories |
-| Tests | 1087 checks across 34 suites |
+| Tests | 1117 checks across 34 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**
 
 - **The calendar daemon has never run.** ted_daemon.py is built and tested but no data/ted_daemon.log exists, so it has not started on this machine. Proactive class reminders do nothing until it does. See docs/DAEMON_HANDOFF.md.
-- **Empty tables.** goals, habit_logs, routines — built and never used, or left over from a deleted feature.
+- **Empty tables.** bouncer_rules, bouncer_state, goals, habit_logs, news_items, news_topics, routines — built and never used, or left over from a deleted feature.
 - **Data nothing reads.** patterns has 141 rows and nothing in the code reads it. Either use it or drop it.
 
 Run `git log --oneline -10` and `git status` for anything about the working tree — that is deliberately not duplicated here.

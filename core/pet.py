@@ -10,10 +10,14 @@ Two rules shape this module:
   status readout; a second native window is exactly the kind of thing that
   fails on one macOS version and not another. Every public function swallows
   its own exceptions and reports through the return value or a print.
-* **The state is Ted's, not the pet's.** ``thinking``/``excited``/``bored`` are
-  pushed from core/app.py off what Ted is really doing, so a glance at the bear
-  answers "is it working?" without opening the HUD. The pet never invents a
-  mood, which is why there is no timer in this file.
+* **The state is Ted's, not the pet's.** Every state is pushed from core/app.py
+  off what Ted is really doing, so a glance at the bear answers "is it working?"
+  without opening the HUD. The pet never invents a mood, which is why there is
+  no timer in this file.
+
+The bear itself is drawn by ui/ted_bear.js, shared with the companion in the
+chat header. This module owns the window and the state; it does not own the
+pixels, so the two surfaces cannot disagree about what a teddy bear looks like.
 """
 
 import json
@@ -31,15 +35,23 @@ PET_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # is a preference that resets without being changed.
 _RUNTIME = os.path.join(DATA, "runtime.json")
 
-STATES = ("idle", "thinking", "bored", "excited")
+# The contract, shared with ui/ted_bear.js and with the in-chat companion.
+# "responding" is Ted producing the reply, which looks different from thinking
+# about it; "success" and "error" report what a tool actually did.
+STATES = ("idle", "thinking", "responding", "success", "error")
 
-# How long with no exchange before the bear starts looking bored. Long enough
-# that it is not commenting on Charlie reading Ted's last answer.
+# How long with no exchange before the bear starts to doze. Long enough that it
+# is not commenting on Charlie reading Ted's last answer.
+#
+# Dozing is a LOOK, not a sixth state: it is a flavour of idle, so the five
+# states above stay the whole contract and a caller reading get_state() is
+# never surprised by a value that is not in the list.
 BORED_AFTER = 240.0
 
 _window = None
 _lock = threading.Lock()
 _state = "idle"
+_long_idle = False
 
 
 # ---------- persisted visibility ----------
@@ -59,8 +71,31 @@ def is_enabled() -> bool:
 
 def set_enabled(value: bool) -> bool:
     """Persist whether the pet should exist. Returns the value actually stored."""
+    return _save_flag("pet_visible", value)
+
+
+# The in-chat companion is a separate preference from the floating window,
+# because they are separate things to want: the bear beside Ted's name is part
+# of the interface, while a window sitting on top of every other application is
+# a much bigger ask. Both default on, and each has its own control.
+
+def companion_enabled() -> bool:
+    """True unless Charlie has hidden the bear in the chat window."""
+    return bool(_read_runtime().get("companion_visible", True))
+
+
+def set_companion_enabled(value: bool) -> bool:
+    return _save_flag("companion_visible", value)
+
+
+def _save_flag(key, value):
+    """Write one boolean into runtime.json without disturbing the rest.
+
+    Read-modify-write through a temp file and os.replace, because this file is
+    shared with the provider pin and a partial write would lose it.
+    """
     data = _read_runtime()
-    data["pet_visible"] = bool(value)
+    data[key] = bool(value)
     try:
         os.makedirs(DATA, exist_ok=True)
         tmp = _RUNTIME + ".tmp"
@@ -68,7 +103,7 @@ def set_enabled(value: bool) -> bool:
             json.dump(data, fh, indent=2)
         os.replace(tmp, _RUNTIME)
     except Exception as exc:
-        print(f"[pet] could not save visibility: {exc}")
+        print(f"[pet] could not save {key}: {exc}")
     return bool(value)
 
 
@@ -145,17 +180,38 @@ def set_state(state, hold_ms=0):
         pass
 
 
-def react(state="excited", hold_ms=2200):
+def react(state="success", hold_ms=2200):
     """A momentary reaction that decays back to whatever Ted is actually doing.
 
-    Kept separate from set_state so a successful tool call cannot leave the bear
-    grinning for the rest of the evening.
+    Kept separate from set_state so a finished tool call cannot leave the bear
+    celebrating for the rest of the evening.
     """
     set_state(state, hold_ms=hold_ms)
 
 
-def idle_or_bored(last_exchange_time):
-    """The resting state, given when Charlie last said something."""
-    if last_exchange_time and (time.time() - last_exchange_time) > BORED_AFTER:
-        return "bored"
-    return "idle"
+def set_long_idle(on):
+    """Dozing on or off. Not a state — see the note beside BORED_AFTER."""
+    global _long_idle
+    on = bool(on)
+    if on == _long_idle:
+        return
+    _long_idle = on
+    window = _window
+    if window is None:
+        return
+    try:
+        window.evaluate_js(f"tedPet.setLongIdle({json.dumps(on)})")
+    except Exception:
+        pass
+
+
+def is_long_idle(last_exchange_time):
+    """Has it been quiet long enough for the bear to doze?"""
+    return bool(last_exchange_time
+                and (time.time() - last_exchange_time) > BORED_AFTER)
+
+
+def rest(last_exchange_time):
+    """Settle the bear into idle, dozing or not depending on the silence."""
+    set_long_idle(is_long_idle(last_exchange_time))
+    set_state("idle")

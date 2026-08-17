@@ -97,7 +97,26 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   padding:1px 5px;border-radius:5px;margin-left:auto;max-width:105px;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
 #apps-empty{padding:8px 16px;color:var(--dim);font-size:12px;line-height:1.6}
-#side .brand{padding:18px 16px 10px;display:flex;align-items:baseline;gap:8px}
+/* ── Ted Bear ──────────────────────────────────────────────────────────────
+   Two placements of one companion: beside the name in the sidebar, and a
+   compact one in the chat header that survives the sidebar being collapsed.
+   Both are plain canvases driven by ui/ted_bear.js. */
+.bear{display:block;flex:none;image-rendering:pixelated;
+  image-rendering:crisp-edges}
+/* Hidden by the preference, not removed — unmounting and remounting would
+   restart the animation and lose the current state on every toggle. */
+.bear.off{display:none}
+#bear-mini{margin-right:2px;opacity:0;transition:opacity .35s;
+  pointer-events:none}
+/* Fades in only once a conversation is actually going, so an empty window is
+   not already decorated. */
+#bear-mini.live{opacity:1}
+/* Narrow windows: the compact bear is the first thing to go. It is the least
+   load-bearing item in a bar that also holds the clock, the brain picker and
+   the token gauge. */
+#top.tight #bear-mini{display:none}
+
+#side .brand{padding:18px 16px 10px;display:flex;align-items:center;gap:9px}
 #side .brand .t{font-size:15px;font-weight:650;letter-spacing:.18em}
 #side .brand .v{font-size:10px;color:var(--dim)}
 #newchat{margin:6px 12px 10px;padding:9px 12px;border-radius:9px;cursor:pointer;
@@ -149,9 +168,11 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#voicebtn,#petbtn,#newsbtn{cursor:pointer;padding:6px 0;
+#membtn,#diagbtn,#voicebtn,#petbtn,#newsbtn,#bearbtn{cursor:pointer;padding:6px 0;
   color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#voicebtn:hover,#petbtn:hover,#newsbtn:hover{color:var(--text)}
+#membtn:hover,#diagbtn:hover,#voicebtn:hover,#petbtn:hover,#newsbtn:hover,
+#bearbtn:hover{color:var(--text)}
+#bearbtn.on{color:var(--accent)}
 #newsbtn.on{color:var(--accent)}
 #newsbtn .badge{background:var(--accent);color:#0c2b2b;border-radius:9px;
   padding:0 5px;font-size:10px;margin-left:3px}
@@ -487,7 +508,13 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 
 <div id="side" class="panel">
   <div class="panel-body">
-    <div class="brand"><span class="t">TED</span><span class="v" id="hdr-v">v4</span></div>
+    <!-- Ted Bear, beside the name it belongs to. Ted is named after a teddy
+         bear, so the identity area is where it reads as the product's face
+         rather than as an ornament dropped into the chat. -->
+    <div class="brand">
+      <canvas id="bear-id" class="bear" title="Ted"></canvas>
+      <span class="t">TED</span><span class="v" id="hdr-v">v4</span>
+    </div>
     <button id="newchat">+ New chat</button>
     <div id="chatsearch">
       <input id="chatq" type="text" placeholder="Search messages…" autocomplete="off">
@@ -500,6 +527,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
       <!-- The only way back once the bear has been dismissed from its own
            close button. Without this, closing the pet is a one-way door. -->
+      <div id="bearbtn" title="Hide Ted Bear">&#129415; Ted Bear</div>
       <div id="petbtn" title="Show or hide the floating pet">&#128053; Pet</div>
       <div id="newsbtn" title="What Ted is monitoring">&#128240; News</div>
     </div>
@@ -509,6 +537,10 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 <div id="main">
   <div id="top">
     <button class="paneltab" id="side-tab"></button>
+    <!-- The compact presence. The sidebar can be collapsed, so this is the one
+         that is actually always on screen once a conversation is going. It is
+         the first thing dropped when the window gets narrow. -->
+    <canvas id="bear-mini" class="bear" title="Ted"></canvas>
     <div id="np-stack">
       <span id="np-slot"><span>&#9834;</span><span id="np-text"></span></span>
       <button id="np-skip" title="Skip this song — goes straight to Spotify, costs nothing">&#9654;&#9654; SKIP</button>
@@ -627,6 +659,10 @@ falls back to the local model; the other two are pinned and never fall back.">
   <iframe id="diagframe"></iframe>
 </div>
 
+<!-- Ted Bear's sprite and animation, shared with the floating pet window so the
+     two can never drift into being different bears. pywebview serves ui/ over a
+     local HTTP server, so this loads like any ordinary script. -->
+<script src="ted_bear.js"></script>
 <script>
 "use strict";
 function inApp(){ return !!(window.pywebview && window.pywebview.api); }
@@ -637,6 +673,10 @@ var muted=true;                    // Ted now starts silent (chat-first)
 var OWNER='you';                   // replaced by the real name from speaker_status
 var transcribing=false;            // mic on, speakers off — dictation into the box
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
+/* Every mounted Ted Bear. Two by default — one beside the name, one compact in
+   the chat header — driven as a group so they can never disagree. */
+var bears=[];
+var companionOn=true;
 var currentChat=null;              // active session id (created lazily)
 var chatCreatePromise=null;        // one in-flight lazy session creation
 var chatSaveQueue=Promise.resolve();
@@ -802,6 +842,14 @@ document.addEventListener('click', function(e){
 });
 
 /* ── chat rendering ───────────────────────────────────────── */
+/* The compact bear is a presence for an ACTIVE conversation, so it fades in on
+   the first message rather than decorating an empty window. Called from both
+   the streaming path and addBubble, since a conversation can start either way
+   (typed, spoken, or restored from history). */
+function markConversationLive(){
+  var el=$('bear-mini');
+  if(el) el.classList.add('live');
+}
 function hideEmpty(){ var e=$('empty'); if(e) e.style.display='none'; }
 function scrollDown(){ var s=$('scroll'); s.scrollTop=s.scrollHeight; }
 
@@ -992,6 +1040,7 @@ function refreshBudget(){
 
 function addBubble(role,text){
   hideEmpty();
+  markConversationLive();
   var d=document.createElement('div');
   d.className='m '+(role==='user'?'user':'ted');
   var b=document.createElement('div'); b.className='b';
@@ -1190,6 +1239,10 @@ function newChat(){
   $('chat-title').textContent='New chat';
   $('msgs').innerHTML='<div id="empty"><div class="big">What\'s on your mind?</div>'+
                       'Type below — or tap the mic to talk.</div>';
+  /* No conversation, so the compact bear steps back out and the pair return to
+     resting — a new chat should not inherit the last one's expression. */
+  var mini=$('bear-mini'); if(mini) mini.classList.remove('live');
+  tedHud.setBearState('idle');
   refreshChats();
 }
 
@@ -1383,7 +1436,15 @@ var tedHud={
   },
   streamTedText:function(piece){
     hideThinking();
-    if(!streamEl){ streamEl=addBubble('ted',''); streamBuf=''; }
+    if(!streamEl){
+      streamEl=addBubble('ted',''); streamBuf='';
+      /* Raised here rather than from Python because in text-only mode nothing
+         ever sets "speaking" — voice.py owns that, and Charlie mostly types.
+         The moment the first token lands is the moment Ted is responding, and
+         this is the only place that knows it. */
+      tedHud.setBearState('responding');
+      markConversationLive();
+    }
     streamBuf+=piece;
     streamEl.innerHTML=mdlite(streamBuf);
     scrollDown();
@@ -1403,6 +1464,10 @@ var tedHud={
       }
       refreshBudget();
     }
+    /* Back to resting. Not "success" — finishing a sentence is not an
+       achievement, and a bear that celebrates every reply would make the
+       success face meaningless when a tool actually did something. */
+    tedHud.setBearState('idle');
   },
   showIssue:function(text){
     var t=$('toast');
@@ -1507,6 +1572,35 @@ var tedHud={
       };
     });
     row.appendChild(b); $('msgs').appendChild(row); scrollDown();
+  },
+  /* ── Ted Bear ────────────────────────────────────────────────────────────
+     Both placements are driven together and always show the same thing: two
+     bears in one window disagreeing about whether Ted is thinking would be
+     worse than having no bear at all.
+
+     Pushed from core/app.py's `companion()` helper, which wraps the same HUD
+     state change the status lamp uses — so the bear cannot drift from the rest
+     of the interface. `hold` makes a state momentary; success and error decay
+     back to whatever Ted is actually doing. */
+  setBearState:function(state, hold){
+    bears.forEach(function(b){ b.setState(state, hold||0); });
+  },
+  setBearLongIdle:function(on){
+    bears.forEach(function(b){ b.setLongIdle(!!on); });
+  },
+  /* The preference. Kept as a class toggle rather than unmounting, because
+     remounting would restart the animation and drop the current state every
+     time it was flipped. */
+  setCompanionVisible:function(on){
+    companionOn=!!on;
+    ['bear-id','bear-mini'].forEach(function(id){
+      var el=$(id); if(el) el.classList.toggle('off',!companionOn);
+    });
+    var b=$('bearbtn');
+    if(b){
+      b.classList.toggle('on',companionOn);
+      b.title=companionOn?'Hide Ted Bear':'Show Ted Bear';
+    }
   },
   setNewsCount:function(n){
     var b=$('newsbtn'); if(!b) return;
@@ -1962,12 +2056,38 @@ $('newsbtn').onclick=function(){
   $('input').value="what's new";
   sendMsg();
 };
+$('bearbtn').onclick=function(){
+  var next=!companionOn;
+  tedHud.setCompanionVisible(next);
+  if(inApp() && pywebview.api.companion_toggle){
+    /* Python is the source of truth for the saved preference; trust what it
+       reports back rather than assuming the write succeeded. */
+    pywebview.api.companion_toggle(next).then(function(on){
+      tedHud.setCompanionVisible(on);
+    });
+  }
+};
 $('petbtn').onclick=function(){
   /* Optimism here would be a lie: opening a native window can fail, so the
      button only lights up once Python says the window actually exists. */
   if(!window.pywebview||!pywebview.api||!pywebview.api.pet_toggle) return;
   pywebview.api.pet_toggle().then(function(on){ tedHud.setPetVisible(on); });
 };
+/* ── mount Ted Bear ───────────────────────────────────────────────────────
+   Scales are whole numbers on purpose. The canvas backing store and its CSS
+   box are kept identical, so a fractional scale would be the one thing that
+   turns crisp pixel art into a smear. 40px beside the name, 20px in the header
+   strip, which is what fits a 58px bar that also holds the clock and gauges.
+
+   If ted_bear.js failed to load the window must still work: chatting does not
+   depend on a teddy bear existing. */
+if(window.TedBear){
+  bears.push(TedBear.mount($('bear-id'),  {scale:2, state:'idle'}));
+  bears.push(TedBear.mount($('bear-mini'),{scale:1, state:'idle'}));
+}else{
+  console.error('ted_bear.js did not load — the companion is unavailable');
+}
+
 sidePanel=makeCollapsible('side','side-tab',{
   key:'ted_side', startCollapsed:false,
   openGlyph:'&#9776;', closeGlyph:'&#10094;',
