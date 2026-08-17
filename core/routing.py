@@ -77,6 +77,16 @@ _FAMILIES = (
      r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b",
      ("add_to_playlist", "remove_from_playlist", "create_playlist",
       "delete_playlist", "play_playlist")),
+    # Standing news subscriptions. Keyed on the language of *continuing*
+    # interest — watch, monitor, keep me posted — plus "what's new", which is
+    # the question these exist to answer. A bare "news about X" stays with
+    # web_search, because asking once is not subscribing.
+    (r"\b(?:watch|monitor|keep me (?:posted|updated)|let me know (?:about|when)|"
+     r"notify me|track)\b[^.?!]*\b(?:news|stories|releases|updates|about|on|for)\b|"
+     r"\bwhat'?s new\b|\banything new\b|\bcatch me up\b|\bany news\b|"
+     r"\b(?:stop|quit) (?:watching|monitoring|tracking)\b|"
+     r"\bwhat (?:are you|am i) (?:watching|monitoring|tracking)\b",
+     ("news_latest", "news_watch", "news_topics", "news_unwatch")),
     # Ted's own source. Deliberately keyed on possessives and self-reference —
     # "your code", "how are you built" — because "the code" on its own is far
     # more often Charlie's homework or a project he is discussing than it is

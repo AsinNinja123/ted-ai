@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
 from core import (attachments, codebase, features, lingo, llm, memory, music,
-                  pet, routing, routines, system_state, telemetry,
+                  news, pet, routing, routines, system_state, telemetry,
                   tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -2119,6 +2119,44 @@ class TedApi:
                 if result == "__SEARCH_ERROR__":
                     return "Live web search is unavailable right now."
                 return result
+            if name == "news_watch":
+                topic, error = news.add_topic(
+                    args.get("label", ""), args.get("query", ""),
+                    args.get("sources", "hn,web"))
+                if error:
+                    return f"I didn't start watching that — {error}."
+                # Check immediately. "I'll watch that" followed by 45 minutes
+                # of silence is indistinguishable from having done nothing.
+                found = news.check_topic(topic)
+                self._push_news_badge()
+                if found:
+                    return (f"Now watching {topic['label']}. "
+                            f"{len(found)} recent stor"
+                            f"{'ies' if len(found) != 1 else 'y'} already:\n"
+                            + news.format_digest(found[:5]))
+                return (f"Now watching {topic['label']}. Nothing new right now — "
+                        f"I'll check every 45 minutes.")
+            if name == "news_latest":
+                return self._news_latest(args.get("topic", ""),
+                                         args.get("limit", 8))
+            if name == "news_topics":
+                topics = news.list_topics()
+                if not topics:
+                    return ("I'm not monitoring anything yet. Tell me what to "
+                            "watch and I'll check it in the background.")
+                lines = []
+                for t in topics:
+                    when = t["last_checked"][:16].replace("T", " ") or "not yet"
+                    state = "" if t["enabled"] else " (paused)"
+                    problem = f" — last error: {t['last_error']}" if t["last_error"] else ""
+                    lines.append(f"{t['label']}{state}: \"{t['query']}\", "
+                                 f"last checked {when}{problem}")
+                return "Watching:\n" + "\n".join(lines)
+            if name == "news_unwatch":
+                removed, error = news.remove_topic(args.get("label", ""))
+                self._push_news_badge()
+                return (f"Stopped watching {removed}." if removed
+                        else f"I couldn't stop that — {error}.")
             if name == "code_overview":
                 return codebase.overview()
             if name == "code_search":
@@ -3257,6 +3295,11 @@ class TedApi:
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
         threading.Thread(target=self.apps_watch,            daemon=True).start()
+        # Only worth a thread if Charlie is actually watching something.
+        if news.list_topics(include_disabled=False):
+            threading.Thread(target=self.news_watch_loop, daemon=True,
+                             name="news-watch").start()
+            self._push_news_badge()
         # Load the knowledge store now, on a thread, so the first message does
         # not pay for it inside the retrieval budget.
         if features.HAS_KNOWLEDGE:
@@ -3359,6 +3402,67 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    # ── watched news ───────────────────────────────────────────────────────
+
+    def _news_latest(self, topic="", limit=8):
+        """Answer 'what's new' with a live check, not just what is cached.
+
+        Checking first matters: the poller runs every 45 minutes, so a cached
+        answer to a direct question can be three quarters of an hour stale
+        while presenting itself as the latest.
+        """
+        topics = news.list_topics(include_disabled=False)
+        if not topics:
+            return ("I'm not monitoring anything yet, so there's nothing new to "
+                    "report. Tell me what to watch.")
+        wanted = [t for t in topics
+                  if not topic or t["label"].lower() == topic.strip().lower()]
+        if not wanted:
+            names = ", ".join(t["label"] for t in topics)
+            return f"I'm not watching {topic!r}. I am watching: {names}."
+        for t in wanted:
+            news.check_topic(t)
+        items = news.unseen(limit, topic)
+        self._push_news_badge()
+        if not items:
+            label = f" on {topic}" if topic else ""
+            return f"Nothing new{label} since you last looked."
+        return news.format_digest(items)
+
+    def _push_news_badge(self):
+        """Tell the HUD how many unread stories there are."""
+        try:
+            js(self.window, f"tedHud.setNewsCount({news.unseen_count()})")
+        except Exception:
+            pass
+
+    def news_watch_loop(self, interval=None):
+        """Background poller. One check per interval across all topics.
+
+        Deliberately silent about *contents*: it updates a badge and, for
+        something genuinely notable, shows one toast. Charlie is at college and
+        asked for quiet chat, so a background watcher that speaks or dumps a
+        digest into the conversation unprompted would be the wrong shape.
+        """
+        interval = interval or news.DEFAULT_INTERVAL
+        # Don't check on the very first tick: startup is busy enough, and the
+        # first thing Charlie sees should not be Ted fetching two APIs.
+        time.sleep(90)
+        while True:
+            try:
+                found = news.check_all()
+                if found:
+                    self._push_news_badge()
+                    best = max(found, key=lambda i: i.get("points") or 0)
+                    others = len(found) - 1
+                    extra = f" (+{others} more)" if others > 0 else ""
+                    show_issue(self.window,
+                               f"{best['topic']}: {best['title'][:110]}{extra}")
+                    print(f"[news] {len(found)} new item(s) across watched topics")
+            except Exception as exc:
+                error_log.error(f"news_watch_loop: {exc}")
+            time.sleep(interval)
 
     def _show_images(self, query, count=3):
         """Put pictures in the chat itself rather than opening a browser.

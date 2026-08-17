@@ -149,8 +149,12 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#voicebtn,#petbtn{cursor:pointer;padding:6px 0;color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#voicebtn:hover,#petbtn:hover{color:var(--text)}
+#membtn,#diagbtn,#voicebtn,#petbtn,#newsbtn{cursor:pointer;padding:6px 0;
+  color:var(--dim);transition:color .2s}
+#membtn:hover,#diagbtn:hover,#voicebtn:hover,#petbtn:hover,#newsbtn:hover{color:var(--text)}
+#newsbtn.on{color:var(--accent)}
+#newsbtn .badge{background:var(--accent);color:#0c2b2b;border-radius:9px;
+  padding:0 5px;font-size:10px;margin-left:3px}
 /* Lit only while the bear is actually on screen. */
 #petbtn.on{color:var(--accent)}
 /* Voice identity. A label on a turn, never a permission — so it is styled like
@@ -485,6 +489,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <!-- The only way back once the bear has been dismissed from its own
            close button. Without this, closing the pet is a one-way door. -->
       <div id="petbtn" title="Show or hide the floating pet">&#128053; Pet</div>
+      <div id="newsbtn" title="What Ted is monitoring">&#128240; News</div>
     </div>
   </div>
 </div>
@@ -1457,6 +1462,17 @@ var tedHud={
   },
   /* Pushed by core/app.py whenever the pet is opened or closed, from either
      side — the bear's own × or this button. */
+  /* Unread stories from the watched subjects. A count, not a feed: the poller
+     runs in the background and Charlie asked for quiet, so this is something
+     to notice rather than something that interrupts. Clicking asks Ted. */
+  setNewsCount:function(n){
+    var b=$('newsbtn'); if(!b) return;
+    n=parseInt(n||0,10);
+    b.classList.toggle('on',n>0);
+    b.innerHTML='&#128240; News'+(n>0?' <span class="badge">'+n+'</span>':'');
+    b.title=n>0 ? n+' new stor'+(n===1?'y':'ies')+' — click to hear them'
+                : 'What Ted is monitoring';
+  },
   setPetVisible:function(on){
     var b=$('petbtn'); if(!b) return;
     b.classList.toggle('on',!!on);
@@ -1896,6 +1912,13 @@ $('input').addEventListener('paste',function(e){
   if(took) e.preventDefault();
 });
 
+$('newsbtn').onclick=function(){
+  /* Routed through the ordinary ask path rather than a private API call, so
+     the answer lands in the conversation as a normal turn and is saved with
+     it — a digest that appears in a panel and nowhere else is unsearchable. */
+  $('input').value="what's new";
+  sendMsg();
+};
 $('petbtn').onclick=function(){
   /* Optimism here would be a lie: opening a native window can fail, so the
      button only lights up once Python says the window actually exists. */
