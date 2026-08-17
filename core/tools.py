@@ -54,6 +54,133 @@ TOOL_SCHEMAS = [
         }
     },
 
+    # ── Ted's own source ──────────────────────────────────────────────────────
+    # Reading is free; writing is one tool and it needs Charlie's yes.
+    {
+        "type": "function",
+        "function": {
+            "name": "code_overview",
+            "description": (
+                "Read a fresh summary of Ted's OWN codebase — file counts and sizes, "
+                "the largest modules, the current branch, recent commits, and whether "
+                "the working tree is dirty. Use this first when asked about how Ted is "
+                "built, what he is made of, or what changed recently."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_search",
+            "description": (
+                "Find where a word, function, or setting appears in Ted's own source. "
+                "Literal text search, not a regex. Use before code_read so you know "
+                "which file and line to open."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string",
+                              "description": "Literal text, e.g. 'classify_brain' "
+                                             "or 'Video Wake Lock'"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_read",
+            "description": (
+                "Read Ted's own source file, or a line range of it. Paths are relative "
+                "to the project, e.g. 'core/routing.py'. Large files must be read as a "
+                "range. Credentials and git-ignored files are never returned."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "e.g. core/memory.py"},
+                    "start": {"type": "integer", "description": "First line (1-based)"},
+                    "end": {"type": "integer", "description": "Last line; 0 = to the end"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_tree",
+            "description": "List the files in Ted's project, optionally under one folder.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subdir": {"type": "string",
+                               "description": "Optional folder, e.g. 'core' or 'tests'"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_history",
+            "description": (
+                "Recent commits in Ted's repository, optionally only those touching one "
+                "file. Commit messages on this project explain the reasoning, so this is "
+                "the best source for why something is the way it is."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional file to filter by"},
+                    "count": {"type": "integer", "description": "How many commits, 1-30"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_diff",
+            "description": "Show what is currently uncommitted in Ted's working tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional file to filter by"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "code_write",
+            "description": (
+                "Change one of Ted's own source files. REQUIRES the user's explicit "
+                "confirmation, which Ted will ask for and the user must grant — never "
+                "assume it. Use only when the user has clearly asked for a code change. "
+                "Provide the COMPLETE new contents of the file, not a patch."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "e.g. core/routines.py"},
+                    "content": {"type": "string",
+                                "description": "The entire new file contents"},
+                    "reason": {"type": "string",
+                               "description": "One line on what this change does"}
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+
     # ── Apps ──────────────────────────────────────────────────────────────────
     {
         "type": "function",

@@ -77,6 +77,28 @@ _FAMILIES = (
      r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b",
      ("add_to_playlist", "remove_from_playlist", "create_playlist",
       "delete_playlist", "play_playlist")),
+    # Ted's own source. Deliberately keyed on possessives and self-reference —
+    # "your code", "how are you built" — because "the code" on its own is far
+    # more often Charlie's homework or a project he is discussing than it is
+    # Ted, and loading seven schemas for that is exactly the prompt weight this
+    # router exists to avoid.
+    (r"\b(?:your|ted'?s|his|own|the)\s+(?:own\s+)?"
+     r"(?:code|codebase|source|source code|repo|repository|implementation)\b|"
+     r"\b(?:how (?:are|were) you (?:built|made|written|implemented)|"
+     r"what (?:are|were) you (?:built|made|written) (?:with|in)|"
+     r"read your own|look at your (?:code|source)|your architecture|"
+     r"which file|what file|show me the (?:code|source|file)|"
+     r"in (?:core|tests|ui)/|\.py\b)\b",
+     ("code_overview", "code_search", "code_read", "code_tree",
+      "code_history", "code_diff")),
+    # A change to Ted himself is its own family: code_write must not ride along
+    # on an ordinary "show me your code", where offering it invites the model
+    # to propose an edit nobody asked for.
+    (r"\b(?:change|edit|modify|fix|update|rewrite|patch|refactor|add)\b"
+     r"[^.?!]*\b(?:your|ted'?s|own)\s+(?:own\s+)?"
+     r"(?:code|codebase|source|file|module)\b|"
+     r"\bedit yourself\b|\bchange yourself\b|\bmodify your own\b",
+     ("code_write", "code_read", "code_search")),
     (r"\b(?:message|text|imessage|send .*? to|tell .*? that)\b",
      ("send_message",)),
     (r"\b(?:remind|reminder|timer|alarm|clock)\b",

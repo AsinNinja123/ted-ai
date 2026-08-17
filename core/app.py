@@ -19,8 +19,8 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (attachments, features, lingo, llm, memory, music, pet,
-                  routing, routines, system_state, telemetry,
+from core import (attachments, codebase, features, lingo, llm, memory, music,
+                  pet, routing, routines, system_state, telemetry,
                   tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -2090,6 +2090,26 @@ class TedApi:
                 if name == "send_email":
                     target = args.get("to", "that address")
                     return f"Ready to email {target}. Say yes to send it, or anything else to cancel."
+                if name == "code_write":
+                    # Name the file, its size now, and the size it would become.
+                    # "Say yes to let me edit myself" is not consent to anything
+                    # in particular; the numbers are what make it a real choice.
+                    path = args.get("path", "a file")
+                    rel, error = codebase.resolve(path)
+                    if error:
+                        self._pending_tool_confirmation = None
+                        return f"I can't change that: {error}."
+                    new_len = len(args.get("content", "") or "")
+                    full = os.path.join(codebase.ROOT, rel)
+                    old_len = os.path.getsize(full) if os.path.isfile(full) else 0
+                    what = "rewrite" if old_len else "create"
+                    reason = (args.get("reason") or "").strip()
+                    detail = f" ({reason})" if reason else ""
+                    size = (f"{old_len:,} → {new_len:,} characters" if old_len
+                            else f"{new_len:,} characters")
+                    return (f"I want to {what} my own {rel}{detail}: {size}. "
+                            f"I'll keep a backup of the old version. "
+                            f"Say yes to let me, or anything else to cancel.")
                 action = args.get("action", "change")
                 return f"Ready to {action.replace('_', ' ')} that email. Say yes to confirm, or anything else to cancel."
             if name == "web_search":
@@ -2099,6 +2119,28 @@ class TedApi:
                 if result == "__SEARCH_ERROR__":
                     return "Live web search is unavailable right now."
                 return result
+            if name == "code_overview":
+                return codebase.overview()
+            if name == "code_search":
+                return codebase.search(args.get("query", ""))
+            if name == "code_read":
+                return codebase.read(args.get("path", ""),
+                                     args.get("start", 1), args.get("end", 0))
+            if name == "code_tree":
+                return codebase.tree(args.get("subdir", ""))
+            if name == "code_history":
+                return codebase.history(args.get("path", ""), args.get("count", 8))
+            if name == "code_diff":
+                return codebase.diff(args.get("path", ""))
+            if name == "code_write":
+                # Only reachable with confirmed=True, because code_write is in
+                # CONFIRMATION_TOOLS and the gate above returns first otherwise.
+                # codebase.write refuses again on its own, which is deliberate
+                # belt-and-braces: the rule Charlie set is that Ted never edits
+                # himself unasked, and one gate is one mistake away from gone.
+                return codebase.write(args.get("path", ""),
+                                      args.get("content", ""),
+                                      confirmed=confirmed)
             if name == "show_image":
                 return self._show_images(args.get("query", ""),
                                          args.get("count", 3))

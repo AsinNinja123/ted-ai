@@ -39,7 +39,10 @@ ACTION_TOOLS = frozenset({
 # follow-up flow. Opening apps, typing locally, reminders, and reversible UI
 # controls remain immediate; communication and destructive email changes do not.
 CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action",
-                                "delete_playlist"})
+                                "delete_playlist",
+                                # Ted may read all of his own source and change
+                                # none of it without Charlie saying yes first.
+                                "code_write"})
 
 # Phrases the handlers use when an action did NOT succeed. Lets the HUD surface the
 # real problem (yellow sphere / issue popup) instead of pretending everything's fine.
