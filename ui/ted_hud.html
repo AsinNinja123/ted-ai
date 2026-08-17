@@ -306,6 +306,18 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
    looking like Ted malfunctioned. */
 .imgcard.broken{display:none}
 
+/* an announced incoming text */
+.b.textalert{border:1px solid var(--accent);background:var(--panel2)}
+.ta-who{font-size:13px}
+.ta-prev{font-size:11.5px;color:var(--dim);margin-top:5px;font-style:italic}
+.ta-btns{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+.ta-b{background:var(--accent);color:#0c2b2b;border:none;border-radius:8px;
+  padding:5px 11px;font:inherit;font-size:11.5px;cursor:pointer}
+.ta-b:hover{filter:brightness(1.08)}
+.ta-b.ghost{background:transparent;color:var(--dim);border:1px solid var(--line)}
+.ta-b.ghost:hover{color:var(--text)}
+.ta-done{font-size:11.5px;color:var(--dim)}
+
 /* a row of pictures Ted fetched */
 .b.media{background:transparent;border:none;padding:0}
 .mediarow{display:flex;flex-wrap:wrap;gap:8px}
@@ -1465,6 +1477,37 @@ var tedHud={
   /* Unread stories from the watched subjects. A count, not a feed: the poller
      runs in the background and Charlie asked for quiet, so this is something
      to notice rather than something that interrupts. Clicking asks Ted. */
+  /* Someone Charlie is watching for has texted. Two buttons and a name — the
+     preview is deliberately small and the body is NOT shown in full, because
+     the point of a bouncer is telling you who is at the door before opening
+     it. A text spelled out on screen in a lecture cannot be un-read. */
+  incomingText:function(ev){
+    if(!ev||!ev.who) return;
+    hideEmpty();
+    var row=document.createElement('div'); row.className='m ted';
+    var b=document.createElement('div'); b.className='b textalert';
+    b.innerHTML='<div class="ta-who">&#128172; '+esc(ev.line||(ev.who+' texted you.'))+'</div>'+
+      (ev.preview?'<div class="ta-prev">'+esc(ev.preview)+'</div>':'')+
+      '<div class="ta-btns">'+
+        '<button class="ta-b" data-do="read">Read it aloud</button>'+
+        '<button class="ta-b" data-do="open">Open in Messages</button>'+
+        '<button class="ta-b ghost" data-do="dismiss">Leave it</button>'+
+      '</div>';
+    b.querySelectorAll('.ta-b').forEach(function(btn){
+      btn.onclick=function(){
+        var what=btn.getAttribute('data-do');
+        b.querySelector('.ta-btns').innerHTML=
+          '<span class="ta-done">'+(what==='dismiss'?'Left alone.':
+            (what==='read'?'Reading…':'Opening…'))+'</span>';
+        if(what==='dismiss') return;
+        /* Sent as an ordinary turn so the result is recorded in the chat like
+           any other, rather than happening invisibly through a side channel. */
+        $('input').value=(what==='read'?'read it':'open it');
+        sendMsg();
+      };
+    });
+    row.appendChild(b); $('msgs').appendChild(row); scrollDown();
+  },
   setNewsCount:function(n){
     var b=$('newsbtn'); if(!b) return;
     n=parseInt(n||0,10);

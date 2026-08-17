@@ -54,6 +54,77 @@ TOOL_SCHEMAS = [
         }
     },
 
+    # ── The text-message bouncer ──────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "bouncer_watch",
+            "description": (
+                "Set who Ted announces incoming texts from. Use for 'tell me when "
+                "Gavin texts', 'let me know if mom messages', or 'ignore texts from "
+                "that number'. Silence is the default — only listed people are "
+                "announced."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "who": {"type": "string",
+                            "description": "Name, phone number, or email. '*' means "
+                                           "everyone."},
+                    "mode": {"type": "string", "enum": ["announce", "ignore"],
+                             "description": "announce (default) or ignore"}
+                },
+                "required": ["who"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bouncer_status",
+            "description": (
+                "Report the current door policy: who is announced, who is ignored, "
+                "whether the bouncer is on, and whether macOS is permitting access "
+                "to Messages. Use for 'who are you watching for' or when the bouncer "
+                "seems not to be working."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bouncer_toggle",
+            "description": "Turn the text bouncer on or off.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "on": {"type": "boolean", "description": "True to enable"}
+                },
+                "required": ["on"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "text_respond",
+            "description": (
+                "Act on the text Ted just announced: read it aloud, or open the "
+                "conversation in Messages. Use when the user answers 'read it', "
+                "'what does it say', 'open it', or 'show me'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["read", "open"],
+                               "description": "read it out, or open the thread"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+
     # ── Standing news subscriptions ───────────────────────────────────────────
     # Distinct from web_search: that answers "what happened", these answer
     # "tell me when something happens".

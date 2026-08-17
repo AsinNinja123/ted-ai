@@ -77,6 +77,23 @@ _FAMILIES = (
      r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b",
      ("add_to_playlist", "remove_from_playlist", "create_playlist",
       "delete_playlist", "play_playlist")),
+    # The text bouncer. "tell me when X texts" is a standing rule; "text X" is
+    # send_message and must not land here, which is why every pattern below
+    # needs the notification sense — when/if someone texts ME, not text them.
+    (r"\b(?:tell|let) me (?:know )?(?:when|if)\b[^.?!]*\b(?:texts?|messages?)\b|"
+     r"\bwhen\b[^.?!]*\b(?:texts? me|messages? me)\b|"
+     r"\b(?:ignore|mute|silence|don'?t tell me about)\b[^.?!]*"
+     r"\b(?:texts?|messages?|notifications?)\b|"
+     r"\bbouncer\b|"
+     r"\bwho are you watching for\b|"
+     r"\b(?:announce|notify me about)\b[^.?!]*\b(?:texts?|messages?)\b",
+     ("bouncer_watch", "bouncer_status", "bouncer_toggle")),
+    # Answering the announcement. Deliberately narrow: these are the words
+    # Charlie will actually say to a "want me to read it, or open it?" prompt.
+    (r"^\s*(?:yes,?\s*)?(?:read|open|show)\s*(?:it|that|the (?:text|message))?"
+     r"\s*(?:out ?loud|aloud|to me)?\s*[.!?]?\s*$|"
+     r"^\s*what does it say\b",
+     ("text_respond",)),
     # Standing news subscriptions. Keyed on the language of *continuing*
     # interest — watch, monitor, keep me posted — plus "what's new", which is
     # the question these exist to answer. A bare "news about X" stays with

@@ -19,9 +19,9 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (attachments, codebase, features, lingo, llm, memory, music,
-                  news, pet, routing, routines, system_state, telemetry,
-                  tool_handlers as th, voice)
+from core import (attachments, bouncer, codebase, features, lingo, llm, memory,
+                  messages, music, news, pet, routing, routines, system_state,
+                  telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
 from core.hud_bridge import js, set_state as _hud_set_state, add_message, show_issue
@@ -329,6 +329,10 @@ class TedApi:
         # Files staged for the NEXT message only. Filled by attach_files /
         # attach_data, drained by the turn that sends them.
         self._pending_attachments = []
+        # The text the bouncer last announced, awaiting "read it" or "open it".
+        self._pending_text_message = None
+        # Why the bouncer is not running, if it is not. Empty when it is.
+        self._bouncer_blocked = ""
         self._session_exchanges  = 0
         self._memory_lock        = threading.Lock()
         self._pattern_check_done = False           # proactive offer fires at most once per startup
@@ -2119,6 +2123,37 @@ class TedApi:
                 if result == "__SEARCH_ERROR__":
                     return "Live web search is unavailable right now."
                 return result
+            if name == "bouncer_watch":
+                rule, error = bouncer.allow(args.get("who", ""),
+                                            args.get("mode", "announce"))
+                if error:
+                    return f"I didn't change the list — {error}."
+                if rule["mode"] == "ignore":
+                    return f"I'll stay quiet about texts from {rule['pattern']}."
+                started = self._ensure_bouncer_running()
+                return (f"I'll tell you when {rule['pattern']} texts you." + started)
+            if name == "bouncer_status":
+                lines = [bouncer.describe_rules()]
+                ok, reason = messages.available()
+                if not ok:
+                    lines.append(f"I can't actually read your messages yet: {reason}")
+                elif self._bouncer_blocked:
+                    lines.append("Access works now, but the watcher isn't running "
+                                 "— restart Ted to start it.")
+                return " ".join(lines)
+            if name == "bouncer_toggle":
+                want = bool(args.get("on"))
+                bouncer.set_enabled(want)
+                if not want:
+                    return "Bouncer off. I won't mention incoming texts."
+                ok, reason = messages.available()
+                if not ok:
+                    return f"Bouncer on, but I still can't read your messages: {reason}"
+                return "Bouncer on." + self._ensure_bouncer_running()
+            if name == "text_respond":
+                if args.get("action") == "open":
+                    return self.open_pending_text()
+                return self.read_pending_text()
             if name == "news_watch":
                 topic, error = news.add_topic(
                     args.get("label", ""), args.get("query", ""),
@@ -3296,6 +3331,9 @@ class TedApi:
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
         threading.Thread(target=self.apps_watch,            daemon=True).start()
         # Only worth a thread if Charlie is actually watching something.
+        if bouncer.enabled():
+            threading.Thread(target=self.messages_watch_loop, daemon=True,
+                             name="bouncer").start()
         if news.list_topics(include_disabled=False):
             threading.Thread(target=self.news_watch_loop, daemon=True,
                              name="news-watch").start()
@@ -3402,6 +3440,113 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+
+    # ── the notification bouncer ───────────────────────────────────────────
+
+    def _ensure_bouncer_running(self):
+        """Start the watcher if it isn't already. Returns a sentence, or ''.
+
+        Adding the first name to the list has to actually start watching.
+        Otherwise "I'll tell you when Gavin texts" is true only after the next
+        restart, which is exactly the kind of claim this project keeps having
+        to stop Ted from making.
+        """
+        if any(t.name == "bouncer" and t.is_alive()
+               for t in threading.enumerate()):
+            return ""
+        if not bouncer.enabled():
+            bouncer.set_enabled(True)
+        ok, reason = messages.available()
+        if not ok:
+            return f" I can't read your messages yet, though: {reason}"
+        threading.Thread(target=self.messages_watch_loop, daemon=True,
+                         name="bouncer").start()
+        return ""
+
+    def messages_watch_loop(self, interval=12):
+        """Watch for incoming texts and announce only the ones that qualify.
+
+        The permission failure is reported once and then the loop stops. A
+        watcher that retries a denied read every twelve seconds forever writes
+        a log line every twelve seconds forever, and Charlie would never see
+        the one that told him how to fix it.
+        """
+        ok, reason = messages.available()
+        if not ok:
+            print(f"[bouncer] not watching — {reason}")
+            self._bouncer_blocked = reason
+            return
+        self._bouncer_blocked = ""
+        # Start from now. Announcing the backlog on first run would read out
+        # every text Charlie has ever received.
+        last = int(bouncer.get_state("last_rowid", "0") or 0)
+        if last <= 0:
+            last = messages.latest_rowid()
+            bouncer.set_state("last_rowid", last)
+        print(f"[bouncer] watching from message {last}")
+        while True:
+            time.sleep(interval)
+            try:
+                if not bouncer.enabled():
+                    continue
+                fresh, error = messages.incoming_since(last)
+                if error:
+                    print(f"[bouncer] {error}")
+                    continue
+                for msg in fresh:
+                    last = max(last, msg["id"])
+                    name = messages.contact_name(msg["handle"])
+                    announce, why = bouncer.decide(msg["handle"], name)
+                    if not announce:
+                        print(f"[bouncer] held back {name or msg['handle']}: {why}")
+                        continue
+                    self._announce_text(msg, name)
+                bouncer.set_state("last_rowid", last)
+            except Exception as exc:
+                error_log.error(f"messages_watch_loop: {exc}")
+
+    def _announce_text(self, msg, name):
+        """Say who texted and offer the two things Charlie asked for.
+
+        Deliberately does NOT read the message out. The whole point of a
+        bouncer is that it tells you who is at the door before opening it, and
+        a text read aloud in a lecture cannot be un-read.
+        """
+        line = messages.describe(msg, name)
+        self._pending_text_message = {
+            "handle": msg["handle"], "name": name or msg["handle"],
+            "body": msg.get("body", ""), "at": time.time(),
+        }
+        js(self.window, "tedHud.incomingText(%s)" % json.dumps({
+            "who": name or msg["handle"],
+            "line": line,
+            "preview": messages.preview(msg, 90),
+            "handle": msg["handle"],
+        }))
+        add_message(self.window, "ted", f"{line} Want me to read it, or open it?")
+        if not self.muted:
+            speak(f"{line} Want me to read it, or open it?")
+        print(f"[bouncer] announced {name or msg['handle']}")
+
+    def read_pending_text(self):
+        """'Read it' — the HUD button and the spoken answer land here."""
+        pending = self._pending_text_message
+        if not pending:
+            return "There's no message waiting."
+        self._pending_text_message = None
+        body = " ".join((pending.get("body") or "").split())
+        if not body:
+            return (f"{pending['name']} sent something I can't read as text — "
+                    f"probably an image or a reaction.")
+        return f"{pending['name']} says: {body}"
+
+    def open_pending_text(self):
+        """'Open it' — bring the thread up in Messages."""
+        pending = self._pending_text_message
+        if not pending:
+            return "There's no message waiting."
+        self._pending_text_message = None
+        return messages.open_conversation(pending["handle"])
 
     # ── watched news ───────────────────────────────────────────────────────
 
