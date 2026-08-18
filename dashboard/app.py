@@ -125,8 +125,8 @@ def ted_map():
 def api_version():
     """Lets the HUD (and hud.py) verify the server on this port speaks the
     chat API — an older dashboard process holding the port 404s this."""
-    return jsonify({"version": 4, "chats": True, "map": True,
-                    "diagnostics": True})
+    return jsonify({"version": 5, "chats": True, "map": True,
+                    "diagnostics": True, "notebook": True})
 
 
 _weather_cache = {"ts": 0.0, "data": None}
@@ -553,6 +553,100 @@ def api_lingo_delete(term_id):
     try:
         lingo.delete_term(term_id)
         return jsonify({"ok": True})
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+# ---------------------------------------------------------------------------
+# The notebook — Ted's own pages, and the lined-paper view of them.
+# The same core/notebook.py the tools use, so what Ted writes and what shows up
+# here can never be two different things.
+# ---------------------------------------------------------------------------
+
+@app.get("/notebook")
+def notebook_page():
+    return send_file(os.path.join(_HERE, "notebook.html"))
+
+
+@app.get("/api/notebook")
+def api_notebook_pages():
+    from core import notebook
+    return jsonify(notebook.list_pages())
+
+
+@app.get("/api/notebook/<path:name>")
+def api_notebook_read(name):
+    from core import notebook
+    try:
+        doc = notebook.read_page(name, limit=0)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if doc is None:
+        return jsonify({"error": "no such page"}), 404
+    return jsonify(doc)
+
+
+@app.post("/api/notebook")
+def api_notebook_create():
+    from core import notebook
+    data = request.get_json(force=True) or {}
+    try:
+        if data.get("text"):
+            page, number, made = notebook.add_entry(
+                data.get("page", ""), data["text"], writer="user")
+            return jsonify({"page": page, "entry": number, "created": made})
+        return jsonify(notebook.create_page(data.get("page", "")))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/notebook/<path:name>/<int:number>")
+def api_notebook_edit(name, number):
+    from core import notebook
+    data = request.get_json(force=True) or {}
+    try:
+        page, resolved = notebook.edit_entry(
+            name, number, data.get("text", ""), writer="user")
+        return jsonify({"page": page, "entry": resolved})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/notebook/<path:name>/<int:number>")
+def api_notebook_delete_entry(name, number):
+    from core import notebook
+    try:
+        page, resolved, body = notebook.delete_entry(name, number)
+        return jsonify({"page": page, "entry": resolved, "removed": body})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.put("/api/notebook/<path:name>")
+def api_notebook_rename(name):
+    from core import notebook
+    data = request.get_json(force=True) or {}
+    try:
+        old, new = notebook.rename_page(name, data.get("name", ""))
+        return jsonify({"was": old, "now": new})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/notebook/<path:name>")
+def api_notebook_delete_page(name):
+    from core import notebook
+    try:
+        page, count = notebook.delete_page(name)
+        return jsonify({"page": page, "removed": count})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
 

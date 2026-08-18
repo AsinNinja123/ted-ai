@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
 from core import (attachments, bouncer, codebase, features, lingo, llm, memory,
-                  messages, music, news, pet, routing, routines, system_state,
+                  messages, music, news, notebook, routing, routines, system_state,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -59,59 +59,14 @@ from core.voice import speak, speak_streaming, capture, engine
 # misbehaves on real hardware. Temporary — delete once it has proven itself.
 LEGACY_LADDER = os.environ.get("TED_LEGACY_LADDER") == "1"
 
-# Both bears — the one in the chat header and the floating desk pet — mirror
-# the HUD's own state indicator rather than being driven from their own call
-# sites. There are a dozen places that put Ted into "thinking" and exactly one
-# of them would eventually be forgotten, leaving a bear that lies about whether
-# Ted is working. Wrapping the shared helper makes drift impossible rather than
-# unlikely.
-#
-# "idle" here means only "not mid-turn". Whether resting looks sleepy depends
-# on how long it has been since Charlie said anything, which apps_watch owns
-# because it is the loop that already ticks every five seconds.
-_PET_FOR_HUD_STATE = {
-    "thinking": "thinking",
-    # Ted talking IS Ted responding. In text-only mode nothing sets "speaking",
-    # so the HUD raises "responding" itself when a stream starts — see
-    # streamTedText. Both routes land on the same bear state.
-    "speaking": "responding",
-    "listening": "idle",
-    "idle": "idle",
-    "error": "error",
-}
-
-
-def companion(window, state, hold_ms=0):
-    """Drive both bears at once. Never raises — they are never worth a turn.
-
-    One function so a new surface is one line here rather than a second set of
-    call sites that can fall behind.
-    """
-    try:
-        pet.set_state(state, hold_ms)
-    except Exception:
-        pass
-    try:
-        js(window, f"tedHud.setBearState({json.dumps(state)}, {int(hold_ms)})")
-    except Exception:
-        pass
-
-
 def set_state(window, s):
-    """Drive the HUD state indicator, and keep the bears honest about it."""
+    """Drive the HUD state indicator."""
     _hud_set_state(window, s)
-    companion(window, _PET_FOR_HUD_STATE.get(s, "idle"))
 
 
 def show_issue(window, text):
-    """Surface a real problem, and let the bears show it too.
-
-    Wrapped for the same reason as set_state: this is the one place a genuine
-    problem is reported to Charlie, so hooking it here covers every caller
-    instead of fifteen that must each remember.
-    """
+    """Surface a real problem. One wrapper, so every caller reports the same way."""
     _hud_show_issue(window, text)
-    companion(window, "error", 2600)
 
 
 # Gate-5 usage logging. See TedApi._assistant_command for why this exists.
@@ -351,10 +306,6 @@ class TedApi:
         # sink is registered once and core/memory.py owns the decision about
         # what counts as an event; this end only draws it.
         memory.set_event_sink(self._on_memory_event)
-        # The floating pet's window, assigned by hud.py once it exists. None
-        # whenever Charlie has closed it or the platform refused to open it,
-        # and core/pet.py tolerates that everywhere.
-        self.pet_window          = None
         # Files staged for the NEXT message only. Filled by attach_files /
         # attach_data, drained by the turn that sends them.
         self._pending_attachments = []
@@ -396,11 +347,6 @@ class TedApi:
                 "at": time.time(),
             }
             js(self.window, f"tedHud.memoryEvent({json.dumps(ev)})")
-            # Learning something worth keeping is the one moment the bear has
-            # an opinion about. Only importance 3, or it would be excited most
-            # of the day and the signal would mean nothing.
-            if ev.get("kind") == "added" and int(ev.get("importance", 2)) >= 3:
-                self.companion_pulse("success")
         except Exception as e:
             error_log.error(f"[memory] event to HUD failed: {e}")
 
@@ -2006,20 +1952,10 @@ class TedApi:
         result = self._dispatch_tool(name, args, confirmed=confirmed)
         # Consequential tools have not acted when they merely arm confirmation.
         acted = (name in th.ACTION_TOOLS
-                 and (name not in th.CONFIRMATION_TOOLS or confirmed))
+                 and (confirmed or not th.needs_confirmation(name, args)))
         if acted:
             self._record_action(name, args, result)
-            # The bears report what the tool actually did, judged by the same
-            # failure test the HUD uses — so a success face means a verified
-            # success, not that a call returned without raising. A tool that
-            # only armed a confirmation has not acted and gets no reaction.
-            self.companion_pulse("error" if th.looks_like_failure(result)
-                                 else "success")
         return result
-
-    def companion_pulse(self, state, hold_ms=2200):
-        """A momentary bear reaction that decays back to what Ted is doing."""
-        companion(self.window, state, hold_ms)
 
     def _execute_reflex(self, plan):
         """Run independent reversible app calls concurrently and preserve order."""
@@ -2115,7 +2051,7 @@ class TedApi:
                 args["text"] = preview.strip()
                 args.pop("instruction", None)
                 args.pop("style", None)
-            if name in th.CONFIRMATION_TOOLS and not confirmed:
+            if th.needs_confirmation(name, args) and not confirmed:
                 self._pending_tool_confirmation = {
                     "name": name, "args": dict(args), "expires": time.time() + 60,
                 }
@@ -2154,6 +2090,18 @@ class TedApi:
                     return (f"I want to {what} my own {rel}{detail}: {size}. "
                             f"I'll keep a backup of the old version. "
                             f"Say yes to let me, or anything else to cancel.")
+                if name == "notebook_delete":
+                    # Deleting a page is the one notebook call that cannot be
+                    # undone by writing the entry again, so it names the cost:
+                    # how many entries are about to go.
+                    doc = notebook.read_page(args.get("page", ""))
+                    if doc is None:
+                        self._pending_tool_confirmation = None
+                        return f"There's no notebook page called '{args.get('page', '')}'."
+                    n = doc["total"]
+                    return (f"That deletes the whole '{doc['name']}' page and the {n} "
+                            + ("entry" if n == 1 else "entries")
+                            + " on it. Say yes to do it, or anything else to cancel.")
                 action = args.get("action", "change")
                 return f"Ready to {action.replace('_', ' ')} that email. Say yes to confirm, or anything else to cancel."
             if name == "web_search":
@@ -2402,6 +2350,82 @@ class TedApi:
                         return f"Found notes: {titles}."
                     return f"No notes found matching '{query}'."
                 return "Notes module unavailable."
+
+            # ── Ted's notebook ───────────────────────────────────────────────
+            # Ted's own pages, distinct from Apple Notes above. Every branch
+            # reports exactly what landed — page name, entry number, the text —
+            # because these are ACTION_TOOLS and their return value is spoken
+            # verbatim. "Added it" with no number is the kind of vague success
+            # report that later turns out to have written to the wrong page.
+            if name == "notebook_read":
+                page = (args.get("page") or "").strip()
+                if not page:
+                    pages = notebook.list_pages()
+                    if not pages:
+                        return ("Your notebook is empty — no pages yet. "
+                                "Tell me what to start one about.")
+                    return "Notebook pages: " + "; ".join(
+                        f"{p['name']} ({p['entries']} "
+                        + ("entry" if p["entries"] == 1 else "entries") + ")"
+                        for p in pages) + "."
+                try:
+                    doc = notebook.read_page(page)
+                except ValueError as e:
+                    return str(e)
+                if doc is None:
+                    known = ", ".join(p["name"] for p in notebook.list_pages())
+                    return (f"There's no notebook page called '{page}'."
+                            + (f" You have: {known}." if known else
+                               " Your notebook is empty."))
+                if not doc["entries"]:
+                    return f"'{doc['name']}' exists but nothing is written on it yet."
+                lines = "\n".join(f"{e['number']}. {e['body']}" for e in doc["entries"])
+                head = f"'{doc['name']}' ({doc['total']} "
+                head += "entry" if doc["total"] == 1 else "entries"
+                head += ", last written " + doc["updated"][:10] + "):"
+                more = ("" if len(doc["entries"]) == doc["total"] else
+                        f"\n(showing the last {len(doc['entries'])} of {doc['total']}.)")
+                return f"{head}\n{lines}{more}"
+
+            if name == "notebook_write":
+                try:
+                    page, number, made = notebook.add_entry(
+                        args.get("page", ""), args.get("text", ""), writer="ted")
+                except ValueError as e:
+                    return f"I didn't write that down — {e}."
+                opened = f"Started a new page '{page}' and wrote" if made else f"Wrote"
+                return f"{opened} entry {number} on '{page}'."
+
+            if name == "notebook_edit":
+                try:
+                    page, number = notebook.edit_entry(
+                        args.get("page", ""), args.get("entry"),
+                        args.get("text", ""), writer="ted")
+                except (KeyError, ValueError) as e:
+                    return f"I didn't change anything — {str(e).strip(chr(39))}."
+                return f"Rewrote entry {number} on '{page}'."
+
+            if name == "notebook_delete":
+                entry = args.get("entry")
+                try:
+                    if entry in (None, ""):
+                        # Only reachable with confirmed=True; needs_confirmation()
+                        # sends the unconfirmed call to the pending-yes flow first.
+                        page, count = notebook.delete_page(args.get("page", ""))
+                        return (f"Deleted the page '{page}' and the {count} "
+                                + ("entry" if count == 1 else "entries") + " on it.")
+                    page, number, body = notebook.delete_entry(
+                        args.get("page", ""), entry)
+                    return f"Crossed out entry {number} on '{page}': \u201c{body}\u201d"
+                except (KeyError, ValueError) as e:
+                    return f"I didn't delete anything — {str(e).strip(chr(39))}."
+
+            if name == "notebook_search":
+                hits = notebook.search(args.get("query", ""))
+                if not hits:
+                    return f"Nothing in your notebook mentions '{args.get('query', '')}'."
+                return "Found in your notebook: " + " | ".join(
+                    f"{h['page']} — {h['body'][:160]}" for h in hits[:6])
 
             # ── Clipboard ────────────────────────────────────────────────────
             if name == "clipboard_read":
@@ -3301,15 +3325,6 @@ class TedApi:
                     js(self.window, f"tedHud.setOpenApps({json.dumps(apps)})")
             except Exception:
                 pass
-            # Boredom is a function of elapsed silence, so it needs a clock
-            # rather than an event. This loop already has one. Only ever moves
-            # the bear between its two resting states — a turn in flight owns
-            # the pet and must not be interrupted by a tick.
-            try:
-                if not self.busy:
-                    self._companion_rest()
-            except Exception:
-                pass
             # Connection health dots — Groq / Neo4j memory / Spotify.
             # Groq uses a tracked flag (no wasteful ping); memory checks the driver;
             # Spotify reads the apps list we already have, or the Web API toggle.
@@ -3362,14 +3377,6 @@ class TedApi:
         # as Ted freezing. The reason was already known — it was just recorded
         # for telemetry after the wait instead of shown during it.
         llm.providers.set_fallback_notice(self._announce_local_handover)
-        # The HUD's pet button has to agree with reality from the first frame,
-        # including the case where the pet was enabled but the platform refused
-        # to open its window.
-        self._push_pet_state()
-        # The bear in the chat window has its own preference, and the window
-        # must agree with it from the first frame rather than showing the
-        # default until something happens to correct it.
-        self._push_companion_state()
         threading.Thread(target=self.conversation_loop,     daemon=True).start()
         threading.Thread(target=self.reminder_watch,        daemon=True).start()
         threading.Thread(target=self.session_summary_watch, daemon=True).start()
@@ -3774,80 +3781,6 @@ class TedApi:
     def attach_pending(self):
         """What is staged right now, so the HUD can redraw its chips."""
         return [a.as_dict() for a in self._pending_attachments]
-
-    # ── the floating pet ───────────────────────────────────────────────────
-    # Two entry points, because the bear can be dismissed from itself but can
-    # only be brought back from the HUD — a pet with no way back would be a
-    # one-way door on a feature Charlie asked to be able to close.
-
-    def pet_close(self):
-        """The × on the bear. Closes it and remembers that across launches."""
-        pet.close_pet(remember=True)
-        self.pet_window = None
-        self._push_pet_state()
-        return False
-
-    def pet_toggle(self):
-        """HUD control: show or hide the pet. Returns whether it is now visible."""
-        if pet.is_open():
-            return self.pet_close()
-        try:
-            import webview
-            pet.set_enabled(True)
-            self.pet_window = pet.open_pet(webview, js_api=self)
-        except Exception as exc:
-            error_log.error(f"[pet] could not reopen: {exc}")
-            self.show_issue("I couldn't open the pet window.")
-            return False
-        self._push_pet_state()
-        self._companion_rest()
-        return pet.is_open()
-
-    def pet_visible(self):
-        """Whether the pet is on screen right now, for the HUD's button state."""
-        return pet.is_open()
-
-    # ── the in-chat companion ──────────────────────────────────────────────
-    # A separate preference from the floating window: the bear beside Ted's
-    # name is part of the interface, while a window on top of every other
-    # application is a much bigger ask. Both default on.
-
-    def companion_toggle(self, on=None):
-        """Show or hide Ted Bear in the chat window. Returns what was saved."""
-        want = (not pet.companion_enabled()) if on is None else bool(on)
-        pet.set_companion_enabled(want)
-        self._push_companion_state()
-        return want
-
-    def companion_visible(self):
-        return pet.companion_enabled()
-
-    def _push_companion_state(self):
-        """Make the window agree with the saved preference."""
-        js(self.window,
-           f"tedHud.setCompanionVisible({json.dumps(pet.companion_enabled())})")
-
-    def _push_pet_state(self):
-        """Keep the HUD's pet button in step with whether the bear exists."""
-        js(self.window, f"tedHud.setPetVisible({json.dumps(pet.is_open())})")
-
-    def _companion_rest(self):
-        """Settle both bears into idle, dozing if it has been quiet a while.
-
-        Dozing is a look rather than a state, so the five-state contract is
-        untouched and get_state() never returns something a caller has not been
-        told about.
-        """
-        drowsy = pet.is_long_idle(self.last_exchange_time)
-        try:
-            pet.set_long_idle(drowsy)
-        except Exception:
-            pass
-        try:
-            js(self.window, f"tedHud.setBearLongIdle({json.dumps(drowsy)})")
-        except Exception:
-            pass
-        companion(self.window, "idle")
 
     def toggle_mute(self):
         """Mic button: full voice mode on/off — capture and speech together."""

@@ -11,7 +11,7 @@ import traceback
 from datetime import date
 
 from core import (attachments as attachment_mod, features, intents,
-                  providers as _providers, routing, telemetry)
+                  notebook, providers as _providers, routing, telemetry)
 from core.actions import detect_action
 from core.hud_bridge import show_issue
 from core.logs import error_log
@@ -202,6 +202,13 @@ SYSTEM_PROMPT = (
     "when he asks for it; adult humor is not the same as targeted abuse. Follow "
     "the request without a lecture. Slurs or abuse aimed at a person are the line; "
     "decline that part in one sentence and move on.\n"
+
+    "You keep a notebook: named pages you own and can read, write, edit and "
+    "delete with the notebook_ tools. Its page names are listed in your context "
+    "every turn, so you always know which pages exist. What is ON a page you read "
+    "with notebook_read — never from memory, never guessed, never paraphrased "
+    "from an earlier turn. Anything he tells you to write down goes in as he said "
+    "it.\n"
 
     "Say things plainly: either you know, or you say you're not sure and move on. "
     "Flag or look up half-remembered stats, dates, names, and versions. Work out "
@@ -799,9 +806,18 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
 
     # --- selective memory retrieval (run concurrently when this turn earns it) ---
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
-    _ctx = {"mem": "", "facts": "", "know": "", "sessions": ""}
+    _ctx = {"mem": "", "facts": "", "know": "", "sessions": "", "notebook": ""}
     def _load_mem():   _ctx["mem"]   = get_memory(user_input)
     def _load_facts(): _ctx["facts"] = get_facts_about(OWNER_NAME)
+    def _load_notebook():
+        # Page NAMES on every turn, contents never. This is what makes the
+        # notebook something Ted knows rather than something he might remember:
+        # he can no more invent a page than deny one that exists. It is one
+        # local SQLite read of a table with a handful of rows, it returns ""
+        # when the notebook is empty, and it is scoped like facts (every turn,
+        # including action turns) because "add this to my fixes page" IS an
+        # action turn and is exactly when knowing the page list matters.
+        _ctx["notebook"] = notebook.index_line()
     def _load_sessions(): _ctx["sessions"] = format_memories_for_prompt()
     def _load_know():
         if features.HAS_KNOWLEDGE:
@@ -812,7 +828,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # from now on" is stored as a fact, and the turn that needs it is an action
     # turn. Scoping them out re-broke that (see the handoff, §7.4). Episodic
     # retrieval is the expensive part and stays scoped.
-    loaders = [_load_facts]
+    loaders = [_load_facts, _load_notebook]
     if context_scope in ("relevant", "full"):
         loaders.extend((_load_mem, _load_know))
     if context_scope == "full":
@@ -830,7 +846,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     _ctx_ms = int((time.time() - _ctx_t0) * 1000)
     if _ctx_ms > 250:
         _slow = [n for n, v in (("memory", _ctx["mem"]), ("facts", _ctx["facts"]),
-                                ("knowledge", _ctx["know"]), ("sessions", _ctx["sessions"]))
+                                ("knowledge", _ctx["know"]), ("sessions", _ctx["sessions"]),
+                                ("notebook", _ctx["notebook"]))
                  if not v]
         # Silent latency is the expensive kind. Name what was still missing when
         # the budget ran out, so a slow source is findable instead of felt.
@@ -840,6 +857,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     known_facts   = _ctx["facts"]
     knowledge_ctx = _ctx["know"]
     past_sessions = _ctx["sessions"]
+    notebook_index = _ctx["notebook"]
 
     # The user turn is appended to `conversation` only after a successful reply
     # (see the streaming finally below) so failed calls don't leave a dangling
@@ -866,6 +884,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         context_parts.append(_cap(operational_context, 2400) + ".")
     if known_facts:
         context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200)}.")
+    if notebook_index:
+        # Names and sizes only. Reading a page is a tool call, deliberately: an
+        # index Ted can see stops him guessing which pages exist, and a read he
+        # has to make stops him guessing what is on them.
+        context_parts.append(_cap(notebook_index, 600)
+                             + " Use notebook_read before answering from any of them.")
     if past_memory:
         context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200)}.")
     if knowledge_ctx:

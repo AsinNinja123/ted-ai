@@ -29,6 +29,7 @@ ACTION_TOOLS = frozenset({
     "spotify_control", "send_message", "set_reminder", "set_timer",
     "add_to_playlist", "remove_from_playlist", "create_playlist", "delete_playlist",
     "calendar_add", "notes_add", "clipboard_write",
+    "notebook_write", "notebook_edit", "notebook_delete",
     "system_volume", "system_brightness", "ui_press", "ui_fill", "type_text",
     "create_document", "learn_lingo", "clarify_lingo",
     "press_key", "scroll", "log_habit",
@@ -43,6 +44,23 @@ CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action",
                                 # Ted may read all of his own source and change
                                 # none of it without Charlie saying yes first.
                                 "code_write"})
+
+
+def needs_confirmation(name, args=None):
+    """Whether this exact call must be approved before it runs.
+
+    Most tools are consequential or not by name alone. notebook_delete is the
+    exception: crossing out one entry is an ordinary edit, deleting a whole page
+    throws away everything on it. Both gates in app.py ask this one function, so
+    the rule lives in one place — two callers disagreeing about whether a call
+    was consequential is exactly the duplicated-judgment bug this codebase keeps
+    producing.
+    """
+    if name in CONFIRMATION_TOOLS:
+        return True
+    if name == "notebook_delete":
+        return (args or {}).get("entry") in (None, "")
+    return False
 
 # Phrases the handlers use when an action did NOT succeed. Lets the HUD surface the
 # real problem (yellow sphere / issue popup) instead of pretending everything's fine.

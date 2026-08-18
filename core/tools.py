@@ -1195,6 +1195,110 @@ TOOL_SCHEMAS = [
             }
         }
     },
+
+    # ── Ted's notebook ────────────────────────────────────────────────────────
+    # Ted's OWN notebook, not Apple Notes. Named pages of numbered entries that
+    # he can read, add to, edit and delete exactly — no similarity search, no
+    # rewriting a page to change one line. The page names are already in his
+    # per-turn context, so these tools never guess which pages exist.
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_read",
+            "description": (
+                "Read your notebook. Omit 'page' to list every page; give a page name "
+                "to read that page's entries word for word. ALWAYS read before "
+                "answering anything about what is written down — never answer from "
+                "the page list alone, and never recall a page's contents from memory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page": {"type": "string",
+                             "description": "Page name, e.g. 'fixes'. Omit to list all pages."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_write",
+            "description": (
+                "Write a new entry onto a notebook page, creating the page if it does "
+                "not exist yet. Use for 'add this to my fixes page', 'write that down "
+                "under ideas', 'start a page for X'. Writes the text as given — do not "
+                "summarise or reword what he asked you to write down."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page": {"type": "string", "description": "Page name, e.g. 'fixes'"},
+                    "text": {"type": "string", "description": "The entry to write down"}
+                },
+                "required": ["page", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_edit",
+            "description": (
+                "Replace one existing entry on a notebook page with new text. Use for "
+                "'change the third line on my fixes page', 'update that last note'. "
+                "Read the page first if you are not certain which entry number he "
+                "means. Entry -1 is the last one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page":  {"type": "string", "description": "Page name"},
+                    "entry": {"type": "integer",
+                              "description": "Entry number as shown when reading the page; -1 is the last"},
+                    "text":  {"type": "string", "description": "What that entry should say now"}
+                },
+                "required": ["page", "entry", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_delete",
+            "description": (
+                "Cross something out. Give 'entry' to remove one entry; omit it to "
+                "delete the whole page and everything on it. Deleting a page needs "
+                "confirmation first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page":  {"type": "string", "description": "Page name"},
+                    "entry": {"type": "integer",
+                              "description": "Entry number to remove; omit to delete the entire page"}
+                },
+                "required": ["page"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_search",
+            "description": (
+                "Find which notebook entries mention something, across every page. "
+                "Use for 'where did I write about X', 'did I note anything on Y'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Words to look for"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
 ]
 
 # Reject invented parameter names before they can reach a Mac action. This is

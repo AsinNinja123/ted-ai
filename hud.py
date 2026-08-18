@@ -276,17 +276,6 @@ if __name__ == "__main__":
                     _make_python_accessory)
             except Exception as exc:
                 print(f"[app] could not hide Python Dock identity: {exc}")
-        # The pet is created here, after the HUD window exists: a frameless
-        # accessory window created first can end up owning the application's
-        # activation state and leave Ted with no focusable window at all.
-        # A platform that refuses it logs and is otherwise ignored — the pet is
-        # never allowed to be the reason Ted did not start.
-        try:
-            from core import pet
-            if pet.is_enabled():
-                api.pet_window = pet.open_pet(webview, js_api=api)
-        except Exception as exc:
-            print(f"[pet] skipped at startup: {exc}")
         api.start()
 
     webview.start(_ready)  # starts the runtime once the window is ready

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ted's Notebook</title>
+<!--
+  dashboard/notebook.html — the lined-paper view of core/notebook.py.
+
+  Everything on this page is the same data Ted reads and writes through the
+  notebook_ tools; there is no separate copy. Editing a line here changes the
+  exact row Ted would edit, which is the point: one notebook, two hands.
+
+  The handwriting face is whatever the Mac already has (Bradley Hand ships with
+  macOS). No webfont, because Ted runs offline and a page that needs the network
+  to look right would look wrong exactly when the network is the problem.
+
+  The ruling is a repeating gradient at RULE px, and every block of text sets
+  line-height: RULE px — that is what keeps the writing sitting ON the lines
+  instead of drifting between them as entries grow.
+-->
+<style>
+:root{
+  --rule:30px;                 /* ruled line spacing AND text line-height */
+  --paper:#fdfaf0;
+  --line:#93b8d8;              /* the blue rules */
+  --margin:#e6a6a6;            /* the red margin line */
+  --ink:#1d3461;               /* pen */
+  --ink-soft:#5d7096;
+  --board:#2b2521;             /* desk the notebook sits on */
+  --tab:#e8dcc0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--board);color:var(--ink);
+  font-family:'Bradley Hand','Chalkboard SE','Segoe Print','Comic Sans MS',cursive;
+  display:flex;overflow:hidden}
+
+/* ── the tab rail: one tab per page, like the dividers in a real notebook ── */
+#tabs{width:200px;flex:none;background:#221d1a;padding:18px 0 18px 12px;
+  display:flex;flex-direction:column;overflow-y:auto}
+/* The tabs stack down the rail like dividers in a real notebook, so the list
+   itself has to be the column — putting the flex on #tabs only laid the
+   heading, the list and the button out and let the tabs inside wrap sideways. */
+#tablist{display:flex;flex-direction:column;gap:7px}
+#tabs h1{font-size:12px;letter-spacing:.28em;color:#8a7f72;text-transform:uppercase;
+  font-family:system-ui,-apple-system,sans-serif;margin-bottom:12px;padding-left:4px}
+.tab{display:flex;align-items:baseline;gap:8px;width:100%;
+  background:var(--tab);color:#4a3f2f;border:none;border-radius:8px 0 0 8px;
+  padding:10px 12px;text-align:left;font:inherit;font-size:19px;cursor:pointer;
+  box-shadow:inset -4px 0 0 rgba(0,0,0,.12);opacity:.72;transition:opacity .15s,transform .15s}
+.tab:hover{opacity:.92;transform:translateX(-2px)}
+.tab.active{opacity:1;transform:translateX(-6px);box-shadow:inset -4px 0 0 var(--margin)}
+.tab .n{margin-left:auto;font-size:13px;color:#8a7a60}
+#newpage{margin-top:12px;width:calc(100% - 0px);background:none;border:1px dashed #6a5f52;color:#9b8f80;
+  border-radius:8px;padding:9px;font:inherit;font-size:16px;cursor:pointer}
+#newpage:hover{color:#d8cbb8;border-color:#9b8f80}
+
+/* ── the paper ────────────────────────────────────────────────────────────── */
+#sheet{flex:1;overflow-y:auto;background:var(--paper);position:relative;
+  /* the ruling, plus the vertical margin line at 78px */
+  background-image:
+    linear-gradient(to right,transparent 76px,var(--margin) 76px,var(--margin) 77px,transparent 77px),
+    repeating-linear-gradient(var(--paper) 0 calc(var(--rule) - 1px),var(--line) calc(var(--rule) - 1px) var(--rule));
+  background-attachment:local;
+  box-shadow:inset 14px 0 22px -14px rgba(0,0,0,.35)}
+#sheet.empty-book{background-image:none;display:flex;align-items:center;justify-content:center}
+
+#pagehead{padding:26px 40px 0 100px;display:flex;align-items:baseline;gap:14px}
+#pagetitle{font-size:34px;line-height:var(--rule);color:var(--ink);
+  border:none;background:none;font-family:inherit;outline:none;flex:1;
+  border-bottom:1px solid transparent}
+#pagetitle:focus{border-bottom-color:var(--ink-soft)}
+#pagemeta{font-size:13px;color:#9aa8bd;font-family:system-ui,sans-serif}
+#delpage{background:none;border:none;color:#c3b7a5;cursor:pointer;font-size:13px;
+  font-family:system-ui,sans-serif}
+#delpage:hover{color:#b04a4a}
+
+#entries{padding:0 40px 40px 100px}
+.entry{position:relative;padding:0 0 var(--rule) 0}
+.entry .body{font-size:22px;line-height:var(--rule);color:var(--ink);
+  white-space:pre-wrap;word-wrap:break-word;outline:none;min-height:var(--rule);
+  border-radius:3px}
+.entry .body:focus{background:rgba(255,235,140,.35)}
+.entry.by-ted .body{color:#2f4f4f}
+/* the entry number, out in the margin where you would write it */
+.entry .num{position:absolute;left:-46px;width:34px;text-align:right;
+  font-size:15px;line-height:var(--rule);color:#b9c6d6}
+.entry .when{position:absolute;right:-10px;font-size:12px;color:#c2ccd9;
+  line-height:var(--rule);font-family:system-ui,sans-serif;opacity:0;transition:opacity .15s}
+.entry:hover .when{opacity:1}
+.entry .x{position:absolute;left:-78px;line-height:var(--rule);cursor:pointer;
+  color:#d9c4c4;font-size:15px;opacity:0;transition:opacity .15s;font-family:system-ui,sans-serif}
+.entry:hover .x{opacity:1}
+.entry .x:hover{color:#b04a4a}
+.entry.gone .body{text-decoration:line-through;color:#b6bfcb}
+
+#newentry{font-size:22px;line-height:var(--rule);color:var(--ink);outline:none;
+  min-height:var(--rule);white-space:pre-wrap;border-radius:3px}
+#newentry:empty::before{content:attr(data-ph);color:#c3ccda}
+
+#blank{color:#9b8f80;font-size:22px;text-align:center;line-height:1.7}
+#blank b{display:block;font-size:15px;letter-spacing:.2em;text-transform:uppercase;
+  font-family:system-ui,sans-serif;color:#6a5f52;margin-bottom:10px}
+
+#hint{position:fixed;bottom:0;left:190px;right:0;padding:6px 14px;font-size:11px;
+  color:#a9b5c4;background:rgba(253,250,240,.92);font-family:system-ui,sans-serif;
+  border-top:1px solid #e6dfcd}
+</style>
+</head>
+<body>
+
+<div id="tabs">
+  <h1>Notebook</h1>
+  <div id="tablist"></div>
+  <button id="newpage">+ new page</button>
+</div>
+
+<div id="sheet">
+  <div id="pagehead" style="display:none">
+    <input id="pagetitle" spellcheck="false">
+    <span id="pagemeta"></span>
+    <button id="delpage" title="Delete this whole page">delete page</button>
+  </div>
+  <div id="entries"></div>
+</div>
+
+<script>
+/* Same-origin: this page is served by the dashboard that owns the database. */
+var API='/api/notebook';
+var pages=[], current=null;
+
+function $(id){return document.getElementById(id);}
+function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function j(url,opts){return fetch(url,opts).then(function(r){
+  return r.json().then(function(b){ if(!r.ok) throw new Error(b.error||'failed'); return b; });});}
+
+function loadPages(keep){
+  return j(API).then(function(rows){
+    pages=rows;
+    var html='';
+    rows.forEach(function(p){
+      html+='<button class="tab'+(p.name===current?' active':'')+'" data-p="'+esc(p.name)+'">'
+          + esc(p.name)+'<span class="n">'+p.entries+'</span></button>';
+    });
+    $('tablist').innerHTML=html;
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(b){
+      b.onclick=function(){ open(b.getAttribute('data-p')); };
+    });
+    if(!rows.length){ showBlank(); return; }
+    if(!keep){ open(current && rows.some(function(p){return p.name===current;})
+                    ? current : rows[0].name); }
+  });
+}
+
+function showBlank(){
+  current=null;
+  $('pagehead').style.display='none';
+  $('sheet').classList.add('empty-book');
+  $('entries').innerHTML='<div id="blank"><b>nothing written yet</b>'
+    + 'Start a page here, or just tell Ted<br>&ldquo;add this to my fixes page&rdquo;.</div>';
+}
+
+function open(name){
+  current=name;
+  $('sheet').classList.remove('empty-book');
+  j(API+'/'+encodeURIComponent(name)).then(function(doc){
+    $('pagehead').style.display='flex';
+    $('pagetitle').value=doc.name;
+    $('pagemeta').textContent=doc.total+(doc.total===1?' entry':' entries')
+      +' · last written '+doc.updated.slice(0,10);
+    var html='';
+    doc.entries.forEach(function(e){
+      html+='<div class="entry '+(e.writer==='ted'?'by-ted':'by-user')+'" data-n="'+e.number+'">'
+          + '<span class="x" title="Cross this out">&times;</span>'
+          + '<span class="num">'+e.number+'.</span>'
+          + '<div class="body" contenteditable="true" spellcheck="false">'+esc(e.body)+'</div>'
+          + '<span class="when">'+e.created.slice(0,10)+'</span></div>';
+    });
+    html+='<div class="entry"><span class="num">'+(doc.total+1)+'.</span>'
+        + '<div id="newentry" contenteditable="true" spellcheck="false" '
+        + 'data-ph="write a new line…"></div></div>';
+    $('entries').innerHTML=html;
+    wire();
+    loadPages(true);
+  }).catch(showBlank);
+}
+
+function wire(){
+  /* Editing an existing line: blur commits, Escape reverts, Enter commits too —
+     a notebook line is a line, so Enter meaning "done" reads right here. */
+  Array.prototype.forEach.call(document.querySelectorAll('.entry .body'),function(el){
+    var original=el.textContent;
+    el.onkeydown=function(ev){
+      if(ev.key==='Escape'){ el.textContent=original; el.blur(); }
+      if(ev.key==='Enter'&&!ev.shiftKey){ ev.preventDefault(); el.blur(); }
+    };
+    el.onblur=function(){
+      var text=el.textContent.trim();
+      if(text===original.trim()) return;
+      var n=el.parentNode.getAttribute('data-n');
+      if(!text){ el.textContent=original; return; }
+      j(API+'/'+encodeURIComponent(current)+'/'+n,
+        {method:'PUT',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({text:text})})
+        .then(function(){ original=text; })
+        .catch(function(e){ el.textContent=original; alert(e.message); });
+    };
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.entry .x'),function(x){
+    x.onclick=function(){
+      var row=x.parentNode, n=row.getAttribute('data-n');
+      row.classList.add('gone');
+      j(API+'/'+encodeURIComponent(current)+'/'+n,{method:'DELETE'})
+        .then(function(){ open(current); })
+        .catch(function(e){ row.classList.remove('gone'); alert(e.message); });
+    };
+  });
+
+  var ne=$('newentry');
+  if(ne){
+    ne.onkeydown=function(ev){
+      if(ev.key==='Enter'&&!ev.shiftKey){ ev.preventDefault(); ne.blur(); }
+    };
+    ne.onblur=function(){
+      var text=ne.textContent.trim();
+      if(!text) return;
+      ne.textContent='';
+      j(API,{method:'POST',headers:{'Content-Type':'application/json'},
+             body:JSON.stringify({page:current,text:text})})
+        .then(function(){ open(current); })
+        .catch(function(e){ alert(e.message); });
+    };
+  }
+}
+
+$('newpage').onclick=function(){
+  var name=prompt('Name the new page');
+  if(!name) return;
+  j(API,{method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({page:name})})
+    .then(function(p){ current=p.name; return loadPages(); })
+    .catch(function(e){ alert(e.message); });
+};
+
+$('pagetitle').onkeydown=function(ev){ if(ev.key==='Enter') $('pagetitle').blur(); };
+$('pagetitle').onblur=function(){
+  var name=$('pagetitle').value.trim();
+  if(!current||!name||name===current) return;
+  j(API+'/'+encodeURIComponent(current),
+    {method:'PUT',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({name:name})})
+    .then(function(r){ current=r.now; return loadPages(); })
+    .catch(function(e){ $('pagetitle').value=current; alert(e.message); });
+};
+
+$('delpage').onclick=function(){
+  if(!current) return;
+  if(!confirm('Delete the whole "'+current+'" page and everything on it?')) return;
+  j(API+'/'+encodeURIComponent(current),{method:'DELETE'})
+    .then(function(){ current=null; return loadPages(); })
+    .catch(function(e){ alert(e.message); });
+};
+
+loadPages();
+/* Ted writes from his own process, so the page would otherwise go stale while
+   it sits open beside a conversation. Cheap local read, and only while the tab
+   is actually visible. */
+setInterval(function(){
+  if(document.hidden || !current) return;
+  /* Never redraw out from under a cursor — a refresh that eats a half-typed
+     line is worse than a page that is six seconds stale. */
+  var a=document.activeElement;
+  if(a && a.isContentEditable) return;
+  if(a && a.id==='pagetitle') return;
+  open(current);
+}, 6000);
+</script>
+</body>
+</html>

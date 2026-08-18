@@ -56,11 +56,11 @@ check("config.py never appears in the tree",
       "config.py" not in cb.tree().replace("config.example.py", ""))
 
 print("\n— reading —")
-out = cb.read("core/pet.py", 1, 5)
+out = cb.read("core/notebook.py", 1, 5)
 check("a line range comes back numbered",
-      "core/pet.py lines 1-5" in out and "    1  " in out)
+      "core/notebook.py lines 1-5" in out and "    1  " in out)
 check("a missing file says so", "no file at" in cb.read("core/nope.py"))
-check("a silly range is handled", "only has" in cb.read("core/pet.py", 99999))
+check("a silly range is handled", "only has" in cb.read("core/notebook.py", 99999))
 
 # core/app.py is 3,700 lines. Under the byte ceiling and still ruinous — it
 # would fill the whole context window and leave no room for the answer.
@@ -83,8 +83,8 @@ check("…the current branch", "Branch:" in over)
 check("…and recent commits", "Recent commits:" in over)
 check("history works", "commits" in cb.history(count=3).lower())
 check("history can be scoped to one file",
-      "core/pet.py" in cb.history("core/pet.py", 3)
-      or "No commit history" in cb.history("core/pet.py", 3))
+      "core/notebook.py" in cb.history("core/notebook.py", 3)
+      or "No commit history" in cb.history("core/notebook.py", 3))
 
 print("\n— writing needs Charlie's yes —")
 target = os.path.join(cb.ROOT, "core", "routines.py")

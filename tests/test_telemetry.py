@@ -209,9 +209,14 @@ check("there is a Diagnostics button in the sidebar, next to Memory",
 check("…wired to a toggle", "tedHud.toggleDiagnostics()" in hud)
 check("…that loads the dashboard page, not the memory one",
       "127.0.0.1:5175/diagnostics" in hud)
-check("opening one overlay closes the other — both are full-screen",
-      "tedHud.hideMemory(); tedHud.showDiagnostics()" in hud
-      and "tedHud.hideDiagnostics(); tedHud.showMemory()" in hud)
+# Three full-screen overlays now (memory, diagnostics, notebook), so each one
+# has to close BOTH others rather than just the one that existed when this was
+# written. Checking the hides individually keeps the test from breaking again
+# the next time a fourth is added in a different order.
+check("opening one overlay closes the others — all three are full-screen",
+      "tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.showDiagnostics()" in hud
+      and "tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.showMemory()" in hud
+      and "tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.showNotebook()" in hud)
 check("closing it stops the 2s polling loop",
       "about:blank" in hud)
 
