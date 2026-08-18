@@ -28,13 +28,6 @@ ELEVEN_LABS_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"
 # answered. While engaged, just talk. Set 0 to always listen (old behaviour).
 ATTENTION_WINDOW = 90
 
-# ── Voice lock (optional — needs `pip install resemblyzer`, a big install) ───
-# Say "Ted, learn my voice" once, then set True: Ted ignores voices that
-# aren't yours (kids, TV). Raise the threshold if strangers get through,
-# lower it if Ted starts ignoring YOU (whispering lowers similarity).
-VOICE_LOCK = False
-VOICE_LOCK_THRESHOLD = 0.68
-
 # ── Audio ────────────────────────────────────────────────────────────────────
 # Voice barge-in (talking over Ted). Without the native AEC engine, Ted's own
 # voice can leak through SPEAKERS and interrupt himself. Set False to disable

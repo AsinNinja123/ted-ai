@@ -206,8 +206,9 @@ check("hud.py does not try to open a pet window",
 check("the HUD has no bear canvas or pet button left",
       'id="bear-id"' not in hud and 'id="petbtn"' not in hud
       and "ted_bear.js" not in hud)
-check("the removed calls survive as no-ops, so a stale Python side cannot throw",
-      "setBearState:function(){}" in hud)
+check("the bear's no-op stubs are gone from the HUD too",
+      "setBearState" not in hud and "setPetVisible" not in hud
+      and "setCompanionVisible" not in hud)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

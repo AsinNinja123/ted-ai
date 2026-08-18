@@ -214,7 +214,6 @@ ted-ai/
 │   ├── assistant.py       # reminders, timers, lists, duration/time parsing, weather, location
 │   ├── memory.py          # SQLite long-term memory: exchanges, facts, habits, patterns
 │   ├── knowledge.py       # ChromaDB knowledge base + inbox/PDF indexing
-│   ├── speaker.py         # voice lock: enroll/verify the owner's voice (opt-in)
 │   ├── calendar_app.py    # read/write Calendar.app via AppleScript
 │   ├── notes.py           # read/write Apple Notes via AppleScript
 │   ├── email.py           # Outlook email via IMAP/SMTP

@@ -7,6 +7,11 @@ API, and the real Ollama models. Each item below says which.
 Eight commits, `4bf2566` through `52d1693`. Suite: **1163 checks across 33 files**,
 all passing (`866` before this batch).
 
+> **Aug 18, 2026.** Three features described below were removed at Charlie's
+> request: the pet / Ted Bear, the news watcher, and voice ID (`core/speaker.py`).
+> Their rows are struck from the tables and their steps deleted, so this file
+> matches the code again. The suite is now **32 files**.
+
 ```bash
 cd ~/ted-ai
 for t in tests/test_*.py; do printf '%-34s ' "$t"; venv/bin/python "$t" | tail -1; done
@@ -25,11 +30,9 @@ for t in tests/test_*.py; do printf '%-34s ' "$t"; venv/bin/python "$t" | tail -
 | Memory speed | Extraction measured at 6.84 s on the local brain — that is the lag that moved off the critical path |
 | Memory quality | Real extraction produced `calc 2 exam on Thursday August 20, 2026` at importance 3 |
 | Importance ordering | Verified in an isolated DB; the real DB migrated cleanly, all 58 facts defaulting to 2 |
-| The pet | Opened as a real pywebview window: body computes to `rgba(0,0,0,0)`, canvas 1:1 at 160×160, thinking state paints exactly 192 cyan pixels (three 8×8 dots) |
 | Attachments | A PNG sent to Groq came back described, so the vision path genuinely works |
 | Chat rendering | `mdlite` executed in Node over 8 cases; links inert, digits intact, broken images collapse |
 | Codebase reader | Every containment refusal exercised; a confirmed write created, rewrote, kept a backup, and cleaned up |
-| News | Live check against Hacker News and DuckDuckGo returned current stories; dedup held on the second pass |
 | Read-only Messages access | `chat.db` mtime unchanged; every connection uses `mode=ro` |
 
 ---
@@ -64,8 +67,7 @@ the announcement works, it is the decoder.
 cd ~/ted-ai && venv/bin/python hud.py
 ```
 
-Look for `[pet] floating teddy is up`, and `[router] local — …` / `[router] cloud — …`
-on the first few turns. The router prints its verdict and reason every turn.
+Look for `[router] local — …` / `[router] cloud — …` on the first few turns. The router prints its verdict and reason every turn.
 
 ### 3. Things worth trying, in rough order of how likely they are to be wrong
 
@@ -75,18 +77,14 @@ on the first few turns. The router prints its verdict and reason every turn.
 - *"show me a red panda"* — pictures should land in the chat
 - *"how are you built"* / *"what's in core/routing.py"*
 - *"change your own code"* — it must ask before writing, and name the file and size
-- *"watch AI model releases"* — then check the News badge in the sidebar later
-- Close the pet with its ×, then bring it back with the sidebar Pet button
 
 ---
 
 ## Known limits, stated rather than discovered later
 
-- **DuckDuckGo image and news quality varies.** No API key, no key to lose, and
-  usually relevant — but "eiffel tower" returned Paris catacombs once during
-  testing. If it becomes annoying the fix is a keyed image API, not a prompt tweak.
-- **The news poller runs every 45 minutes** and only starts if a topic exists. Asking
-  *"what's new"* always checks live first, so a direct question is never stale.
+- **DuckDuckGo image quality varies.** No API key, no key to lose, and usually
+  relevant — but "eiffel tower" returned Paris catacombs once during testing. If it
+  becomes annoying the fix is a keyed image API, not a prompt tweak.
 - **The router biases toward the cloud.** A wrong LOCAL costs answer quality; a wrong
   CLOUD costs tokens that refill every minute. If you want more aggressive saving,
   the thresholds are in `classify_brain` in `core/routing.py`.
@@ -107,11 +105,7 @@ on the first few turns. The router prints its verdict and reason every turn.
 |---|---|
 | `core/attachments.py` | Resolving a dropped/picked/pasted file into what the model receives |
 | `core/codebase.py` | Ted reading his own source; all the containment rules |
-| `core/news.py` | Standing subscriptions, dedup, digests |
 | `core/messages.py` | Reading `chat.db`, decoding bodies, contact lookup |
 | `core/bouncer.py` | Who gets announced, who is ignored |
-| `core/pet.py` | The pet window's lifecycle and state |
-| `ui/ted_pet.html` | The 16×16 sprite and its animations |
 
-New tests: `test_attachments`, `test_codebase`, `test_news`, `test_bouncer`,
-`test_pet`, `test_rich_chat`.
+New tests: `test_attachments`, `test_codebase`, `test_bouncer`, `test_rich_chat`.

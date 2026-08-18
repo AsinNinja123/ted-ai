@@ -149,18 +149,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#voicebtn,#notebtn,#newsbtn{cursor:pointer;padding:6px 0;
+#membtn,#diagbtn,#notebtn{cursor:pointer;padding:6px 0;
   color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#voicebtn:hover,#notebtn:hover,
-#newsbtn:hover{color:var(--text)}
-#newsbtn.on{color:var(--accent)}
-#newsbtn .badge{background:var(--accent);color:#0c2b2b;border-radius:9px;
-  padding:0 5px;font-size:10px;margin-left:3px}
-/* Voice identity. A label on a turn, never a permission — so it is styled like
-   a status line and not like a lock. */
-#voicebtn.known{color:var(--accent)}
-#voicebtn.unknown{color:var(--warn)}
-#voicebtn.busy{color:var(--accent);animation:micpulse 1.6s ease-in-out infinite}
+#membtn:hover,#diagbtn:hover,#notebtn:hover{color:var(--text)}
 .hd{display:flex;align-items:center;gap:4px;font-size:10px;letter-spacing:.08em}
 .hd i{width:6px;height:6px;border-radius:50%;background:var(--dim);display:inline-block}
 .hd i.on{background:var(--ok)}
@@ -506,11 +497,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
     </div>
     <div id="chats"></div>
     <div id="sidefoot">
-      <div id="voicebtn" title="Whose voice Ted last heard">&#9679; Voice</div>
       <div id="membtn" title="Ted's memory">&#9783; Memory</div>
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
       <div id="notebtn" title="Ted's notebook — pages he reads, writes and edits">&#128211; Notebook</div>
-      <div id="newsbtn" title="What Ted is monitoring">&#128240; News</div>
     </div>
   </div>
 </div>
@@ -1525,14 +1514,6 @@ var tedHud={
     });
     row.appendChild(b); $('msgs').appendChild(row); scrollDown();
   },
-  setNewsCount:function(n){
-    var b=$('newsbtn'); if(!b) return;
-    n=parseInt(n||0,10);
-    b.classList.toggle('on',n>0);
-    b.innerHTML='&#128240; News'+(n>0?' <span class="badge">'+n+'</span>':'');
-    b.title=n>0 ? n+' new stor'+(n===1?'y':'ies')+' — click to hear them'
-                : 'What Ted is monitoring';
-  },
   setMuted:function(m){
     muted=!!m;
     $('mic').classList.toggle('on',!muted);
@@ -1603,40 +1584,6 @@ var tedHud={
 
   /* health dots + voice label removed from the UI — keep the API alive */
   setHealth:function(){}, setVoice:function(){},
-
-  /* ── whose voice that was ────────────────────────────────────────────────
-     Pushed once per captured turn. This is a LABEL: it says who Ted thinks
-     was talking and never decides whether the turn is allowed. Voice is
-     clonable, so treating this as a lock would be security theatre; the only
-     thing it gates is VOICE_LOCK ignoring other people in the room, which is
-     a config setting and not this indicator. */
-  setSpeaker:function(id){
-    var el=$('voicebtn'); if(!el) return;
-    id=id||{};
-    el.classList.remove('known','unknown','busy');
-    var score=(typeof id.score==='number')?' ('+id.score.toFixed(2)+')':'';
-    if(id.known===true){
-      el.classList.add('known');
-      el.innerHTML='&#9679; '+esc(OWNER)+score;
-      el.title='That sounded like '+OWNER+'. A label only — it does not gate anything.';
-    } else if(id.known===false){
-      el.classList.add('unknown');
-      el.innerHTML='&#9679; unknown voice'+score;
-      el.title='That did not match the saved voice profile. Ted still answered — '
-        +'this labels turns, it does not lock him.';
-    } else {
-      el.innerHTML='&#9679; Voice';
-      el.title=id.reason
-        ? 'Voice recognition is off: '+id.reason+'. Click to set it up.'
-        : 'Whose voice Ted last heard. Click to set it up.';
-    }
-  },
-  setSpeakerEnrolling:function(on){
-    var el=$('voicebtn'); if(!el) return;
-    el.classList.toggle('busy',!!on);
-    if(on){ el.innerHTML='&#9679; listening…';
-            el.title='Keep talking for a few seconds.'; }
-  },
 
   /* now playing — pill at the top left. Music playing = Ted using Spotify,
      which also covers the intent path that skips _dispatch_tool. */
@@ -1730,11 +1677,9 @@ var tedHud={
     else { tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.showDiagnostics(); }
   },
 
-  /* compat stubs — Python still calls these; nothing to show in chat mode.
-     setBearState / setCompanionVisible / setPetVisible are the removed Ted Bear
-     surface, kept as no-ops so a stale Python side cannot throw in here. */
-  setBearState:function(){}, setBearLongIdle:function(){},
-  setCompanionVisible:function(){}, setPetVisible:function(){},
+  /* compat stubs — Python may still call these; nothing to show in chat mode.
+     Each one is a function that does nothing, so a call from Python cannot
+     throw. The Ted Bear stubs are gone along with the bear itself. */
   pushAmplitude:function(){}, clearAmplitude:function(){},
   setAttention:function(){}, micIdle:function(){},
   setMode:function(){}, setVoiceMode:function(){}, toggleMode:function(){},
@@ -1826,45 +1771,6 @@ $('tnext').onclick=function(){ transport('next'); };
 $('np-skip').onclick=function(){ transport('next'); };   // same path, top of the window
 $('brainpick').onchange=function(){ setProvider(this.value); };
 
-/* ── voice identity ───────────────────────────────────────────────────────
-   Enrolment already worked by saying "learn my voice"; this is the same thing
-   from the window, which is where Charlie is when he notices it is not set up. */
-function refreshSpeaker(){
-  if(!inApp()) return;
-  window.pywebview.api.speaker_status().then(function(st){
-    if(!st) return;
-    if(st.owner) OWNER=st.owner;
-    if(!st.available){
-      tedHud.setSpeaker({known:null, reason:'resemblyzer is not installed'});
-    } else if(!st.enrolled){
-      tedHud.setSpeaker({known:null, reason:'no voice profile saved'});
-    } else {
-      tedHud.setSpeaker(st.last||{known:null});
-    }
-  }).catch(function(){});
-}
-$('voicebtn').onclick=function(){
-  if(!inApp()) return;
-  window.pywebview.api.speaker_status().then(function(st){
-    st=st||{};
-    if(!st.available){
-      tedHud.showIssue('Voice recognition needs one extra package. Run: '+
-        'venv/bin/pip install resemblyzer, then restart Ted.');
-      return;
-    }
-    if(st.enrolled &&
-       !confirm('Add another sample of your voice?\n\n'+
-                st.samples+' saved so far. Cancel to leave it as it is.')) return;
-    if(!st.enrolled &&
-       !confirm('Teach Ted your voice?\n\nHe will listen for a few seconds after '+
-                'the chime.\n\nThis labels turns with who spoke. It is NOT a lock '+
-                'and is not security — a voice can be copied.')) return;
-    window.pywebview.api.speaker_enroll().then(function(r){
-      if(r&&r.say) tedHud.showIssue(r.say);
-      refreshSpeaker();
-    }).catch(function(){ tedHud.showIssue('Voice enrollment failed.'); });
-  }).catch(function(){});
-};
 $('tplay').onclick=function(){ transport(npPlaying?'pause':'play'); };
 $('chatq').addEventListener('input',function(){ setSearch(this.value); });
 $('chatq').addEventListener('keydown',function(e){
@@ -1989,13 +1895,6 @@ $('input').addEventListener('paste',function(e){
   if(took) e.preventDefault();
 });
 
-$('newsbtn').onclick=function(){
-  /* Routed through the ordinary ask path rather than a private API call, so
-     the answer lands in the conversation as a normal turn and is saved with
-     it — a digest that appears in a panel and nowhere else is unsearchable. */
-  $('input').value="what's new";
-  sendMsg();
-};
 $('notebtn').onclick=function(){ tedHud.toggleNotebook(); };
 
 sidePanel=makeCollapsible('side','side-tab',{
@@ -2069,7 +1968,6 @@ document.addEventListener('keydown',function(e){
     // Python call, but it reaches Spotify's API, and hammering that for a
     // one-line strip would be a poor trade.
     pollNowPlaying();
-    refreshSpeaker();
     setInterval(function(){
       if(!document.hidden) pollNowPlaying();
     },10000);

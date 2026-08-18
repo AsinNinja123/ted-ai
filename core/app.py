@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
 from core import (attachments, bouncer, codebase, features, lingo, llm, memory,
-                  messages, music, news, notebook, routing, routines, system_state,
+                  messages, music, notebook, routing, routines, system_state,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
@@ -195,7 +195,7 @@ def _use_deterministic_command(text):
     return bool(re.search(
         r"\b(?:remember|remeber|rember|remmember|forget .*about me|what do you "
         r"(?:know|remember) about me|recalibrat|calibrate .*?(?:mic|microphone|ears)|"
-        r"learn my voice|enroll my voice|forget my voice|snooze|every (?:day|monday|"
+        r"snooze|every (?:day|monday|"
         r"tuesday|wednesday|thursday|friday|saturday|sunday|\d+ minutes)|"
         r"index my documents|scan my inbox|list indexed files)\b", t))
 
@@ -1099,30 +1099,6 @@ class TedApi:
                 return f"Done. New silence threshold {thr:.3f}."
             except Exception:
                 return "Calibration failed — mic may be busy."
-
-        # ── voice enrollment / voice lock ──
-        if re.search(r"\b(?:learn|enroll|remember) my voice\b", text, re.I):
-            from core import speaker
-            if not speaker.available():
-                return ("Voice recognition needs one extra package — run "
-                        "pip install resemblyzer in my venv, restart me, then ask again.")
-            speak(self.window, "After the chime, talk to me for about ten seconds — "
-                               "anything you like.", self)
-            voice.play_chime(self.window, self)
-            audio = engine.capture_turn(prearmed=True)
-            if audio is None or len(audio) < 16000 * 3:
-                return "I didn't get enough audio — give it another go."
-            if not speaker.enroll(audio):
-                return "Something went wrong saving the voice profile."
-            n = speaker.profile_count()
-            hint = ("Voice lock is on — I only answer to you now." if voice.VOICE_LOCK
-                    else "Set VOICE_LOCK = True in config.py and I'll only answer to you.")
-            return f"Got it — voice profile saved, {n} sample{'s' if n != 1 else ''}. {hint}"
-
-        if re.search(r"\bforget my voice\b", text, re.I):
-            from core import speaker
-            return ("Voice profile deleted." if speaker.forget()
-                    else "No voice profile saved.")
 
         # ── quick spoken math ──
         calc = _parse_calc(text)
@@ -2142,44 +2118,6 @@ class TedApi:
                 if args.get("action") == "open":
                     return self.open_pending_text()
                 return self.read_pending_text()
-            if name == "news_watch":
-                topic, error = news.add_topic(
-                    args.get("label", ""), args.get("query", ""),
-                    args.get("sources", "hn,web"))
-                if error:
-                    return f"I didn't start watching that — {error}."
-                # Check immediately. "I'll watch that" followed by 45 minutes
-                # of silence is indistinguishable from having done nothing.
-                found = news.check_topic(topic)
-                self._push_news_badge()
-                if found:
-                    return (f"Now watching {topic['label']}. "
-                            f"{len(found)} recent stor"
-                            f"{'ies' if len(found) != 1 else 'y'} already:\n"
-                            + news.format_digest(found[:5]))
-                return (f"Now watching {topic['label']}. Nothing new right now — "
-                        f"I'll check every 45 minutes.")
-            if name == "news_latest":
-                return self._news_latest(args.get("topic", ""),
-                                         args.get("limit", 8))
-            if name == "news_topics":
-                topics = news.list_topics()
-                if not topics:
-                    return ("I'm not monitoring anything yet. Tell me what to "
-                            "watch and I'll check it in the background.")
-                lines = []
-                for t in topics:
-                    when = t["last_checked"][:16].replace("T", " ") or "not yet"
-                    state = "" if t["enabled"] else " (paused)"
-                    problem = f" — last error: {t['last_error']}" if t["last_error"] else ""
-                    lines.append(f"{t['label']}{state}: \"{t['query']}\", "
-                                 f"last checked {when}{problem}")
-                return "Watching:\n" + "\n".join(lines)
-            if name == "news_unwatch":
-                removed, error = news.remove_topic(args.get("label", ""))
-                self._push_news_badge()
-                return (f"Stopped watching {removed}." if removed
-                        else f"I couldn't stop that — {error}.")
             if name == "code_overview":
                 return codebase.overview()
             if name == "code_search":
@@ -3057,13 +2995,6 @@ class TedApi:
                     time.sleep(2)
             prearmed = False
             js(w, "tedHud.micIdle()")
-            # Label the turn with whose voice it was. A label, not a gate:
-            # VOICE_LOCK is the only thing that decides what gets ignored, and
-            # this says nothing about permission. Pushed even when the answer is
-            # "unknown", because silence would read as "recognized".
-            if text:
-                js(w, f"tedHud.setSpeaker({json.dumps(voice.last_speaker())})")
-
             if self.busy or not self.mic_on:
                 continue
             if not text:
@@ -3385,10 +3316,6 @@ class TedApi:
         if bouncer.enabled():
             threading.Thread(target=self.messages_watch_loop, daemon=True,
                              name="bouncer").start()
-        if news.list_topics(include_disabled=False):
-            threading.Thread(target=self.news_watch_loop, daemon=True,
-                             name="news-watch").start()
-            self._push_news_badge()
         # Load the knowledge store now, on a thread, so the first message does
         # not pay for it inside the retrieval budget.
         if features.HAS_KNOWLEDGE:
@@ -3599,67 +3526,6 @@ class TedApi:
         self._pending_text_message = None
         return messages.open_conversation(pending["handle"])
 
-    # ── watched news ───────────────────────────────────────────────────────
-
-    def _news_latest(self, topic="", limit=8):
-        """Answer 'what's new' with a live check, not just what is cached.
-
-        Checking first matters: the poller runs every 45 minutes, so a cached
-        answer to a direct question can be three quarters of an hour stale
-        while presenting itself as the latest.
-        """
-        topics = news.list_topics(include_disabled=False)
-        if not topics:
-            return ("I'm not monitoring anything yet, so there's nothing new to "
-                    "report. Tell me what to watch.")
-        wanted = [t for t in topics
-                  if not topic or t["label"].lower() == topic.strip().lower()]
-        if not wanted:
-            names = ", ".join(t["label"] for t in topics)
-            return f"I'm not watching {topic!r}. I am watching: {names}."
-        for t in wanted:
-            news.check_topic(t)
-        items = news.unseen(limit, topic)
-        self._push_news_badge()
-        if not items:
-            label = f" on {topic}" if topic else ""
-            return f"Nothing new{label} since you last looked."
-        return news.format_digest(items)
-
-    def _push_news_badge(self):
-        """Tell the HUD how many unread stories there are."""
-        try:
-            js(self.window, f"tedHud.setNewsCount({news.unseen_count()})")
-        except Exception:
-            pass
-
-    def news_watch_loop(self, interval=None):
-        """Background poller. One check per interval across all topics.
-
-        Deliberately silent about *contents*: it updates a badge and, for
-        something genuinely notable, shows one toast. Charlie is at college and
-        asked for quiet chat, so a background watcher that speaks or dumps a
-        digest into the conversation unprompted would be the wrong shape.
-        """
-        interval = interval or news.DEFAULT_INTERVAL
-        # Don't check on the very first tick: startup is busy enough, and the
-        # first thing Charlie sees should not be Ted fetching two APIs.
-        time.sleep(90)
-        while True:
-            try:
-                found = news.check_all()
-                if found:
-                    self._push_news_badge()
-                    best = max(found, key=lambda i: i.get("points") or 0)
-                    others = len(found) - 1
-                    extra = f" (+{others} more)" if others > 0 else ""
-                    show_issue(self.window,
-                               f"{best['topic']}: {best['title'][:110]}{extra}")
-                    print(f"[news] {len(found)} new item(s) across watched topics")
-            except Exception as exc:
-                error_log.error(f"news_watch_loop: {exc}")
-            time.sleep(interval)
-
     def _show_images(self, query, count=3):
         """Put pictures in the chat itself rather than opening a browser.
 
@@ -3791,61 +3657,6 @@ class TedApi:
         self._apply_mic(self.mic_on)
         self._push_mic_state()
         return self.muted
-
-    # ── voice recognition (a label, never a lock) ──────────────────────────
-    # Enrollment already worked by saying "learn my voice". These exist so it
-    # also works from the window, which is where Charlie actually is — and so
-    # the state is visible rather than something you have to ask about.
-
-    def speaker_status(self):
-        """Enrollment state for the HUD indicator. Never raises."""
-        from core import speaker
-        try:
-            st = speaker.status()
-            st["lock"] = bool(voice.VOICE_LOCK)
-            st["last"] = voice.last_speaker()
-            st["owner"] = OWNER_NAME
-            return st
-        except Exception as e:
-            print(f"[speaker] status: {e}")
-            return {"available": False, "enrolled": False, "samples": 0,
-                    "lock": False, "last": {}}
-
-    def speaker_enroll(self):
-        """Record one sample of Charlie's voice and add it to the profile.
-
-        Returns ground truth about what happened, including the install step
-        when the optional package is missing — the window should say that
-        rather than a generic failure.
-        """
-        from core import speaker
-        if not speaker.available():
-            return {"ok": False, "say": ("Voice recognition needs one extra package. "
-                                         "Run: venv/bin/pip install resemblyzer, "
-                                         "then restart Ted.")}
-        try:
-            js(self.window, "tedHud.setSpeakerEnrolling(true)")
-            voice.play_chime(self.window, self)
-            audio = engine.capture_turn(prearmed=True)
-            if audio is None or len(audio) < 16000 * 3:
-                return {"ok": False, "say": "I didn't get enough audio — try again "
-                                            "and keep talking for a few seconds."}
-            if not speaker.enroll(audio):
-                return {"ok": False, "say": "Something went wrong saving the profile."}
-            n = speaker.profile_count()
-            return {"ok": True, "samples": n,
-                    "say": f"Voice profile saved — {n} sample{'s' if n != 1 else ''}."}
-        except Exception as e:
-            print(f"[speaker] enroll: {e}")
-            return {"ok": False, "say": f"Enrollment failed: {e}"}
-        finally:
-            js(self.window, "tedHud.setSpeakerEnrolling(false)")
-
-    def speaker_forget(self):
-        from core import speaker
-        existed = speaker.forget()
-        return {"ok": True,
-                "say": "Voice profile deleted." if existed else "No profile was saved."}
 
     def music_now_playing(self):
         """What Spotify is playing, for the HUD strip. Costs no tokens."""

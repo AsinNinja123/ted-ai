@@ -42,14 +42,3 @@ pypdf
 
 # Remote HTTP endpoint (iOS Shortcuts / curl access)
 flask
-
-# OPTIONAL — voice recognition. Labels each turn with who spoke, and gates
-# other people out of the mic when VOICE_LOCK is on. Installed on Charlie's Mac
-# 2026-08-16 and verified there; still optional, and Ted degrades to
-# "unknown voice, allowed" without it.
-#
-# Big install (pulls in torch). NOTE: pip will try to bring in a `typing`
-# backport as a dependency. That package is for Python 2 and shadows the
-# standard library on 3.12 — uninstall it after:
-#     venv/bin/pip install resemblyzer && venv/bin/pip uninstall -y typing
-# resemblyzer

@@ -264,7 +264,7 @@ def collect_routing() -> dict:
             kept.append(label)
     if re.search(r"remember|forget .*about me", src):
         kept.append("explicit memory edits (\"remember that…\")")
-    kept.append("mic recalibration and voice enrollment")
+    kept.append("mic recalibration")
 
     legacy = "TED_LEGACY_LADDER" in src
     # The old two-call path still EXISTS in the file behind the legacy flag, so

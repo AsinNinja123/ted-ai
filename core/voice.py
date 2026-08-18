@@ -44,15 +44,6 @@ try:
 except Exception:
     OWNER_NAME = "Charlie"
 try:
-    from config import VOICE_LOCK
-except Exception:
-    VOICE_LOCK = False
-try:
-    from config import VOICE_LOCK_THRESHOLD
-except Exception:
-    VOICE_LOCK_THRESHOLD = 0.68
-
-try:
     from elevenlabs.client import ElevenLabs as _ElevenLabsClient
     from elevenlabs import VoiceSettings as _VoiceSettings
     _HAS_ELEVENLABS = True
@@ -224,14 +215,6 @@ def set_active_volume(v):
 
 # module-level capture-RMS tracker — set by capture(); read in conversation_loop
 _last_capture_rms = 0.0
-# Who the last captured turn sounded like. Set by capture(), read by the HUD
-# push in core/app.py — a label on the turn, never a permission.
-_last_speaker = {"known": None, "score": None, "reason": "not enrolled"}
-
-
-def last_speaker():
-    """Identity of the most recent captured turn. See speaker.identify()."""
-    return dict(_last_speaker)
 
 def last_capture_rms():
     return _last_capture_rms
@@ -555,22 +538,6 @@ def capture(prearmed=False):
     rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
     _last_capture_rms = rms   # stored for whisper-mode volume scaling
     if dur < MIN_CAPTURE_SEC or rms < MIN_CAPTURE_RMS:
-        return None
-
-    # Gate 1.5: who is talking.
-    #
-    # Identification now runs whenever a profile is enrolled, not only when
-    # VOICE_LOCK is on, because labelling a turn is useful by itself — the HUD
-    # can say whose voice this was. VOICE_LOCK decides the separate question of
-    # whether a stranger is also IGNORED. One embedding answers both; running
-    # the encoder twice would double the cost of the slowest gate here.
-    global _last_speaker
-    _last_speaker = {"known": None, "score": None, "reason": "not enrolled"}
-    from core import speaker
-    if speaker.enrolled():
-        _last_speaker = speaker.identify(audio, threshold=VOICE_LOCK_THRESHOLD)
-    if VOICE_LOCK and _last_speaker["known"] is False:
-        print(f"   (ignored — voice lock: not {OWNER_NAME})")
         return None
 
     sf.write(INPUT_FILE, audio, SAMPLE_RATE)
