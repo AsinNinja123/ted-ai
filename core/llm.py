@@ -3,6 +3,107 @@ web search, and the small composition/summarisation
 helpers used by messaging and email.
 """
 
+
+# =============================================================================
+#  READING THIS FILE   The Ted Code Book — Chapters 8, 9, 11 and 13
+#                      (§8.1 – §8.4, §9.1 – §9.5, §11.1 – §11.3, §13.2 – §13.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The place where a message becomes a prompt, and a prompt becomes words.
+#      If core/app.py decides *whether* to think, this file decides *what to
+#      think with*.
+#
+#      The single most important function here is `ask_streaming()`. It is a
+#      generator — you loop over it and it hands you pieces of Ted's reply as
+#      they arrive, rather than making you wait for the whole answer. Read it
+#      once end to end before changing anything in this file; almost everything
+#      else here exists to serve it.
+#
+#  WHAT ask_streaming DOES, IN ORDER
+#      1. Kick off fact extraction on a background thread, so learning happens
+#         alongside the reply instead of after it.
+#      2. Fire off up to five memory lookups AT THE SAME TIME on threads, with
+#         ONE shared four-second deadline for all of them. Anything that has not
+#         come back by then is simply left out. Context is optional; the answer
+#         is not.                                                       (§8.1-8.2)
+#      3. Cap each retrieved piece to a fixed number of characters, so the
+#         prompt cannot quietly grow as the database fills up.               (§8.3)
+#      4. Assemble the message list in a very specific ORDER, for speed
+#         reasons explained below.                                       (§9.4)
+#      5. Make ONE streaming call through core/providers.py.
+#      6. As chunks come back, yield them. If a tool call comes back instead,
+#         run it, feed the result back in, and go round again — up to five
+#         rounds.                                                        (§11.3)
+#      7. On the way out, save the exchange and log the turn.            (§13.x)
+#
+#  THE ORDER OF THE MESSAGES, AND WHY IT MATTERS
+#      The list sent to the model is:
+#
+#          [ static system prompt ][ recent history ][ context ][ your message ]
+#
+#      not the more obvious [system][context][history][user].
+#
+#      The reason is prompt caching. Providers remember the beginning of a
+#      prompt they have seen before and skip reprocessing it — but only while
+#      it is byte-for-byte identical. The context block changes every single
+#      turn (new date, new facts, new mode line). Put it early and you change
+#      the prefix every turn and lose the cache on every turn. Put it late and
+#      the expensive unchanging part — the persona and the tool rules — stays
+#      cached. This is worth real seconds. See §9.4, and `stable_window` at
+#      §9.5 for the same trick applied to conversation history.
+#
+#  THE OTHER THINGS THIS FILE OWNS
+#      SYSTEM_PROMPT             Ted's personality, as literal text          §9.1
+#      THINKING_CONTEXT          the Socratic override for "thinking partner"
+#      TOOL_RULES / TOOL_GUIDANCE   extra instructions bolted on ONLY when the
+#                                turn actually carries real tools
+#      stable_window()           chunked history trimming                    §9.5
+#      claims_completed_action() the honesty check — catches Ted saying it did
+#                                something on a turn where no tool ran       §11.8
+#      extract_and_save_facts()  turning "I live in Spirit Lake" into a stored
+#                                fact                                       §13.2
+#      generate_session_summary()  the end-of-conversation memory            §13.3
+#      search_web() / web_answer()  DuckDuckGo lookups
+#      ToolRuntime               a small holder for "the tools this turn has,
+#                                and how to run them"                       §11.2
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted's personality is wrong"          -> SYSTEM_PROMPT. Nothing else.
+#      "Ted is too slow before it starts"    -> CONTEXT_BUDGET, and the caps in
+#                                               _cap(). §8.2-8.3.
+#      "Ted forgets what we were saying"     -> MAX_HISTORY and history_limit
+#                                               inside ask_streaming. §9.5.
+#      "Ted saves junk facts"                -> extract_and_save_facts, and the
+#                                               gate below it. §13.2.
+#      "Ted never remembers our sessions"    -> that is deliberate most of the
+#                                               time. Read §13.3 before
+#                                               "fixing" it.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      `yield` and generators
+#          A function containing `yield` does not run and return once. It runs
+#          up to the first yield, hands you that value, and PAUSES with all its
+#          variables intact. Ask for the next value and it picks up where it
+#          left off. This is how streaming works: ask_streaming yields each
+#          chunk of the reply as it arrives, and the caller speaks/displays it
+#          immediately instead of waiting for the end.
+#
+#      nested `def` inside a function
+#          `def _load_facts():` defined inside ask_streaming is a small local
+#          function that can see the variables around it. Ted uses these as
+#          thread bodies, so each thread has a name you can read in a log.
+#
+#      `global _GROQ_OK`
+#          "The name I am about to assign to is the module-level one, not a new
+#          local one." Needed only when ASSIGNING to a module-level variable.
+#
+#      threading.Thread(...).join(timeout=...)
+#          "Wait for this thread, but give up after N seconds." Ted computes
+#          each timeout from one shared deadline rather than giving each thread
+#          its own — the bug that made this necessary is described at §8.2.
+# =============================================================================
+
 import json
 import re
 import threading
@@ -121,6 +222,21 @@ _NOT_A_CLAIM_RE = re.compile(
 )
 
 
+# [BOOK §11.8] ─── THE HONESTY CHECK ─────────────────────────────────────────
+#
+# This exists because of one specific incident. Ted said "Closed VS Code and
+# Notes." having called no tool at all — while close_app was in its menu and
+# already verified to work. Every safeguard in the codebase was downstream of
+# the failure; nothing was watching for the model simply narrating an action it
+# never took.
+#
+# So: this looks for a past-tense action claim ("closed", "sent", "played") in a
+# turn where no tool actually ran. When it finds one, core/llm.py appends a
+# correction and logs it, rather than letting the sentence stand.
+#
+# It is a blunt instrument and it will occasionally be wrong. It is still much
+# better than the alternative, which is Ted being confidently, cheerfully
+# untrue about your computer.
 def claims_completed_action(text):
     """True if the reply says Ted DID something.
 
@@ -142,6 +258,24 @@ def claims_completed_action(text):
     return bool(_ACTION_CLAIM_RE.search(body)) and not _NOT_A_CLAIM_RE.search(body)
 
 
+# [BOOK §9.5] ─── WHY HISTORY IS TRIMMED IN CHUNKS ───────────────────────────
+#
+# The obvious way to keep the last N messages is items[-N:]. It is also wrong
+# here, and the reason is the single most useful performance fact in this
+# codebase.
+#
+# Providers cache the BEGINNING of a prompt they have seen before and skip
+# reprocessing it — but only while it is byte-for-byte identical. A sliding
+# window shifts by one message every turn, so the prompt prefix changes every
+# turn, so the cache misses every turn, so every turn reprocesses the entire
+# prompt from scratch. That was the "fast for four replies, then slow" cliff.
+#
+# This function instead returns a window whose START only moves once every
+# `chunk` appends. Between moves the prefix is identical and stays cached; when
+# it does move, you pay once and then get another eight cheap turns.
+#
+# Same idea as putting the volatile context block LAST in the message list
+# (§9.4). Prefix stability is a performance feature.
 def stable_window(items, min_keep, chunk=8):
     """Return a recent-suffix of `items` whose START only moves once every
     `chunk` appends (window length ranges min_keep .. min_keep+chunk-1).
@@ -169,6 +303,27 @@ def groq_ok():
     return _GROQ_OK and providers.active_provider() != "ollama"
 
 # ---------- persona ----------
+# [BOOK §9.1] ═══ THE PERSONA ════════════════════════════════════════════════
+#
+# This string IS Ted's personality. There is no other file, no configuration, no
+# fine-tuning. Everything you think of as "how Ted talks" is written here in
+# plain English and sent at the top of every single message.
+#
+# Two things follow from that, and both matter:
+#
+#   1. Changing Ted's behaviour usually means editing prose, not code. If Ted is
+#      too chatty, too formal, or keeps saying "Great question", the fix is a
+#      sentence here.
+#
+#   2. This text is charged for on every turn. It is the biggest single block in
+#      the prompt. It is also the block prompt caching pays for — because it is
+#      byte-identical every turn it sits in the cached prefix and is cheap to
+#      REPROCESS, but it still counts as input tokens. Trimming it is real
+#      savings; padding it is a real cost.
+#
+# History worth knowing: fine-tuning a model on 143 examples to give Ted a
+# personality was tried and lost outright to a system prompt on the base model.
+# That question is settled. §35.
 SYSTEM_PROMPT = (
     # Trimmed Aug 14 from ~1,120 tokens to ~470. Every behavioural rule below
     # survived; what went was the same rule stated three ways, and the
@@ -294,6 +449,21 @@ def _parse_fact_payload(raw):
     return []
 
 
+# [BOOK §13.2] ─── LEARNING A FACT ───────────────────────────────────────────
+#
+# Ask a model to pull "Charlie / LIVES_IN / Spirit Lake" out of a sentence, and
+# store it. Two pieces of history make this function what it is:
+#
+#   * It was DEAD FOR FIVE WEEKS and nobody knew. It asked for JSON, got prose
+#     back, json.loads threw, and the exception died inside a print(). The facts
+#     table had one row. Hence JSON mode, a salvage parser, and real failures
+#     going to ted_errors.log. This is the origin of "silent failures are the
+#     expensive ones" (§34).
+#
+#   * It used to harvest world knowledge out of TED'S OWN REPLIES — it once
+#     saved "bananas are berries" as a fact about Charlie. There are now two
+#     defences: a hard rule in the prompt, and a Python gate that rejects any
+#     fact whose subject never appeared in what the USER said.
 def extract_and_save_facts(user_input, ted_reply=""):
     """Fire-and-forget background task: ask the fast LLM to extract structured
     facts from the exchange and persist them. Never raises — it runs on a daemon
@@ -537,6 +707,13 @@ def validate_tool_arguments(schema, args, user_input=""):
     return None
 
 
+# [BOOK §11.2] ─── WHAT A TURN CARRIES ITS TOOLS IN ──────────────────────────
+# A small holder passed into ask_streaming. It bundles three things that must
+# travel together: the schemas this turn is allowed to use, the function that
+# runs one when the model picks it, and the set of names that count as real
+# ACTIONS (so the honesty check knows whether anything actually happened).
+#
+# add_schemas() is how find_tools grows the menu mid-turn (§7.3).
 class ToolRuntime:
     """Everything ask_streaming needs to run a tool, without llm.py importing
     the tool layer (which would be a circular import).
@@ -758,6 +935,32 @@ def _stream_turn(resp, calls, suppress_text=False, reasoned=None,
 
 
 # ---------- streaming conversation ----------
+# [BOOK §8, §9, §11.1-§11.3] ═══ THE ONE CALL ════════════════════════════════
+#
+# Read this function once from top to bottom before you change anything in this
+# file. It is long, but it is a straight line, and almost everything else here
+# exists to serve it.
+#
+# The straight line is:
+#
+#   1. start fact extraction on a thread          learning runs alongside the
+#                                                 reply, not after it    §13.2
+#   2. fire the memory loaders in parallel        one shared deadline    §8.1-8.2
+#   3. cap each retrieved block                   the prompt cannot grow
+#                                                 with the database        §8.3
+#   4. assemble the messages in a specific order  prefix caching           §9.4
+#   5. ONE streamed call through providers        §10.1
+#   6. yield chunks as they arrive; if a tool
+#      call comes back instead, run it, feed the
+#      result in, go round again (max 5 rounds)   §11.3
+#   7. on the way out: save the exchange, log
+#      the turn                                   §13.1, §13.4
+#
+# The thing this function is NOT any more: two calls. The old design made a
+# cheap "does this need a tool?" probe first, threw that answer away, and then
+# made the real streaming call — two round trips on every message, when the
+# overwhelming majority of messages are just conversation. If you ever see
+# "[timing] tool probe" in the log, you are on the legacy path.
 def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
                   window=None, voice_mode=False, tool_runtime=None,
                   context_scope="full", operational_context="",
@@ -1780,6 +1983,21 @@ Bad:   "Charlie asked me to set a timer and play music." (routine)
 topics: 2-5 lowercase comma-separated keywords for later search, e.g. "crew dispatch, airtable, webhooks"."""
 
 
+# [BOOK §13.3] ─── REMEMBERING A CONVERSATION ────────────────────────────────
+#
+# At the end of a conversation, Ted may write a short dated first-person memory
+# of it, which gets injected into later replies so callbacks land naturally.
+#
+# MOST CONVERSATIONS PRODUCE NO MEMORY AT ALL, ON PURPOSE. Two filters: a cheap
+# Python pre-filter counting words in non-routine turns, then the model itself,
+# told explicitly that declining is the right answer most of the time.
+#
+# Seeing "[memory] shutdown: nothing worth remembering this session" in the log
+# is the system WORKING. A memory list full of "Charlie set a two minute timer"
+# makes callbacks worse than having none at all. Do not "fix" this.
+#
+# The tuning knobs, if it genuinely misbehaves, are MIN_MEMORY_SUBSTANTIVE_WORDS
+# and _ROUTINE_OPENERS just above.
 def generate_session_summary(conversation):
     """Decide whether this session is worth remembering, and if so write the memory.
 

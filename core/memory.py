@@ -14,6 +14,92 @@ keyword match otherwise; falls back to the most recent exchanges when nothing
 matches, so there's always some grounding context.
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 14 (§14.1 – §14.6)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Everything Ted knows about you that survives closing the window. It is
+#      one SQLite file — `data/memory.db` — and this module is the only Python
+#      that is supposed to write to it from Ted's side.
+#
+#      SQLite is not a server. It is a single file on disk that you talk to in
+#      SQL. There is nothing to install, nothing to start, and nothing to
+#      forget to start — which is exactly why it replaced Neo4j in July: Neo4j
+#      needed a desktop app running, it usually was not, and Ted silently had
+#      no memory. See §35.
+#
+#  THE TABLES, AND WHAT EACH IS ACTUALLY FOR
+#      facts              Short statements about you: subject, relationship,
+#                         object. "Charlie / LIVES_IN / Spirit Lake, Iowa".
+#                         These are injected into EVERY prompt, so this table
+#                         being full of junk costs you on every single message.
+#                                                                        §14.2
+#      exchanges          A log of turns, searchable. Backed by FTS5, SQLite's
+#                         full-text search, so "what did I say about the
+#                         webhook" can find it.                          §14.3
+#      session_summaries  A short first-person memory of a whole conversation,
+#                         written when it ends — but only when the conversation
+#                         earned one. Most do not, on purpose.           §14.4
+#      patterns           Topic counts by hour. Accumulating; nothing reads
+#                         them yet. Honest dead weight. §35.
+#      habit_logs         Built, never used. Also dead weight.
+#
+#  THE ONE RULE ABOUT FACTS
+#      Facts SUPERSEDE, they do not stack. If you say you live in Spirit Lake
+#      and later say Spirit Lake, Iowa, the second replaces the first — for
+#      single-valued relationships. Otherwise both end up in every prompt
+#      forever, contradicting each other, and Ted starts sounding confused
+#      about things you told it clearly. `save_fact` handles this; `_norm_rel`
+#      and `_norm_obj` are how it decides two facts are about the same thing.
+#
+#  memory_event() — WHY IT EXISTS
+#      Every memory write, from any path — you saying "remember that", the
+#      background extractor, the session summariser — goes through one emitter
+#      so the window can show one toast. One emitter, not three, because two
+#      places deciding what counts as a memory event is the duplicated-judgment
+#      bug this codebase keeps getting bitten by (§34).
+#
+#  WHY EVERY FUNCTION HERE REFUSES TO CRASH
+#      Read the docstring above: every function degrades gracefully and returns
+#      [], "", None or False rather than raising. Memory is context; it is not
+#      the answer. A broken database should make Ted less informed, never make
+#      Ted stop working. Keep that property if you add functions.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted remembers something wrong"   -> the Memory panel in the window edits
+#                                           these rows directly. Do that first.
+#      "Add a new column / table"        -> add it to the CREATE TABLE block AND
+#                                           to _migrate(), which is what brings
+#                                           an existing database up to date.
+#                                           Skipping _migrate works on your
+#                                           machine and breaks on a real one.
+#      "Ted injects too much into every
+#       prompt"                          -> get_facts_about here, and the _cap()
+#                                           calls in core/llm.py. §8.3.
+#
+#  PYTHON AND SQL YOU'LL SEE HERE THAT MIGHT BE NEW
+#      `conn.execute("SELECT ... WHERE subject=?", (subject,))`
+#          The `?` is a placeholder and the tuple supplies the value. Never
+#          build SQL by pasting text together with `+` or an f-string. This is
+#          not style — a value containing a quote character would change the
+#          meaning of the statement.
+#
+#      WAL mode (write-ahead logging)
+#          A SQLite setting that lets one writer and several readers work at
+#          once without blocking. Ted has many threads; without this they would
+#          collide.
+#
+#      threading.local()
+#          "Give each thread its own copy of this." SQLite connections cannot be
+#          shared across threads, so each thread gets its own.
+#
+#      FTS5
+#          SQLite's built-in full-text search. A virtual table kept in sync with
+#          the real one, letting you search words rather than match strings.
+# =============================================================================
+
 import os
 import sqlite3
 import threading
@@ -231,6 +317,16 @@ def _fact_phrase(subject, relationship, obj):
     return " ".join(p for p in ((subject or "").strip(), rel, (obj or "").strip()) if p)
 
 
+# [BOOK §14.5] ─── ONE EMITTER, NOT THREE ────────────────────────────────────
+# Every memory write — you saying "remember that", the background extractor, the
+# session summariser — comes through here so the window shows one toast.
+#
+# One emitter is the point. Two places deciding what counts as a memory event is
+# the duplicated-judgment bug this codebase keeps getting bitten by: a gate
+# matching by substring while the dispatch below it matched by prefix; a stored
+# reply diverging from the spoken one. Every one of those was two pieces of code
+# answering the same question differently. When you add a check, find who
+# already answers it. §34.
 def memory_event(kind, text, table="facts", row_id=None, importance=2):
     """Announce one change to what Ted knows.
 
@@ -332,6 +428,17 @@ def _norm_obj(obj):
     return " ".join((obj or "").strip().lower().rstrip(".!,").split())
 
 
+# [BOOK §14.2] ─── FACTS SUPERSEDE, THEY DO NOT STACK ────────────────────────
+# For a single-valued relationship — where you live, how old you are — a new
+# value REPLACES the old one rather than sitting beside it.
+#
+# Without this, both "LIVES_IN Spirit Lake" and "LIVES_IN Spirit Lake, Iowa"
+# ended up in the facts table, and therefore in every prompt, forever. Ted read
+# both every turn and sounded confused about something you had told it clearly.
+#
+# When two versions differ only in specificity, the more specific one wins.
+# _norm_rel and _norm_obj above are how "the same thing said differently" is
+# recognised.
 def save_fact(subject, relationship, obj, importance=2):
     """Store a fact triple, e.g. save_fact('Charlie', 'STUDIES', 'CS').
 

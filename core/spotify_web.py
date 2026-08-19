@@ -19,6 +19,24 @@ ONE-TIME SETUP
 Needs Spotify Premium (you have it) and the Spotify app open on some device.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 26 (§26.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The half of music control that needs your Spotify account: starting a named
+#      playlist, searching for a song. Uses spotipy, which handles the OAuth token
+#      dance and refreshes tokens automatically.
+#
+#  _confirm_playing AND THE THREE-VALUED ANSWER
+#      It returns True, False, or None — and None is deliberately NOT treated as
+#      success. The Web API accepts a play request and returns a success code in
+#      plenty of cases where nothing actually starts playing. Saying "Playing X"
+#      because the call did not raise an error is the exact cheerful-lie failure the
+#      honesty rule exists to prevent. §11.8.
+#
+# =============================================================================
+
 import json
 import os
 import re

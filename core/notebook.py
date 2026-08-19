@@ -28,6 +28,52 @@ Design principles this follows (see the handoff, §12):
     territory.
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 16 (§16.1 – §16.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Ted's own notebook: named pages of numbered entries that he can read,
+#      write, edit and delete. Distinct from two things it is easy to confuse
+#      it with:
+#          Apple Notes (core/notes.py)  — your app. Ted is a guest there.
+#          the knowledge base           — searchable, not revisable.
+#
+#  THE ONE DESIGN DECISION THAT MATTERS
+#      A page is an ORDERED LIST OF ENTRIES, not a blob of text.
+#
+#      With a blob, changing one line means Ted rewriting the whole page from
+#      memory — and a model rewriting a page it only half remembers is how
+#      notes quietly lose content. With numbered entries, an edit names exactly
+#      one row and physically cannot touch the rest. If you ever find yourself
+#      tempted to store pages as one string, this is the paragraph to re-read.
+#
+#  HOW TED KNOWS WHAT IS IN IT WITHOUT GUESSING
+#      Two mechanisms, deliberately split:
+#          index_line()   is loaded into EVERY prompt. Page names and entry
+#                         counts only — never contents. So Ted can neither
+#                         invent a page nor deny one that exists. It returns ""
+#                         when the notebook is empty, so an unused feature costs
+#                         nothing.
+#          notebook_read  is a TOOL CALL. Contents cost a read, always. The
+#                         persona says plainly: what is on a page, he reads —
+#                         never from memory, never paraphrased from an earlier
+#                         turn.
+#      Index = the map. Read = the territory. Neither alone would have worked.
+#
+#  PAGE NAMES ARE CLEANED BEFORE MATCHING
+#      "my fixes page", "the fixes notes", "FIXES" and "fixes" are one page.
+#      `_clean_name` does that. The model does not have to normalise, and two
+#      phrasings cannot silently become two pages.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted keeps making duplicate pages"  -> _clean_name is not stripping the
+#                                              wording you actually use.
+#      "The notebook panel looks wrong"    -> dashboard/notebook.html, not here.
+#      "Reading a page truncates"          -> READ_LIMIT.
+# =============================================================================
+
 from __future__ import annotations
 
 import os
@@ -339,6 +385,17 @@ def search(query, limit=12):
     return [dict(r) for r in rows]
 
 
+# [BOOK §16.3] ─── THE MAP THAT RIDES ALONG ──────────────────────────────────
+# Page NAMES and entry counts, on every single turn. Never contents.
+#
+# This is the whole reason the notebook is something Ted KNOWS rather than
+# something he might remember: he can no more invent a page than deny one that
+# exists. It is one local SQLite read of a table with a handful of rows, and it
+# returns "" when the notebook is empty — so an unused feature costs zero
+# tokens.
+#
+# Contents cost a notebook_read tool call, always. Index = the map, read = the
+# territory. Neither alone would have been enough.
 def index_line(max_pages=14):
     """One line naming every page, for injection into every turn's context.
 

@@ -13,6 +13,21 @@ account.microsoft.com → Security → Advanced security options → App passwor
 and use that instead of your regular password.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 25 (§25.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Outlook email over IMAP and SMTP — the old, boring, universally supported
+#      protocols. No OAuth, no browser, no Microsoft sign-in dance.
+#
+#  THE HONEST PROBLEM WITH THIS FILE
+#      Your password sits in ~/.ted_email_config.json in plain text. The Microsoft
+#      Graph path that would fix that was abandoned about one line from working.
+#      See §35 — it is a real item, not a nitpick.
+#
+# =============================================================================
+
 import imaplib
 import smtplib
 import json

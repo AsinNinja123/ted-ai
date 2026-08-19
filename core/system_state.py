@@ -6,6 +6,25 @@ tool result must not make Ted claim that music is still playing five minutes
 later.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 24 (§24.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      A verified picture of what is happening on your Mac right now: which apps are
+#      open, what is playing, which browser tab is in front.
+#
+#      The word doing the work in that sentence is VERIFIED. This module reports only
+#      things macOS or a media API confirmed just now.
+#
+#  THE RULE THIS FILE ENFORCES
+#      Conversation history is never treated as computer state. An old "Playing."
+#      tool result from five minutes ago must not let Ted claim music is still
+#      playing. What Ted said happened and what is happening are two different
+#      questions, and only one of them is answered by looking.
+#
+# =============================================================================
+
 import json
 import os
 import re

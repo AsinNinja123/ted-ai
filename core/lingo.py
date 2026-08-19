@@ -5,6 +5,20 @@ a lingo mapping changes how Ted interprets Charlie's words everywhere: routing,
 routines, and the model's compact operational context.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 18 (§18.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Your personal shorthand, expanded before Ted routes anything.
+#
+#      Deliberately separate from facts. A FACT adds context to an answer. A LINGO
+#      mapping changes how Ted INTERPRETS your words everywhere — routing, routines,
+#      and the compact operational context the model sees. Different job, different
+#      table.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import os

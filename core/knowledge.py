@@ -8,6 +8,28 @@ All public functions degrade gracefully to no-op / empty string on failure so
 a missing model download or a locked DB can never crash Ted.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 17 (§17.1 – §17.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The knowledge base: long documents you dropped in, stored so Ted can find the
+#      relevant paragraph later.
+#
+#      This is a VECTOR store (ChromaDB), which works differently from the SQL
+#      tables in core/memory.py. Text is converted into a list of numbers — an
+#      "embedding" — that captures roughly what it means. Searching converts your
+#      question the same way and finds the stored chunks whose numbers are closest.
+#      That is why it can match "how do I stop it freezing" against a paragraph that
+#      never uses the word "freezing".
+#
+#  CHUNKS, AND WHY THEY OVERLAP
+#      Documents are split into overlapping pieces. Overlap matters: a sentence that
+#      answers your question might straddle a boundary, and without overlap it would
+#      be half in each chunk and findable in neither.
+#
+# =============================================================================
+
 import os
 import json
 import time

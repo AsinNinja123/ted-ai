@@ -1,5 +1,22 @@
 """Verified macOS Accessibility and keyboard control for Ted."""
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 24 (§24.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Typing text, pressing keys, and reading or writing the clipboard on your
+#      behalf. This is macOS Accessibility control — the same permission a screen
+#      reader needs — so it will be silently useless until Ted's launcher has been
+#      granted it in System Settings.
+#
+#  A NOTE ON RISK
+#      type_text and clipboard_write currently run WITHOUT confirmation. That is low
+#      risk today because Ted has no browser automation. It stops being low risk the
+#      moment that lands. See §35.
+#
+# =============================================================================
+
 import json
 import os
 import re

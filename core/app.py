@@ -6,6 +6,94 @@ window exposes this object's public methods (start/listen/stop/toggle_mute/ask)
 to the JS side.
 """
 
+
+# =============================================================================
+#  READING THIS FILE    The Ted Code Book — Chapters 5, 6, 11 and 13
+#                       (§5.1 – §5.3, §6.1 – §6.8, §11.6 – §11.8, §13.x)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The monolith. One class, TedApi, about 3,700 lines, and it owns the
+#      single most important function in the project: `_respond()`.
+#
+#      Every message you ever send Ted — typed in the box, spoken at the mic,
+#      or fired at the remote endpoint from your phone — ends up inside
+#      `_respond()`. What happens to it there is "the ladder": a series of
+#      cheap local checks, each of which either handles the message and stops,
+#      or passes it down to the next one. Only messages that survive all of
+#      them reach the model.
+#
+#      This file is too big and everyone involved knows it. See §35. Do not
+#      add anything to it that could live in another module.
+#
+#  WHERE IT SITS
+#      hud.py                     creates one TedApi and hands it to the window
+#      ui/ted_hud.html            calls TedApi's public methods through
+#                                 window.pywebview.api.<method>()
+#      core/routing.py            TedApi asks it "which tools does this need?"
+#      core/llm.py                TedApi asks it "answer this" and gets back a
+#                                 stream of text
+#      core/tool_handlers.py      TedApi calls these when the model picks a tool
+#
+#  THE SHAPE OF IT, TOP TO BOTTOM
+#      lines ~1-235    imports, small module-level helper functions, and the
+#                      gate-5 allowlist (`_use_deterministic_command`)
+#      ~237            class TedApi begins
+#      ~238-332        __init__  — every piece of state Ted holds while running.
+#                      If you want to know what Ted can remember *within* one
+#                      session, read this method. It is the honest answer.
+#      ~390            _respond   ← THE LADDER. The heart of the program.
+#      ~917-1730       _assistant_command — what is left of the old regex
+#                      dispatch. Mostly unreachable now; gate 5 only lets a
+#                      short allowlist of message shapes reach it.
+#      ~1997           _dispatch_tool — the switchboard. A giant if/elif that
+#                      turns a tool NAME chosen by the model into a real action.
+#                      When you add a tool, you add a branch here.
+#      ~2797-3290      background threads: reminders, session summaries, the
+#                      apps watcher, the iMessage bouncer
+#      ~3290-end       the JS API surface — the methods the HTML window is
+#                      allowed to call
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted should handle X without asking the model"
+#            -> add a rung in _respond(), high up, and return early. §6.8.
+#      "Ted should be able to do a new thing"
+#            -> that is a tool, not a rung. §11.4 and §31.
+#      "Ted should remember something new during a session"
+#            -> add the attribute in __init__ first, so there is one place that
+#               lists what exists.
+#      "The window needs to call something new"
+#            -> add a method near the bottom, in the JS API section, and call it
+#               from the HTML as window.pywebview.api.your_method().
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      class TedApi:   /   def method(self, ...)
+#          A class is a template for an object that holds data (attributes) and
+#          the functions that work on that data (methods). `self` is the object
+#          itself, handed to every method automatically. `self.muted` is a piece
+#          of data that lives as long as Ted is running.
+#
+#      @property
+#          Makes a method look like a plain attribute from the outside. You
+#          write `api.muted` and Python quietly calls a function. Ted uses it
+#          where reading or writing a value needs to also *do* something —
+#          setting `self.muted = True` also turns the microphone off.
+#
+#      the walrus, `:=`
+#          Assign and test in one step.
+#              if (revised := _revised_message_args(text, args)):
+#          means "work out revised; if it is not empty, go into the if, and use
+#          it inside". Saves a line; that is all it is.
+#
+#      `getattr(engine, "_playing", False)`
+#          "Give me engine._playing, but if it does not exist, give me False
+#          instead of crashing." Defensive reads against optional pieces.
+#
+#      f-strings:  f"Now watching {topic['label']}."
+#          A string with expressions baked in. Anything in {curly braces} is
+#          evaluated and dropped into the text.
+# =============================================================================
+
 import base64
 import json
 import mimetypes
@@ -152,6 +240,24 @@ except Exception as _e:
     print(f"[shortcuts] failed to load: {_e}")
 
 
+# [BOOK §6.6] ─── GATE 5: the deterministic allowlist ────────────────────────
+#
+# This function answers one question: "is this message one of the few shapes we
+# handle in plain Python, without asking a model at all?"
+#
+# It used to be the opposite — about fifty regular expressions that tried to
+# catch every command, with the model only getting what was left over. That
+# made Ted feel like a vending machine: any phrasing nobody had thought of
+# simply did not work. It was gutted deliberately, and what survives is a short
+# allowlist of things that genuinely should not go to a model.
+#
+# Arithmetic is the one that looks out of place and is not. A language model
+# doing "8 percent of 250" fails SILENTLY — a wrong number reads exactly like a
+# right one, there is nothing to log and nothing to notice. Math in Python,
+# words in the model. (§34)
+#
+# Returning True here does not answer the message. It only means
+# _assistant_command below gets a look at it first.
 def _use_deterministic_command(text):
     """Keep only genuinely local/stateful controls ahead of the reasoning model.
 
@@ -387,6 +493,50 @@ class TedApi:
         # messages — without this setter every tool call crashed the turn.
         self.ted_conversation = value
 
+    # [BOOK §6] ═══ THE LADDER ═══════════════════════════════════════════════
+    #
+    # THE most important function in Ted. Every message ends up here: typed in
+    # the box (ask), spoken at the mic (conversation_loop), or sent from your
+    # phone (core/remote.py). They all converge on this one method.
+    #
+    # The shape is a ladder, not a branch. Each rung asks a cheap local
+    # question. If the answer is yes, the rung handles the message and RETURNS
+    # — the message never goes any further down. Only messages that survive
+    # every rung reach the model at the bottom, which is the expensive part.
+    #
+    # The rungs, in the order they are checked:
+    #
+    #   §6.2  1. mute / unmute            must be instant, and the model must
+    #                                     not "discuss" being muted
+    #         2. stop                     latency-critical; also pauses Spotify
+    #                                     if Ted was not the one talking
+    #         3. cancel                   stop, and clear any pending question
+    #         4. UI commands              show the chat log, repeat that, speak
+    #                                     faster — these drive the window, they
+    #                                     are not thoughts
+    #   §6.3  5. pending flows            you are answering a question Ted asked
+    #                                     last turn: a confirmation, "which
+    #                                     John?", "what should it say?"
+    #   §6.4  6. lingo                    "when I say X I mean Y" — cheap,
+    #                                     explicit, and needed by the very next
+    #                                     routing decision
+    #   §6.5  7. routines                 phrase -> actions you authored
+    #                                     yourself. Zero tokens.
+    #         8. documents                a complete, unambiguous doc request
+    #         9. reflexes                 "open Spotify" — complete and
+    #                                     reversible. Zero tokens.
+    #   §6.6 10. gate 5                   the deterministic allowlist above
+    #   §6.7 11. ONE STREAMED MODEL CALL  everything else
+    #
+    # A rung that returns early must do three things before it goes, and
+    # forgetting any of them is the most common bug when adding one:
+    #     engine.reset_barge_in()      or the tail of your own voice counts as
+    #                                  interrupting the reply to it
+    #     add_message(w, "ted", reply) or the window shows nothing
+    #     self.last_reply = reply      or "repeat that" says the wrong thing
+    #
+    # Adding your own rung: §6.8.
+    # ═════════════════════════════════════════════════════════════════════════
     def _respond(self, text, echo_user=True, spoken_prefix=None):
         """
         Think about `text` and answer out loud.
@@ -403,7 +553,7 @@ class TedApi:
         # what a bare "remember this" points at.
         self._prev_user_text, self._cur_user_text = self._cur_user_text, text
 
-        # ── mute/unmute from typed input or the remote endpoint ──
+        # [BOOK §6.2] RUNG 1 ── mute/unmute from typing or the remote endpoint ──
         # (Voice mute is intercepted in conversation_loop; while muted there is
         # no voice path at all — the mic is physically off — so typing is how
         # 'unmute' arrives.)
@@ -446,7 +596,7 @@ class TedApi:
                 add_message(w, "ted", reply)
             return False
 
-        # ── stop command: cut Ted off, and also pause Spotify if Ted isn't speaking ──
+        # [BOOK §6.2] RUNG 2 ── stop: cut Ted off; pause Spotify if Ted wasn't speaking ──
         if _is_stop_command(text):
             was_speaking = getattr(engine, "_playing", False)
             self.interrupt_speech = True
@@ -462,7 +612,7 @@ class TedApi:
             set_state(w, "idle")
             return False
 
-        # ── cancel command: cut off and go quiet ──
+        # [BOOK §6.2] RUNG 3 ── cancel: cut off, go quiet, clear pending state ──
         # A fresh memory write makes "forget that" mean the memory, not the
         # request; the memory handler in _assistant_command picks it up instead.
         if _is_cancel_command(text, memory_pending=self._memory_pending()):
@@ -488,7 +638,7 @@ class TedApi:
             set_state(w, "idle")
             return False
 
-        # ── chat-panel command: just drive the UI, don't think about it ──
+        # [BOOK §6.2] RUNG 4 ── UI commands: drive the window, never think ──
         cc = _chat_command(text)
         if cc:
             self.interrupt_speech = True
@@ -566,6 +716,7 @@ class TedApi:
             speak(w, "Speeding up.", self)
             return False
 
+        # [BOOK §6.3] RUNG 5 ── pending flows: you are answering Ted, not asking ──
         # ── pending confirmation for a consequential model-selected action ──
         if self._pending_tool_confirmation is not None:
             pending = self._pending_tool_confirmation
@@ -664,6 +815,7 @@ class TedApi:
 
         set_state(w, "thinking")
 
+        # [BOOK §6.4] RUNG 6 ── personal shorthand: "when I say X I mean Y" ──
         # Definitions are cheap, explicit, and should become available to the
         # very next routing decision without waiting for fact extraction.
         definition = lingo.parse_definition(text)
@@ -703,6 +855,7 @@ class TedApi:
             speak(w, reply, self)
             return False
 
+        # [BOOK §6.5] RUNGS 7-9 ── the zero-token lanes: routines, documents, reflexes ──
         # ── fast deterministic commands (no LLM call — regex/rule-based) ──
         # Personal sayings are checked before generic reflexes. They are
         # explicitly authored in the dashboard, contain only low-risk actions,
@@ -795,6 +948,22 @@ class TedApi:
                 speak(w, tool_result, self)
                 return False
 
+        # [BOOK §6.7] RUNG 11 ── THE MODEL ────────────────────────────────────
+        # Everything above was free. From here down the turn costs tokens.
+        #
+        # What happens, in order:
+        #   routing.select_tool_schemas   pick a SMALL tool menu for this
+        #                                 message, not the whole catalogue (§7.2)
+        #   llm.ToolRuntime               a holder for "these tools, and how to
+        #                                 run one when the model picks it" (§11.2)
+        #   llm.ask_streaming             build the prompt, make ONE streamed
+        #                                 call, hand back chunks as they arrive
+        #   speak_streaming               say and display each chunk immediately
+        #
+        # Note `_selected_dispatch` below: it intercepts one special tool name,
+        # `find_tools`, which is how the model asks for capabilities the router
+        # did not give it. That escape hatch is what lets the router be
+        # approximate. (§7.3)
         # ── one streamed call that either answers or reaches for a tool ──
         time.sleep(0.15)
 
@@ -1994,6 +2163,24 @@ class TedApi:
             line_spacing=args.get("line_spacing"),
         )
 
+    # [BOOK §11.6] ─── THE SWITCHBOARD ───────────────────────────────────────
+    #
+    # The model has chosen a tool by NAME and supplied ARGUMENTS as a
+    # dictionary. This method turns that into something actually happening.
+    #
+    # It is one very long chain of `if name == "...":` branches. That is not
+    # elegant and it does not need to be — it is a lookup table written in
+    # if-statements, and its only job is to be complete and obvious.
+    #
+    # WHEN YOU ADD A TOOL, THIS IS THE STEP PEOPLE FORGET. A schema in
+    # core/tools.py with no branch here means the model calls something that
+    # silently does nothing. Chapter 31 walks the full three-step process.
+    #
+    # Two rules every branch follows:
+    #   * Read arguments with args.get("x", ""), never args["x"] — anything not
+    #     in the schema's "required" list may simply be absent.
+    #   * Return the SENTENCE Ted will say, and let it be the truth. Do not
+    #     return "Done" because the call did not raise. (§11.8)
     def _dispatch_tool(self, name, args, confirmed=False):
         """Route a tool call from the LLM to the right Python handler.
         Returns a spoken-style result string; on any error returns an honest
@@ -2866,6 +3053,10 @@ class TedApi:
         elif not self.user_frustrated and prev:
             print("[mood] frustration cleared")
 
+    # [BOOK §5.2] ─── THE SPOKEN WAY IN ──────────────────────────────────────
+    # A loop on a background thread: listen, transcribe, hand the text to
+    # _respond, listen again. Runs for the whole life of the program, but does
+    # nothing while muted — and Ted boots muted, because it is a chat app now.
     def conversation_loop(self):
         """Main listen→respond loop — runs forever on a background daemon thread.
 
@@ -3713,6 +3904,16 @@ class TedApi:
         self._push_mic_state()
         return self.transcribe_only
 
+    # [BOOK §5.1] ─── THE TYPED WAY IN ───────────────────────────────────────
+    # Called from the window as window.pywebview.api.ask(text) when you press
+    # send. It is the shortest path in the program: take the busy lock, call
+    # _respond, release it.
+    #
+    # Historical note worth keeping: this method used to take the lock BEFORE
+    # doing anything, with an eight second timeout — which meant "stop" was
+    # queued behind the very thing it was meant to stop. A real log shows a turn
+    # hung for 41 seconds while three separate stop attempts were each answered
+    # "the previous request is still finishing". Stop now bypasses the lock.
     def ask(self, text):
         """Handle typed input from the HUD text box.
         Interrupts any ongoing speech, then runs _respond() on a background thread

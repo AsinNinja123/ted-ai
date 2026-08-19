@@ -8,6 +8,16 @@ Public API:
     get_note(title_fragment)             → full note body string, or ""
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 25 (§25.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Apple Notes, through AppleScript. Same shape and same principle as
+#      core/calendar_app.py: talk to the real app, never keep a parallel copy.
+#
+# =============================================================================
+
 import subprocess
 
 

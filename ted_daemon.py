@@ -29,6 +29,30 @@ RUNNING IT
     As a launchd agent:        bash tools/install_daemon.sh
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 28 (§28.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The calendar watch, running as a separate program under launchd (macOS's
+#      service manager) rather than as a thread inside Ted's window.
+#
+#      That is the entire point. A thread inside the window dies when you close the
+#      window — which is exactly when being told about your next class matters most.
+#
+#  DELIBERATELY NARROW
+#      It watches Calendar.app and posts a macOS notification for events starting in
+#      the next ~16 minutes. It does NOT fire user-defined triggers, because those
+#      can carry actions that only mean something when the assistant is running.
+#
+#  STATUS, HONESTLY
+#      The logic is unit-tested; the launchd install has never been verified on
+#      macOS. The likely failure is permissions — macOS gates AppleEvents per
+#      calling binary, and a launchd-spawned python is a different caller from your
+#      terminal. §35.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import argparse

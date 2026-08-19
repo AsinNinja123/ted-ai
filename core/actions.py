@@ -1,3 +1,35 @@
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 24 (§24.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Ted's hands for the everyday things: opening and closing applications,
+#      opening a URL in a specific browser, instant Spotify transport (play, pause,
+#      skip), looking up a contact, and sending an iMessage.
+#
+#      Nearly everything here works by asking macOS to do something through
+#      AppleScript — a scripting language Apple built into the system that lets one
+#      program tell another program what to do. Ted writes a short AppleScript,
+#      hands it to the `osascript` command, and reads what comes back.
+#
+#  THE APPS DICTIONARY
+#      `APPS` maps the words you say to the real application names macOS expects.
+#      "vs code" -> "Visual Studio Code". When Ted cannot open something you asked
+#      for by name, this dictionary is the first place to look, and adding a line to
+#      it is usually the whole fix.
+#
+#  WHY ACTIONS RETURN SENTENCES
+#      Every function here returns the text Ted will say. Not a boolean, not a
+#      status code — the sentence itself. That is deliberate: it makes it hard to
+#      throw away what really happened, which is the honesty rule (§11.8).
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      'Ted cannot open X'          -> add it to APPS.
+#      'Ted opens the wrong browser' -> browse_to takes an optional browser argument;
+#                                       check the tool schema is passing it.
+#
+# =============================================================================
 import subprocess
 import difflib
 import time

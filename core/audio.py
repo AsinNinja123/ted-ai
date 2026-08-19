@@ -22,6 +22,57 @@ Both modes share the same continuous-reader → queue → capture/barge-in logic
 they differ only in where mic frames come from and where playback goes.
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 23 (§23.1 – §23.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The lowest level of Ted: raw microphone frames in, raw speaker samples
+#      out, and the machinery that lets you talk over Ted mid-sentence.
+#
+#      You will probably never need to change this file. Read it to understand
+#      why interrupting works, then leave it alone unless interrupting stops
+#      working.
+#
+#  BARGE-IN, AND WHY IT IS HARDER THAN IT SOUNDS
+#      "Let the user interrupt" sounds like: if the mic is loud while Ted is
+#      talking, stop talking. That version fails in three separate ways, and all
+#      three were found the hard way:
+#
+#      1. A clap is loud. So is a door. Loudness alone is not speech, which is
+#         why there is a voice-activity detector (webrtcvad) AND a pitch check —
+#         human speech has a fundamental frequency roughly 70–320 Hz, and
+#         autocorrelation finds it. A clap has no pitch.
+#
+#      2. Ted's own voice comes out of the speakers and back into the mic, so
+#         Ted interrupts himself. The native Swift engine uses Apple's Voice
+#         Processing to cancel that echo. Without the native engine, use
+#         headphones — that is what "fallback" mode means below.
+#
+#      3. THE BIG ONE: detection used to be switched on only while audio was
+#         actually playing, and playback goes briefly silent BETWEEN SENTENCES —
+#         which is exactly where a human interrupts. Ted was deaf at every
+#         sentence boundary. The fix was `_in_reply`, which keeps detection
+#         alive across the whole reply rather than each sentence.
+#
+#      A sliding window then requires several consecutive speech-like frames
+#      before it believes you, so one stray frame cannot cut Ted off.
+#
+#  THE TWO MODES
+#      "aec"       the native Swift binary (native/ted_audio) built and running.
+#                  Echo cancelled. You can interrupt over speakers.
+#      "fallback"  pure Python via sounddevice. Works fine on headphones.
+#
+#      start() picks one automatically. Which one you got is worth knowing when
+#      barge-in misbehaves.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      Turn on the barge-in debug output FIRST. Every threshold in here was
+#      tuned against real recordings, and changing one blind is how the silent
+#      failure comes back. §35.
+# =============================================================================
+
 import os
 import sys
 import time

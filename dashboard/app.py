@@ -9,6 +9,26 @@ change made here (and every change Ted makes) lands in the memory_audit
 table, shown in the History tab.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 15 (§15.1 – §15.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      A small Flask web server on 127.0.0.1:5175. Flask is a Python library for
+#      writing web servers: you write a function, put a @app.route("/path") line
+#      above it, and that function now answers requests to that URL.
+#
+#      This is what the Memory, Notebook and Diagnostics panels inside Ted's window
+#      are actually showing — they are web pages in an iframe, served from here. It
+#      also runs standalone: `python -m dashboard`.
+#
+#  IT WRITES THE SAME FILE TED DOES
+#      data/memory.db. Two processes, one database. That is why the audit log is
+#      implemented as SQLite triggers rather than as dashboard code — see
+#      dashboard/db.py.
+#
+# =============================================================================
+
 import os
 import sys
 from urllib.parse import urlsplit

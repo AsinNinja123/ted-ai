@@ -12,6 +12,33 @@ transaction while writing, then flips it back before committing — so a
 concurrent write from Ted's process never sees the 'user' flag.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 15 (§15.3 – §15.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The schema, the table registry, and the audit plumbing behind the dashboard.
+#
+#      The table registry is the safety layer: for each table it whitelists which
+#      columns may be read, edited and searched. A web form cannot reach a column
+#      that is not on that list.
+#
+#  THE AUDIT LOG IS A SET OF SQLITE TRIGGERS
+#      Not dashboard code. The triggers are stored INSIDE the database file, so they
+#      fire for Ted's own writes too — from a different process entirely — not just
+#      for edits made through this web page. Putting the audit in the dashboard
+#      would have logged half the writes and looked complete.
+#
+#  ACTOR ATTRIBUTION — GENUINELY CLEVER, DO NOT FLATTEN IT
+#      A one-row `audit_context` table records who is writing, defaulting to 'ted'.
+#      The dashboard flips it to 'user' INSIDE ITS OWN UNCOMMITTED TRANSACTION, then
+#      flips it back before committing. Because the change is never committed while
+#      set, a concurrent write from Ted's process cannot see the 'user' flag and be
+#      mislabelled. If a refactor makes this simpler, it has almost certainly made
+#      it wrong.
+#
+# =============================================================================
+
 import json
 import os
 import sqlite3

@@ -21,6 +21,23 @@ Nothing is copied out of chat.db into Ted's own storage except the last row id
 seen. Message text stays where Apple put it.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 25 (§25.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Reading incoming iMessages, by opening the Messages database directly.
+#      macOS gives no supported way to observe another app's notifications, so this
+#      is the only route — and it has two costs, both stated plainly in the file:
+#
+#      1. It needs Full Disk Access granted to whatever launches Ted. Until then
+#         every function here says so, clearly, rather than returning empty results.
+#         "No new messages" and "I am not allowed to look" are different answers and
+#         only one of them is true.
+#      2. The database is opened READ ONLY, always.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import os

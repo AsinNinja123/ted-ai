@@ -13,6 +13,80 @@ That is the line between a fast reflex and the old regex ladder that tried to be
 the assistant.
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 7 (§7.1 – §7.5)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The bouncer for the prompt. Its job is to keep messages cheap.
+#
+#      Ted has dozens of tools. Every tool's description ("schema") is real text
+#      that gets sent to the model with every single message, and the free tier
+#      counts those characters against a per-minute ceiling. Sending the whole
+#      catalogue on "how are you" is how you run out of budget saying hello.
+#
+#      So this file makes three cheap guesses before the model is ever asked:
+#          1. Which small handful of tools might this message need?
+#          2. Is this message so simple that no model is needed at all?
+#          3. Should this go to the fast cloud brain or the local one?
+#
+#      It guesses with regular expressions, which are dumb and instant. Getting
+#      it slightly wrong is fine on purpose: if the model finds itself without
+#      the tool it needs, it can call `find_tools` and ask for more. That escape
+#      hatch is why this file is allowed to be approximate.
+#
+#  THE LINE THIS FILE MUST NOT CROSS
+#      This module picks CAPABILITIES. It does not decide what Ted does.
+#      An earlier version of Ted had ~50 regular expressions that tried to be
+#      the assistant, and it made him feel like a vending machine — any phrasing
+#      the author had not thought of simply did not work. That was deleted
+#      deliberately. If you find yourself adding a pattern that decides an
+#      *answer* rather than a *menu*, you are rebuilding the thing that was
+#      removed. See §34.
+#
+#  THE SHAPE OF IT
+#      FIND_TOOLS_SCHEMA      the escape hatch, always in the menu
+#      _FAMILIES              regex -> tool names. Rough groupings, not commands
+#      select_tool_schemas    the main entry: message in, small tool list out
+#      discover_tool_schemas  what find_tools actually runs
+#      plan_reflex            "open Spotify" — complete, reversible, zero tokens
+#      plan_document          same idea for document creation
+#      classify_brain         local model or cloud model, by rules
+#      classify_brain_with_model   the tiebreak, asked of a tiny local model
+#      memory_scope_for       how much memory retrieval this turn earns
+#      operational_context    a short note about what Ted just did
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted never offers tool X when I ask for it"
+#            -> add a word to the matching _FAMILIES row. §7.2.
+#      "Ted uses the cloud when it should stay local"
+#            -> the thresholds are in classify_brain. §7.5.
+#      "Opening an app should not cost a model call"
+#            -> that is plan_reflex. §7.4.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      re.compile(r"...")
+#          A regular expression: a pattern for matching text. The `r` before the
+#          quotes means "raw string" — backslashes stay literal, which matters
+#          because regex is full of them. \b means "word boundary",
+#          (?: ... ) is a group you do not want to capture, | means "or".
+#          You do not need to be able to write these to work on Ted; you do need
+#          to be able to read them well enough to add a word to a list.
+#
+#      @dataclass
+#          A shortcut for "a class that is mostly just a bag of named values".
+#          Python writes __init__ for you from the field list.
+#
+#      from __future__ import annotations
+#          A compatibility line about type hints. It changes nothing you can
+#          see. Ignore it.
+#
+#      a dict comprehension:  {s["function"]["name"]: s for s in TOOL_SCHEMAS}
+#          Build a dictionary in one line — here, "tool name -> its schema", so
+#          a lookup by name is instant instead of a loop.
+# =============================================================================
+
 from __future__ import annotations
 
 import difflib
@@ -195,6 +269,19 @@ def _family_names(text):
     return names
 
 
+# [BOOK §7.2] ─── PICKING THE MENU ───────────────────────────────────────────
+# Message in, a short list of tool schemas out. This is the function that keeps
+# a turn affordable.
+#
+# It works by running the message past _FAMILIES above — rough regex groupings
+# of the shape "if the message mentions opening or launching, they probably want
+# open_app and close_app". These are capability HINTS, not command parsers.
+#
+# It is allowed to be wrong in both directions:
+#   too many tools  -> costs a few tokens
+#   too few tools   -> the model calls find_tools and asks for more (§7.3)
+# Only the second one is even visible, and it self-corrects. That asymmetry is
+# what lets this file stay simple.
 def select_tool_schemas(text, recent_action_text=""):
     """Return a small initial tool menu plus the discovery escape hatch."""
     names = _family_names(text)
@@ -456,6 +543,17 @@ _LOCAL_LOOKUP = re.compile(
 )
 
 
+# [BOOK §7.5] ─── CLOUD OR LOCAL ─────────────────────────────────────────────
+# Which brain earns this turn. Rules first, because rules are instant; only a
+# genuinely ambiguous message pays about a tenth of a second to ask a tiny local
+# router model (classify_brain_with_model, below).
+#
+# The bias is deliberately toward the cloud. Getting LOCAL wrong costs answer
+# quality, which you notice and cannot undo; getting CLOUD wrong costs tokens,
+# which refill every minute. Asymmetric mistakes deserve an asymmetric default.
+#
+# This verdict is ADVISORY. providers.chat_create will still escalate to the
+# cloud if the local brain is not actually available.
 def classify_brain(text, schemas=(), has_attachment=False, pinned=""):
     """Decide which brain answers, without calling anything.
 
@@ -580,6 +678,15 @@ def _resolve_known_app(raw):
     return fuzzy[0] if fuzzy else None
 
 
+# [BOOK §7.4] ─── THE ZERO-TOKEN LANE ────────────────────────────────────────
+# "open Spotify" does not need a language model. This recognises COMPLETE,
+# REVERSIBLE app open/close requests and returns a plan that core/app.py can
+# execute directly — no prompt, no tokens, no waiting.
+#
+# The word doing the work is COMPLETE. If even one target is unclear, this
+# returns None and the whole turn goes to the model instead of half-guessing.
+# A reflex that fires on an ambiguous request is the old regex ladder coming
+# back, and the old regex ladder is what made Ted feel like a robot. §34.
 def plan_reflex(text):
     """Plan an exact reversible app request, or decline the entire turn.
 

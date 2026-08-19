@@ -7,6 +7,94 @@ one OpenAI/Groq-shaped response interface, so chat, tools, JSON extraction, and
 vision all share the same fallback behavior.
 """
 
+
+# =============================================================================
+#  READING THIS FILE           The Ted Code Book — Chapter 10 (§10.1 – §10.6)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The one door. Every thought Ted has — a reply, a tool decision, a fact
+#      extraction, a session summary, describing a screenshot — leaves the
+#      program through `chat_create()` in this file. There is no second path.
+#
+#      That is not an accident, it is the design. Ted used to name models in
+#      four different places and they drifted apart. Now a model name enters a
+#      request in exactly one file, and everything else just asks for thinking
+#      and gets it.
+#
+#  WHAT chat_create() ACTUALLY DOES
+#      1. Look at the pin: has the user forced cloud or local in the header
+#         dropdown? (get_provider_mode)                                  §10.6
+#      2. If not pinned, try Groq — the hosted model. Fast.              §10.2
+#      3. If Groq fails FOR ANY REASON — no key, rate limited, 500 error,
+#         network gone, timeout — retry the identical request against a local
+#         model running under Ollama on the Mac.                         §10.3
+#      4. Report which one answered, so the HUD's health dot can be honest.
+#
+#      Callers never classify the error. They never ask "was that a rate limit
+#      or an outage?" They ask for an answer and get one. That is the whole
+#      value of this file.
+#
+#  THE THING TO KNOW ABOUT THE LOCAL FALLBACK
+#      Ollama may need to load a multi-gigabyte model from disk. That can take
+#      up to three minutes on a cold start, during which Ted looks frozen. That
+#      is why `set_fallback_notice()` exists: core/app.py registers a callback
+#      so the window can say "switching to the local brain" instead of going
+#      silent. If you ever make Ted quieter here, you are recreating a bug that
+#      reads exactly like a crash.
+#
+#  max_retries=0 — READ THE COMMENT BELOW THE IMPORTS
+#      The Groq SDK retries twice by default, silently, with backoff, and its
+#      timeout is per attempt. A "30 second" request could take over a minute
+#      with no output and no error. That is not a hypothetical; it is in the
+#      logs. Retrying is fine, but it belongs somewhere that can say what it is
+#      doing. Do not put it back.
+#
+#  THE SHAPE OF IT
+#      configuration + the Groq client              top of file
+#      rate-limit bookkeeping                       _note_usage, _read_rate_headers
+#      the cloud cooldown                           _start_cloud_cooldown
+#      the provider pin (auto / cloud / local)      get_provider_mode, set_provider_mode
+#      "which brain answered last"                  active_provider, active_model
+#      Ollama plumbing                              _ensure_ollama, _ollama_payload,
+#                                                   _OllamaStream, _ollama_create
+#      the router shortcut                          route_hint
+#      THE DOOR                                     chat_create      (bottom)
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Use a different cloud model"   -> CLOUD_CHAT_MODEL in config.py. Not here.
+#      "Use a different local model"   -> LOCAL_CHAT_MODEL / LOCAL_TOOL_MODEL, same.
+#      "Ted gives up on the cloud too fast / too slow"
+#                                      -> DEFAULT_CLOUD_COOLDOWN, MAX_CLOUD_COOLDOWN.
+#      "The local brain hangs forever"
+#                                      -> OLLAMA_START_BUDGET, OLLAMA_STALL_TIMEOUT.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      `_USAGE_SUPPORTED = [True]`  — a one-element list
+#          A trick. Reassigning a plain module variable from inside a function
+#          needs a `global` declaration; MUTATING a list does not. So a
+#          one-element list is used as a little mutable box. `_USAGE_SUPPORTED[0]`
+#          is the flag.
+#
+#      SimpleNamespace
+#          An object you can hang arbitrary attributes on. Used here to fake the
+#          shape of a Groq response object so the Ollama path can return
+#          something the rest of Ted already knows how to read.
+#
+#      `def chat_create(**kwargs)`
+#          `**kwargs` collects every keyword argument into a dictionary. It lets
+#          this function forward whatever it was given straight through to the
+#          real client without listing every option.
+#
+#      `-> str` in a signature
+#          A type hint. Documentation for humans and tools; Python does not
+#          enforce it and it changes nothing at runtime.
+#
+#      queue.Queue
+#          A thread-safe list you can put things into from one thread and take
+#          them out of in another. Used to move streamed chunks across threads.
+# =============================================================================
+
 from __future__ import annotations
 
 import json
@@ -264,6 +352,10 @@ _VALID_MODES = ("auto", "cloud", "local")
 _mode_cache = {"mtime": -1.0, "value": "auto"}
 
 
+# [BOOK §10.6] ─── THE PIN ───────────────────────────────────────────────────
+# The dropdown in the window header writes here: "auto", "cloud" or "local".
+# It is stored in data/runtime.json so it survives a restart. "auto" means the
+# ordinary cloud-then-local behaviour; the other two are FORCED, not preferred.
 def get_provider_mode() -> str:
     """Return ``auto``, ``cloud``, or ``local``. Cheap enough for every call."""
     try:
@@ -441,6 +533,15 @@ def local_brain_available() -> bool:
     return time.time() >= _ollama_down_until
 
 
+# [BOOK §10.3] ─── STARTING THE LOCAL BRAIN ──────────────────────────────────
+# Ollama is a separate program that runs models on this Mac. It is installed but
+# does not always start on its own, so this tries to start it and waits.
+#
+# The budget here is deliberately small. An earlier version polled twenty times
+# at a one second timeout, which cost about twenty-three seconds PER MESSAGE on
+# a Mac where ollama never starts. There is now a six second budget and a five
+# minute cooldown after a failure, so a dead local brain costs you once rather
+# than every turn.
 def _ensure_ollama():
     """Start the local Ollama service when the app is installed but idle.
 
@@ -706,6 +807,28 @@ def route_hint(system, text):
         return ""
 
 
+# [BOOK §10.1] ═══ THE DOOR ══════════════════════════════════════════════════
+#
+# Every thought Ted has leaves the program through this function. Replies, tool
+# decisions, fact extraction, session summaries, describing a screenshot — all
+# of it. There is no second path.
+#
+# What it does, in order:
+#   1. Check the pin. Has the user forced cloud or local in the header
+#      dropdown? A pin is obeyed, not treated as a hint. (§10.6)
+#   2. Unless pinned local, try Groq.
+#   3. If Groq fails for ANY reason — no key, rate limit, 500, dropped
+#      connection, timeout — retry the IDENTICAL request against Ollama on this
+#      Mac. (§10.4)
+#   4. Record which one answered, so the window's health dot can be honest.
+#
+# The value of this design is that callers never classify errors. Nothing else
+# in Ted asks "was that a rate limit or an outage?" — it asks for an answer and
+# gets one.
+#
+# The cost is a handover that can be slow: a cold Ollama model loads from disk
+# and that can take minutes, during which Ted looks frozen. set_fallback_notice
+# exists so the window can say what is happening instead of going quiet.
 def chat_create(**kwargs):
     """Run a chat request on free Groq, falling back to local Ollama.
 

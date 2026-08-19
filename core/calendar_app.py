@@ -12,6 +12,24 @@ Public API:
 All functions return [] or "" on any AppleScript failure — never raise.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 25 (§25.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Reading and writing real Calendar.app events through AppleScript.
+#
+#      Note what this file does NOT do: it does not keep its own copy of your
+#      calendar. Ted asks the real app every time. That is the "no second source of
+#      truth" principle (§34) — a parallel copy is a copy that will be wrong.
+#
+#  EVERY FUNCTION REFUSES TO CRASH
+#      They return [] or "" when AppleScript fails, because AppleScript fails for
+#      boring reasons — the app was not running, macOS had not granted permission
+#      yet — and none of those should stop Ted answering.
+#
+# =============================================================================
+
 import os
 import subprocess
 from datetime import datetime, timedelta

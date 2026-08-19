@@ -13,6 +13,22 @@ either an X-Ted-Token header or a &token= query parameter. Without a token the
 server stays disabled; it is never exposed unauthenticated.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 29 (§29.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      A tiny HTTP server so an iPhone Shortcut or a curl command can ask Ted
+#      something over your local network.
+#
+#  SECURITY, STATED PLAINLY
+#      Set REMOTE_TOKEN in config.py and every request must carry it. With no token
+#      set, the server DOES NOT START AT ALL. It is never exposed unauthenticated.
+#      That is also the current reason phone access does not work — the token is
+#      blank. §35.
+#
+# =============================================================================
+
 import threading
 import logging
 import hmac

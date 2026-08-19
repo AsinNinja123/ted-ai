@@ -4,6 +4,25 @@ Every call is wrapped so a JS exception (or a not-yet-ready window) can never
 crash the Python audio threads.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 20 (§20.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The Python-to-JavaScript direction of the bridge. Small, and worth reading in
+#      full — it is four functions.
+#
+#      When Python wants the window to do something, it does not manipulate HTML. It
+#      asks pywebview to RUN A LINE OF JAVASCRIPT in the page, and that JavaScript
+#      calls a function on the `tedHud` object defined in ui/ted_hud.html.
+#
+#  WHY EVERY CALL IS WRAPPED IN try/except
+#      These are called from audio threads. A JavaScript error, or a window that has
+#      not finished loading, must never be able to take down the thread that is
+#      listening to your microphone.
+#
+# =============================================================================
+
 import json
 
 

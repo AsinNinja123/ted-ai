@@ -6,6 +6,22 @@ filler words are ignored, multi-word phrases may appear inside a natural
 utterance, and one-word phrases must match the whole utterance.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 28 (§28.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Phrase-to-action routines you write yourself in the dashboard. "movie mode"
+#      -> close these apps, set this volume. Ted's zero-model fast path: a routine
+#      match costs no tokens and makes no model call.
+#
+#  MATCHING IS DELIBERATELY CONSERVATIVE
+#      Filler words are ignored; a multi-word phrase may appear inside a longer
+#      sentence; a ONE-WORD phrase must match the entire utterance. That last rule
+#      is what stops a routine named "start" from firing on "start the timer".
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import difflib

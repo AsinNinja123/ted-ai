@@ -8,6 +8,54 @@ Importing this module loads the models and starts the audio engine — it is
 the runtime, not a library of pure helpers (those live in core/intents.py).
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 22 (§22.1 – §22.5)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Ted's ears and mouth. Turning sound into text, and text into sound.
+#
+#      Importing this file is not free: it loads speech models and starts the
+#      audio engine. It is the runtime, not a library of helpers. The pure,
+#      testable text handling lives in core/intents.py instead.
+#
+#  THE TWO DIRECTIONS
+#      HEARING     capture() records a turn, then transcribes it — through
+#                  Groq's hosted Whisper by default, or a local Whisper if
+#                  USE_GROQ_STT is False. Local Whisper is the offline path.
+#      SPEAKING    synth() turns text into audio with Kokoro, a local
+#                  text-to-speech model (voice `am_michael`). ElevenLabs is
+#                  available behind a config flag and is not used.
+#
+#  THE GATES IN capture() — THE INTERESTING PART
+#      Whisper hallucinates. In a silent room it will confidently return
+#      "Thank you", because that is the phrase that most often follows silence
+#      in its training data. Coughs came back as "Tep." and "Start." and were
+#      EXECUTED AS COMMANDS. So capture() refuses audio in stages before any of
+#      it is believed:
+#          duration + loudness (RMS)     too short or too quiet -> discard
+#          Whisper's own no-speech score  the model's own doubt  -> discard
+#          _looks_hallucinated()          exact-match blocklist of phantoms
+#          _is_junk_fragment()            one-word noise that reads as a command
+#      Each one exists because of a specific real failure. Deleting one brings
+#      that failure back.
+#
+#  SPEAKING WHILE STREAMING
+#      speak_streaming() takes the generator from core/llm.ask_streaming and
+#      speaks it sentence by sentence as it arrives, rather than waiting for the
+#      whole reply. _find_sentence_break() decides where a sentence ends. That
+#      is why Ted starts talking almost immediately.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted's voice is wrong"          -> the Kokoro voice name, in synth().
+#      "Ted talks too fast / slow"     -> SPEED, and adjust_speed().
+#      "Ted mishears me constantly"    -> the gates above are probably too
+#                                          tight. Turn on the debug output
+#                                          before touching thresholds.
+#      "Ted reads markdown out loud"   -> _clean_for_speech().
+# =============================================================================
+
 import os
 import re
 import subprocess
@@ -519,6 +567,21 @@ def speak_streaming(window, text_gen, api, speed=None, volume=None):
     return full, barged_by_voice
 
 # ---------- capture (mic → text) ----------
+# [BOOK §22.3] ─── THE GATES ─────────────────────────────────────────────────
+# Record a turn, transcribe it, and refuse it several times over before
+# believing it.
+#
+# Each gate exists because of a specific real failure, in this order:
+#   duration + loudness      too short or too quiet is not a turn
+#   Whisper's no-speech score the model's own doubt, which it reports
+#   _looks_hallucinated      in a silent room Whisper confidently returns
+#                            "Thank you" — that is the phrase most likely to
+#                            follow silence in its training data
+#   _is_junk_fragment        a cough transcribed as "Tep." or "Start." was
+#                            EXECUTING AS A COMMAND
+#
+# Deleting a gate brings its failure back. Loosening one is fine, but turn on
+# the debug output and watch real audio first.
 def capture(prearmed=False):
     """Record one spoken turn and return its transcription, or None if nothing usable.
 

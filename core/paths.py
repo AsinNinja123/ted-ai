@@ -4,6 +4,17 @@ Derived from this file's own location (ted-ai/core/paths.py) so the project
 keeps working even if the folder is moved or renamed.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 29 (§29.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Where everything lives. Fifteen lines, and every path is derived from this
+#      file's own location rather than hardcoded — so moving or renaming the ted-ai
+#      folder does not break Ted.
+#
+# =============================================================================
+
 import os
 
 HOME = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # …/ted-ai

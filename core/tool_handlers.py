@@ -6,6 +6,62 @@ re-narrate an action, because that's where it invents successes that didn't
 happen.
 """
 
+
+# =============================================================================
+#  READING THIS FILE       The Ted Code Book — Chapter 11 (§11.5, §11.7 – §11.8)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The kitchen. core/tools.py describes what Ted can do; this file is where
+#      several of those things actually get done, and where two rules that keep
+#      Ted honest are enforced.
+#
+#  THE HONESTY RULE  (do not weaken this)
+#      An action tool reports GROUND TRUTH and Ted speaks that result verbatim.
+#      Not "what we asked for", not "what probably happened" — what actually
+#      happened.
+#
+#      The reason is a real incident. Spotify's API accepts a play request and
+#      returns success in plenty of cases where nothing starts playing, and Ted
+#      used to say "Playing X" whenever the call did not raise an error. Worse,
+#      on another occasion Ted said "Closed VS Code and Notes." having called no
+#      tool at all. Both are the same failure: intent reported as outcome.
+#
+#      So: `ACTION_TOOLS` marks which tools make a real change in the world, and
+#      `looks_like_failure()` gives one shared answer to "did that go wrong?" —
+#      one function, used by every caller, because two pieces of code answering
+#      that question differently is the most common bug in this codebase (§34).
+#
+#  THE CONFIRMATION RULE
+#      `needs_confirmation(name, args)` decides whether Ted must ask before
+#      doing something. Note that it takes the ARGUMENTS, not just the name:
+#      crossing out one notebook entry is an ordinary edit, deleting a whole
+#      page throws work away. A plain "is this tool on the dangerous list"
+#      check could not tell those apart.
+#
+#      Both places in core/app.py that gate an action call this one function,
+#      deliberately. See §11.7.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted should ask before doing X"    -> add it to needs_confirmation.
+#      "Ted claims success when it fails" -> the handler is returning intent
+#                                            instead of a verified result. Make
+#                                            it check, then say what it found.
+#      "Ted treats a fine result as an error"
+#                                         -> looks_like_failure is matching a
+#                                            word in your success message.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      A frozenset / tuple used as a membership list:  `name in ACTION_TOOLS`
+#          Fast "is this one of these" check.
+#
+#      Functions that return a plain string
+#          Nearly every handler returns text, because that text is what Ted
+#          says. There is no separate "status code" layer; the sentence IS the
+#          result. That is unusual, and it is on purpose — it makes it very hard
+#          to accidentally throw away what really happened.
+# =============================================================================
+
 import subprocess
 import time
 import re
@@ -24,6 +80,15 @@ except Exception:
 
 # Tools that CHANGE something (side effects). Their handler return value is the
 # ground truth and must be spoken verbatim.
+# [BOOK §11.8] ─── WHICH TOOLS CHANGE THE WORLD ──────────────────────────────
+# Names in this set do something real: send a message, open an app, write a
+# file. Names outside it only look things up.
+#
+# The distinction matters for exactly one reason — the honesty check. If Ted
+# claims in past tense to have DONE something on a turn where no ACTION tool
+# ran, that claim is false and gets corrected. A turn that only read the weather
+# and then said "I checked the weather" is fine; a turn that called nothing and
+# said "I closed VS Code" is not. (core/llm.py, claims_completed_action)
 ACTION_TOOLS = frozenset({
     "open_app", "close_app", "browse_to", "play_youtube", "play_music", "play_playlist",
     "spotify_control", "send_message", "set_reminder", "set_timer",
@@ -46,6 +111,15 @@ CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action",
                                 "code_write"})
 
 
+# [BOOK §11.7] ─── ASK FIRST? ────────────────────────────────────────────────
+# One function, called by BOTH places in core/app.py that gate an action. That
+# is the whole design: two callers disagreeing about whether something was
+# consequential is the duplicated-judgment bug again (§34).
+#
+# Note it takes the ARGUMENTS, not just the name. Crossing out one notebook
+# entry is an ordinary edit; deleting a whole page throws work away. A plain
+# "is this tool on the dangerous list" check cannot tell those apart, which is
+# why the older `name in CONFIRMATION_TOOLS` version was replaced.
 def needs_confirmation(name, args=None):
     """Whether this exact call must be approved before it runs.
 
@@ -71,6 +145,13 @@ _FAILURE_MARKERS = (
     "didn't go through", "still open", "didn't work", "isn't set",
     "verification was unavailable", "unexpectedly created",
 )
+# [BOOK §11.8] ─── DID THAT GO WRONG? ────────────────────────────────────────
+# One shared answer to that question, used by every caller — the window's issue
+# toast, the routine runner, the reflex runner, the telemetry row.
+#
+# It works on the TEXT of the result, because in this codebase the sentence Ted
+# says IS the result. That is unusual and deliberate: there is no separate
+# status-code layer that can drift out of step with what the user is told.
 def looks_like_failure(result):
     r = (result or "").lower()
     return any(m in r for m in _FAILURE_MARKERS)

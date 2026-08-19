@@ -23,6 +23,24 @@ Public helpers (used by voice commands in hud.py):
     get_upcoming_events(lookahead_minutes)
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 28 (§28.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Ted bringing things up without being asked: calendar alerts, and triggers you
+#      define yourself on a schedule (daily at a time, every N minutes, on a
+#      weekday).
+#
+#  READ THIS BEFORE TRUSTING IT
+#      The calendar half has been handed to ted_daemon.py, which runs OUTSIDE the
+#      window process. That matters: a thread inside the window dies when you close
+#      the window, which is exactly when you most want to be told about your next
+#      class. This module still owns the trigger schedules and the "is the daemon
+#      alive?" check.
+#
+# =============================================================================
+
 import os
 import re
 import json

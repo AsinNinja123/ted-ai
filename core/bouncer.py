@@ -13,6 +13,24 @@ Rules live beside everything else in SQLite so the dashboard and the running
 HUD see the same list.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 25 (§25.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      A doorman for incoming texts, not a notification feed. The default posture is
+#      SILENCE: getting announced is something a sender earns by being on the list.
+#
+#      That default is the whole design. A bouncer that announces everything is a
+#      notification centre with extra steps, and the first unknown short-code that
+#      interrupts you mid-lecture is the last day you leave it on.
+#
+#  WHERE THE RULES LIVE
+#      Beside everything else, in data/memory.db, so the dashboard and the running
+#      window see the same list. No second source of truth (§34).
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import os

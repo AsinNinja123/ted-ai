@@ -14,6 +14,27 @@ Nothing here reaches the network. Loading is pure local file work, so a broken
 or enormous file fails as a message in the chat rather than as a stalled turn.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 27 (§27.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      What happens when you drag a file onto Ted, paste a screenshot, or pick one
+#      with the attach button. It decides what the model should actually receive.
+#
+#      Images become a data URL attached to your message — the same shape
+#      core/screen.py already uses for screenshots. Documents and text are extracted
+#      to plain text; anything long is ALSO filed in the knowledge base, so it stays
+#      askable after the conversation scrolls away.
+#
+#  ONE THING WORTH KNOWING
+#      Attachments belong to exactly one turn. core/app.py TAKES the pending list
+#      rather than reading it, and clears it before the model call — so a file
+#      cannot silently ride along on your next message, and a failure mid-turn does
+#      not strand it either.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import base64

@@ -1,4 +1,78 @@
 <!DOCTYPE html>
+<!--
+================================================================================
+  READING THIS FILE            The Ted Code Book — Chapters 19, 20, 21
+                               (§19.1 – §19.4, §20.1 – §20.4, §21)
+================================================================================
+
+  WHAT THIS FILE IS
+      The entire window. All of it — the layout, every style, and every line of
+      JavaScript — is in this one file, on purpose. It is loaded by pywebview
+      from hud.py and rendered by a real browser engine inside a Mac window.
+
+      There is no build step, no framework, no npm. You edit this file, you
+      restart Ted, you see the change. That trade buys simplicity at the cost of
+      length; the file is roughly two thousand lines and it is meant to be
+      navigated by searching, not by scrolling.
+
+  THE THREE SECTIONS, IN ORDER
+      1. <style>   ~line   6 – 500   All the CSS. Colours are defined once at
+                                     the top in :root as CSS variables
+                                     (--accent, --bg, --text ...) and used
+                                     everywhere as var(--accent). Change a
+                                     colour there and it changes everywhere.
+      2. <body>    ~line 500 – 640   The markup. Roughly: a left sidebar of
+                                     chats, the middle transcript and input row,
+                                     a right panel of open apps and widgets, and
+                                     several full-screen overlays (Memory,
+                                     Notebook, Diagnostics) that are hidden
+                                     until opened.
+      3. <script>  ~line 640 – end   The behaviour, and the half of the bridge
+                                     that lives on this side.
+
+  THE BRIDGE — THE ONE THING TO UNDERSTAND BEFORE EDITING
+      Python and this page are separate worlds that talk in exactly two ways.
+
+      JS  ->  PYTHON     window.pywebview.api.<method>(args)
+                         Calls a method on the TedApi object in core/app.py, and
+                         returns a Promise — so you write .then(function(r){...})
+                         to use the answer. Only methods that exist on TedApi can
+                         be called. Sending a message is: api.ask(text).
+
+      PYTHON  ->  JS     core/hud_bridge.py runs a line of JavaScript in this
+                         page, and that line calls a function on the `tedHud`
+                         object defined below (search for "var tedHud={").
+                         Python saying add_message(w, "ted", "hi") ends up here
+                         as tedHud.addMessage("ted", "hi").
+
+      So: every function on `tedHud` is part of a contract with Python. Renaming
+      one silently breaks the Python side, because Python is sending a STRING of
+      JavaScript and nothing checks it until it runs. If you rename, grep the
+      Python for the old name.
+
+  THE NO-OP STUBS
+      Near the bottom of `tedHud` there is a run of functions that do nothing:
+      pushAmplitude, setAttention, setMode and friends. They are leftovers from
+      the voice-orb era that Python may still call. They exist so a stale call
+      cannot throw an error inside the window. Leave them; they cost nothing.
+
+  IF YOU WANT TO CHANGE SOMETHING
+      Colours                      the :root block at the very top.
+      Add a button                 Chapter 21 walks it end to end: markup, style,
+                                   click handler, and the Python method behind it.
+      Something Python must show   add a function to `tedHud`, then call it from
+                                   Python via core/hud_bridge.py.
+      Layout collides when a panel
+      opens                        the right-hand stack is one flex column; look
+                                   for absolute positioning that fights it.
+
+  DEBUGGING THIS FILE
+      You cannot open developer tools the usual way. console.log still works and
+      Python can read it back. When something in here silently does nothing, the
+      cause is almost always one of: a typo in an element id passed to $(), or a
+      Python call to a tedHud function that no longer exists.
+================================================================================
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">

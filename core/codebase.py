@@ -18,6 +18,27 @@ Three defences, because "read-only" written in a docstring is not read-only:
    only caller that can pass it is the confirmation resolver.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 27 (§27.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Ted reading his own source code. The rule that governs this entire file:
+#      Ted can see everything and change nothing without being asked.
+#
+#      Reading is free. Writing exists as one narrow function that goes through the
+#      same yes/no confirmation as sending a message, and refuses to run without it.
+#
+#  THE THREE DEFENCES, AND WHY EACH IS NEEDED
+#      1. Every path is resolved with realpath and must land inside the repository.
+#         Checking the string BEFORE resolving catches neither `../../.ssh/id_rsa`
+#         nor a symlink pointing out of the tree. Resolve first, then check.
+#      2. Files git ignores are invisible — that is what keeps config.py, which
+#         holds your API keys, out of reach.
+#      3. Writing requires an explicit confirmation from you, every time.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import os

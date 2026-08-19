@@ -10,6 +10,21 @@ Design notes
   two apart means the fiddly bits here are unit-testable without audio hardware.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 28 (§28.1)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Reminders, timers, and the small parsing that turns "in twenty minutes" into
+#      a number of seconds. Backed by ONE JSON file — data/assistant.json — which
+#      means it survives restarts and cannot take Ted down with it.
+#
+#  THE SPLIT THIS FILE KEEPS
+#      This module owns the DATA and the PARSING. It never speaks and never touches
+#      the window. That separation is what lets it be tested without audio hardware.
+#
+# =============================================================================
+
 import os
 import re
 import json

@@ -5,6 +5,21 @@ Local AppleScript (core/actions.py) for instant transport, Spotify Web API
 launching the desktop app when it isn't running.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 26 (§26.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Sixty lines that route a spoken music phrase to one of two backends.
+#
+#      The split is the interesting part. Transport — play, pause, skip — goes
+#      through local AppleScript because it must be instant. Selection — a named
+#      song, a playlist — goes through the Spotify Web API because it needs your
+#      account. Sending everything through the Web API would make pausing take a
+#      network round trip.
+#
+# =============================================================================
+
 import re
 
 from core import features, intents

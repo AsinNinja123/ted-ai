@@ -19,6 +19,27 @@ Three rules this module follows, because it sits on the reply path:
    flatters the system is worse than no panel, because it gets believed.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 13 (§13.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      One database row per turn: which brain answered, how many tokens it cost,
+#      where the wait went, what failed.
+#
+#      This exists because the answer to "why was that slow" used to live only in a
+#      terminal, only while it was open, and only if you happened to be watching.
+#      Now it is queryable after the fact, which is the difference between debugging
+#      and guessing.
+#
+#  THREE RULES, BECAUSE THIS SITS ON THE REPLY PATH
+#      1. It never raises into Ted. Every public function swallows its own errors —
+#         a telemetry bug must not be able to break a conversation.
+#      2. It never blocks. Writing happens off the critical path.
+#      3. It records what happened, not what was intended. Same rule as the tools.
+#
+# =============================================================================
+
 from __future__ import annotations
 
 import json

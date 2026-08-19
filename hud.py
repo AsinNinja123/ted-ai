@@ -14,6 +14,69 @@ The runtime lives in core/:
     ui/ted_hud.html        the HUD window (particle sphere)
 """
 
+
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 4 (§4.1 – §4.4)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The starting pistol. When you type `python hud.py`, this is the file
+#      Python reads top to bottom. Everything else in Ted only runs because
+#      something in here reached out and started it.
+#
+#      Nothing in this file thinks. It has no idea what a prompt is. Its whole
+#      job is: open a window, hand that window a Python object it can call,
+#      start some background threads, and make sure that when the window
+#      closes, Ted saves what it learned before the process dies.
+#
+#  WHERE IT SITS
+#      hud.py  ──creates──>  the pywebview window (shows ui/ted_hud.html)
+#              ──creates──>  TedApi (core/app.py) — the actual assistant
+#              ──starts───>  the dashboard web server on port 5175, on a thread
+#              ──registers>  three separate shutdown paths, all landing in
+#                            _teardown()
+#
+#  THE SHAPE OF IT, TOP TO BOTTOM
+#      1. Signal setup for the native Dock launcher   (macOS plumbing — skip it
+#         on a first read; it is not part of how Ted thinks)
+#      2. sys.path fix so `from core.x import y` works from any folder
+#      3. Import webview, then TedApi. Creating TedApi() is what wires up the
+#         whole assistant.
+#      4. _start_memory_dashboard()  — the Flask server behind the Memory panel
+#      5. _teardown()                — save the session memory, close audio + DB
+#      6. The `if __name__ == "__main__":` block — build the window and start it
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      Window size, title, background colour     -> webview.create_window(...)
+#      What happens when Ted quits               -> _teardown()
+#      Something that must run once at startup   -> add a thread near
+#                                                   _start_memory_dashboard, OR
+#                                                   put it in TedApi.start()
+#                                                   (core/app.py) if it needs the
+#                                                   assistant to already exist.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      `if __name__ == "__main__":`
+#          True only when this file is the one you ran directly, rather than
+#          one that got imported by another file. It is Python's "main()".
+#
+#      threading.Thread(target=f, daemon=True).start()
+#          Run function f at the same time as everything else. `daemon=True`
+#          means "do not keep the program alive just for this thread" — when
+#          the main program wants to quit, this thread is killed rather than
+#          waited on. Ted uses this a lot: every background watcher is a daemon
+#          thread.
+#
+#      atexit.register(fn, arg)
+#          "Call fn(arg) on the way out, whatever happens." A safety net.
+#
+#      `try: ... except Exception: pass`
+#          Try it; if it explodes, carry on silently. Used here only for
+#          cleanup steps where failing is genuinely not worth crashing over.
+#          Note that Ted does NOT do this for real work — see §34, the rule
+#          about silent failures being the expensive ones.
+# =============================================================================
+
 import os
 import sys
 import atexit

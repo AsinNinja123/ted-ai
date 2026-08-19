@@ -6,6 +6,25 @@ Import the module objects and HAS_* flags from here rather than re-trying the
 imports in every file.
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 29 (§29.3)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      One place that answers "is this optional piece installed and working?"
+#
+#      Every optional subsystem is imported here exactly once, wrapped so that a
+#      missing dependency disables that feature instead of crashing Ted. Everything
+#      else in the codebase imports the module object and the HAS_* flag FROM HERE
+#      rather than re-trying the import itself.
+#
+#  WHY THIS PATTERN MATTERS
+#      If ten files each try `import chromadb` in a try/except, you get ten slightly
+#      different opinions about whether the knowledge base works. One file, one
+#      answer. Same principle as §34.
+#
+# =============================================================================
+
 try:
     from core import assistant
     HAS_ASSISTANT = True

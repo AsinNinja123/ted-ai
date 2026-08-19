@@ -8,6 +8,97 @@ no hardcoded patterns, no regex, no typo sensitivity.
 Adding a new capability = add an entry here + a handler in TedApi._dispatch_tool().
 """
 
+
+# =============================================================================
+#  READING THIS FILE          The Ted Code Book — Chapter 11 (§11.4) and §31
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      The menu. Not the kitchen.
+#
+#      This file contains no logic at all. It is one long list of dictionaries,
+#      each one describing a tool to the model: its name, a sentence about when
+#      to use it, and what arguments it takes. That description is the ONLY
+#      thing the model knows about the tool. If the description is vague, the
+#      model will use the tool at the wrong moments, and no amount of code
+#      elsewhere will fix that. Writing these well is prompt engineering, not
+#      programming.
+#
+#  THE THREE PLACES A TOOL LIVES
+#      1. core/tools.py          the description the model reads      <- you are here
+#      2. core/app.py            _dispatch_tool — the `if name == "x":` branch
+#                                that actually runs when the model picks it
+#      3. core/tool_handlers.py  the function that does the real work
+#
+#      Add a tool and forget step 2 and the model will call something that does
+#      nothing. Chapter 31 walks the whole thing end to end.
+#
+#  THE COST OF THIS FILE
+#      Every schema is text sent with the message. The whole catalogue was once
+#      measured at about 3,645 tokens against a 6,000-tokens-per-minute free
+#      tier — i.e. sending all of them left barely enough room to say anything.
+#      That is why core/routing.py picks a small subset per turn (§7.1). When
+#      you add a tool, you are adding weight to any turn that selects it. Keep
+#      descriptions tight.
+#
+#  THE SHAPE OF ONE SCHEMA
+#      {
+#        "type": "function",
+#        "function": {
+#          "name": "open_app",                        <- what the model says
+#          "description": "Open an application ...",  <- WHEN to use it
+#          "parameters": {                            <- JSON Schema
+#            "type": "object",
+#            "properties": {
+#              "name": {"type": "string", "description": "The app to open"}
+#            },
+#            "required": ["name"]
+#          }
+#        }
+#      }
+#
+#      "properties" lists the arguments. "required" says which ones the model
+#      must supply. Anything not required is optional and may simply be absent
+#      from the dictionary your handler receives — so read arguments with
+#      `args.get("name", "")`, never `args["name"]`.
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted uses this tool when it shouldn't"   -> tighten the description, and
+#                                                  say what to use INSTEAD.
+#      "Ted never uses this tool"               -> the description probably does
+#                                                  not contain the words you
+#                                                  actually say. Also check the
+#                                                  _FAMILIES row in routing.py.
+#      "Ted passes the wrong arguments"         -> the parameter descriptions
+#                                                  are too thin. Give an example
+#                                                  inside the description text.
+#
+#  PYTHON YOU'LL SEE HERE THAT MIGHT BE NEW
+#      Almost nothing. It is a list of nested dictionaries — `{key: value}` —
+#      and lists — `[a, b, c]`. The only thing worth knowing is that adjacent
+#      string literals in Python join automatically:
+#          ("one "
+#           "two")     is the single string "one two"
+#      which is how the long descriptions are wrapped without embedded newlines.
+# =============================================================================
+
+# [BOOK §11.4] ═══ THE MENU ══════════════════════════════════════════════════
+#
+# One list. Each entry describes one tool to the model.
+#
+# The "description" field is the only thing the model knows about a tool. It
+# does not read your Python. It reads this sentence and decides from it. A
+# vague description produces a tool used at the wrong moments, and no amount of
+# code elsewhere fixes that — you fix it by writing a better sentence.
+#
+# Two habits that make descriptions work:
+#   * Say WHEN to use it, not what it does. "Use when the user asks to open an
+#     application" beats "Opens an application."
+#   * Say what to use INSTEAD when it does not apply. Half of a good
+#     description is fencing it off from its neighbours.
+#
+# Remember these are charged for. core/routing.py sends a subset (§7.2), but
+# every tool you add is weight on any turn that selects it.
 TOOL_SCHEMAS = [
     # ── Live web ──────────────────────────────────────────────────────────────
     {

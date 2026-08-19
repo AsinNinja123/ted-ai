@@ -8,6 +8,44 @@ The one exception is _parse_list_cmd, which executes list operations via
 core.assistant — kept here because the parse and the action are one regex.
 """
 
+
+# =============================================================================
+#  READING THIS FILE                    The Ted Code Book — Chapter 29 (§29.6)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Pure text-in, answer-out helpers. No audio, no network, no model, no side
+#      effects when imported. That is what makes it the most heavily tested file
+#      in the project and the safest one to change.
+#
+#      Its job is recognising SHAPES of things you say: "is this a stop
+#      command?", "is this a timer request?", "what number is in this arithmetic
+#      question?", "strip the wake word off the front of this".
+#
+#  WHY THE MATCHING IS SO FORGIVING
+#      Whisper — the speech-to-text model — almost never returns a clean "stop".
+#      It returns "Stop.", "Okay stop", "So, Ted, stop", "Tep.". So every
+#      command is matched the same tolerant way: normalise the utterance (drop
+#      punctuation and filler words), then accept it if it IS a command phrase,
+#      or if a short utterance STARTS with one. The phrase tables are normalised
+#      the same way so the two always line up.
+#
+#      That single design choice is why Ted responds to "stop" spoken by a human
+#      rather than only to "stop" typed by a programmer.
+#
+#  WHAT THIS FILE IS NOT
+#      It is not where Ted decides what to DO. It answers narrow questions and
+#      returns facts. core/app.py decides. Keep it that way — a helper that
+#      quietly performs an action is how a "pure" module stops being testable.
+#      (`_parse_list_cmd` is a documented exception and a leftover.)
+#
+#  IF YOU WANT TO CHANGE SOMETHING
+#      "Ted does not respond to how I say X"
+#            -> find the _X_PHRASES table and add your wording. That is usually
+#               the whole fix, and there is a test file that will tell you if
+#               you broke something else: tests/test_intents.py.
+# =============================================================================
+
 import re
 import time
 import difflib

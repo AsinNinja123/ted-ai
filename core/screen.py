@@ -9,6 +9,20 @@ Public API:
     describe_screen(question)      → text description of the current screen
 """
 
+# =============================================================================
+#  READING THIS FILE            The Ted Code Book — Chapter 27 (§27.2)
+# =============================================================================
+#
+#  WHAT THIS FILE IS
+#      Take a screenshot, send it to the model, describe what is on it. Goes through
+#      the same provider door as everything else, so it works offline against the
+#      local multimodal model too.
+#
+#  A SMALL PRIVACY DETAIL WORTH KEEPING
+#      The screenshot is held in memory and never written to disk.
+#
+# =============================================================================
+
 import os
 import base64
 import subprocess
