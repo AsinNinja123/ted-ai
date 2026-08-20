@@ -30,12 +30,14 @@ table, shown in the History tab.
 # =============================================================================
 
 import os
+import queue
 import sys
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 
 from dashboard import db
+from core import events
 
 app = Flask(__name__)
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -410,6 +412,53 @@ if _PROJECT_ROOT not in sys.path:
 @app.get("/diagnostics")
 def diagnostics_page():
     return send_file(os.path.join(_HERE, "diagnostics.html"))
+
+
+@app.get("/api/events")
+def event_stream():
+    """Push ground-truth runtime events to the HUD as they happen.
+
+    EventSource reconnects automatically and supplies Last-Event-ID. The bus
+    keeps a short bounded history, so a brief dashboard restart does not turn
+    a completed action into an empty thought trace.
+    """
+    origin = request.headers.get("Origin")
+    if origin and not _allowed_hud_origin(origin):
+        return jsonify({"error": "origin not allowed"}), 403
+    after_id = request.headers.get("Last-Event-ID")
+
+    @stream_with_context
+    def generate():
+        with events.subscribe(after_id=after_id) as subscription:
+            yield "retry: 1500\n\n"
+            while True:
+                try:
+                    event = subscription.get(timeout=15)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    continue
+                yield events.sse_encode(event)
+
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.post("/api/confirm/<request_id>")
+def resolve_confirmation(request_id):
+    """Resolve the exact pending agent action named by the HUD."""
+    from core.agents.base import DEFAULT_CONFIRMATION_GATE
+
+    origin = request.headers.get("Origin")
+    if origin and not _allowed_hud_origin(origin):
+        return jsonify({"error": "origin not allowed"}), 403
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body.get("approved"), bool):
+        return jsonify({"error": "approved must be true or false"}), 400
+    if not DEFAULT_CONFIRMATION_GATE.resolve(request_id, body["approved"]):
+        return jsonify({"error": "confirmation is no longer pending"}), 404
+    return jsonify({"ok": True, "approved": body["approved"]})
 
 
 @app.get("/api/diagnostics/turns")

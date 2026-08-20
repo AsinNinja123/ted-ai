@@ -529,6 +529,31 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
   font-variant-numeric:tabular-nums;letter-spacing:.02em}
 .meta .sep{opacity:.45;margin:0 5px}
 .meta .warn{color:#e0b341}
+/* Ground-truth trace. The body is built only from Plan/AgentResult events;
+   there is no model-generated explanation to mistake for an execution log. */
+.thought{margin:7px 0 0 2px;color:var(--dim);font-size:11px;max-width:620px}
+.thought summary{cursor:pointer;list-style:none;opacity:.68;user-select:none}
+.thought summary::-webkit-details-marker{display:none}
+.thought summary:before{content:'\25B8';display:inline-block;margin-right:5px;
+  transition:transform .12s ease}
+.thought[open] summary:before{transform:rotate(90deg)}
+.thought-body{margin:6px 0 0 4px;padding:7px 9px;border-left:1px solid var(--line);
+  background:rgba(255,255,255,.018);border-radius:0 7px 7px 0}
+.thought-line{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:7px;
+  padding:2px 0;align-items:start}
+.thought-key{color:var(--accent);opacity:.72;text-transform:lowercase}
+.thought-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.thought-ms{font-variant-numeric:tabular-nums;opacity:.62}
+.thought-line.ok .thought-key{color:var(--ok)}
+.thought-line.bad .thought-key,.thought-line.wait .thought-key{color:#e0b341}
+.thought-actions{grid-column:2/4;display:flex;gap:6px;margin:3px 0}
+.thought-actions button{background:transparent;border:1px solid var(--line);color:var(--dim);
+  border-radius:6px;font:inherit;padding:3px 8px;cursor:pointer}
+.thought-actions button:hover{border-color:var(--accent);color:var(--text)}
+.thought-actions button.approve{border-color:rgba(62,207,142,.45)}
+.thought-actions button.deny{border-color:rgba(224,104,95,.4)}
+.thought-actions button:disabled{opacity:.42;cursor:default}
+.thought-host .b{display:none}
 
 /* memory overlay */
 #mempanel{position:fixed;inset:0;z-index:40;background:#0f1115;display:none;flex-direction:column}
@@ -974,6 +999,119 @@ function fillMeta(metaEl, tries){
     .catch(function(){ if(tries>0) setTimeout(function(){ fillMeta(metaEl,tries-1); },700); });
 }
 
+/* ── live plan / agent trace ─────────────────────────────────
+   The SSE frame carries the same object printed as [event] in ted_launch.log.
+   Rendering is intentionally mechanical: labels, arguments, returned evidence.
+   No model is asked to tell a plausible story about what it did. */
+var thoughts={}, latestThought=null, confirmationLines={}, runtimeEvents=null;
+
+function delegationText(step){
+  var bits=[];
+  Object.keys(step.args||{}).forEach(function(k){
+    bits.push(k+'='+JSON.stringify(step.args[k]));
+  });
+  return step.agent+'.'+step.method+'(' + bits.join(', ') + ')';
+}
+
+function thoughtLine(state,key,text,ms,cls){
+  var line=document.createElement('div');
+  line.className='thought-line '+(cls||'');
+  var k=document.createElement('span'); k.className='thought-key'; k.textContent=key;
+  var t=document.createElement('span'); t.className='thought-text'; t.textContent=text;
+  var m=document.createElement('span'); m.className='thought-ms';
+  m.textContent=(typeof ms==='number'&&ms>0)?ms+'ms':'';
+  line.appendChild(k); line.appendChild(t); line.appendChild(m);
+  state.body.appendChild(line);
+  return line;
+}
+
+function updateThoughtSummary(state){
+  var elapsed=state.finished ? Math.max(0,(state.finished-state.started)/1000) : 0;
+  var label='thought · '+state.actions+' action'+(state.actions===1?'':'s');
+  if(elapsed) label+=' · '+elapsed.toFixed(1)+'s';
+  state.summary.textContent=label;
+}
+
+function createThought(plan){
+  var details=document.createElement('details'); details.className='thought';
+  details.dataset.planId=plan.plan_id;
+  var summary=document.createElement('summary');
+  var body=document.createElement('div'); body.className='thought-body';
+  details.appendChild(summary); details.appendChild(body);
+  var host=document.createElement('div'); host.className='m ted thought-host';
+  var hidden=document.createElement('div'); hidden.className='b'; host.appendChild(hidden);
+  host.appendChild(details); $('msgs').appendChild(host);
+  var state={details:details,summary:summary,body:body,host:host,
+             started:Date.now(),finished:0,actions:(plan.steps||[]).length,
+             attached:false};
+  thoughts[plan.plan_id]=state; latestThought=state;
+  updateThoughtSummary(state);
+  thoughtLine(state,'heard',plan.heard||'',null,'');
+  (plan.steps||[]).forEach(function(step){
+    thoughtLine(state,'plan',delegationText(step),null,'');
+  });
+  scrollDown();
+  return state;
+}
+
+function attachLatestThought(bubble){
+  var state=latestThought;
+  if(!state||state.attached||!bubble||!bubble.parentNode) return;
+  bubble.parentNode.appendChild(state.details);
+  if(state.host&&state.host.parentNode) state.host.remove();
+  state.attached=true;
+}
+
+function resolveAgentConfirmation(requestId,approved,buttons){
+  (buttons||[]).forEach(function(btn){ btn.disabled=true; });
+  fetch(API+'/confirm/'+encodeURIComponent(requestId),{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({approved:approved})
+  }).catch(function(){});
+}
+
+function renderTraceEvent(kind,envelope){
+  var p=(envelope&&envelope.payload)||{};
+  if(kind==='memory'){ if(window.tedHud) tedHud.memoryEvent(p); return; }
+  if(kind==='plan'){ createThought(p); return; }
+  var state=thoughts[p.plan_id]; if(!state) return;
+  if(kind==='agent_started'){
+    thoughtLine(state,'run',p.agent+'.'+p.method,null,'');
+  } else if(kind==='confirmation_required'){
+    var line=thoughtLine(state,'wait',p.agent+'.'+p.method+' needs approval',null,'wait');
+    confirmationLines[p.request_id]=line;
+    var actions=document.createElement('span'); actions.className='thought-actions';
+    var approve=document.createElement('button'); approve.className='approve'; approve.textContent='Approve';
+    var deny=document.createElement('button'); deny.className='deny'; deny.textContent='Deny';
+    actions.appendChild(approve); actions.appendChild(deny); line.appendChild(actions);
+    approve.onclick=function(){ resolveAgentConfirmation(p.request_id,true,[approve,deny]); };
+    deny.onclick=function(){ resolveAgentConfirmation(p.request_id,false,[approve,deny]); };
+  } else if(kind==='confirmation_resolved'){
+    var pending=confirmationLines[p.request_id];
+    if(pending){
+      pending.classList.remove('wait'); pending.classList.add(p.approved?'ok':'bad');
+      pending.querySelector('.thought-key').textContent=p.approved?'yes':'no';
+    }
+  } else if(kind==='agent_result'){
+    var text=p.did||p.failed||'No result reported.';
+    if(p.failed&&p.did) text+=' '+p.failed;
+    thoughtLine(state,p.ok?'\u2713':'\u26A0',p.agent+' — '+text,p.duration_ms,p.ok?'ok':'bad');
+    state.finished=Date.now(); updateThoughtSummary(state);
+  }
+  scrollDown();
+}
+
+function connectEventStream(){
+  if(!window.EventSource) return;
+  runtimeEvents=new EventSource(API+'/events');
+  ['plan','agent_started','confirmation_required','confirmation_resolved',
+   'agent_result','memory'].forEach(function(kind){
+    runtimeEvents.addEventListener(kind,function(ev){
+      try{ renderTraceEvent(kind,JSON.parse(ev.data)); }catch(e){}
+    });
+  });
+}
+
 function setBrain(t){
   var d=$('brain'); if(!d) return;
   var cls = t.provider==='groq' ? 'cloud'
@@ -1077,6 +1215,7 @@ function addBubble(role,text){
   if(role==='user') b.textContent=text; else b.innerHTML=mdlite(text);
   d.appendChild(b);
   $('msgs').appendChild(d); scrollDown();
+  if(role==='ted') attachLatestThought(b);
   return b;
 }
 
@@ -1266,6 +1405,7 @@ function newChat(){
   currentChat=null; titled=false; turnCount=0;
   hideThinking();
   streamEl=null; streamBuf='';
+  thoughts={}; latestThought=null; confirmationLines={};
   $('chat-title').textContent='New chat';
   $('msgs').innerHTML='<div id="empty"><div class="big">What\'s on your mind?</div>'+
                       'Type below — or tap the mic to talk.</div>';
@@ -2025,6 +2165,7 @@ refreshBudget();
    tooltip is where that is admitted. */
 setInterval(refreshProvider, 20000);
 refreshProvider();
+connectEventStream();
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&$('mempanel').classList.contains('open')) tedHud.hideMemory();
   if(e.key==='Escape'&&$('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();

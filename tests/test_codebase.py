@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import codebase as cb
 from core import routing
 from core import tool_handlers as th
+from core.tools import TOOL_SCHEMAS
 
 
 PASS = FAIL = 0
@@ -114,8 +115,9 @@ finally:
             os.remove(p)
 check("the probe cleaned up after itself", not os.path.exists(probe_full))
 
-print("\n— the write tool is gated like sending a message —")
-check("code_write requires confirmation", "code_write" in th.CONFIRMATION_TOOLS)
+print("\n— the dormant write implementation remains belt-and-braces gated —")
+check("the implementation still refuses unconfirmed writes",
+      "code_write" in th.CONFIRMATION_TOOLS)
 check("the read tools do not",
       not ({"code_read", "code_search", "code_overview", "code_tree",
             "code_history", "code_diff"} & th.CONFIRMATION_TOOLS))
@@ -132,9 +134,11 @@ for phrase in ("how are you built", "show me your code",
           "code_search" in names_for(phrase))
 check("…and none of them offer the write tool",
       "code_write" not in names_for("show me your code"))
-check("asking to change Ted's code does offer it",
-      "code_write" in names_for("change your own code to add a routine"))
-check("…as does 'edit yourself'", "code_write" in names_for("edit yourself"))
+check("an explicit change request still cannot expose self-modification",
+      "code_write" not in names_for("change your own code to add a routine"))
+check("…nor can 'edit yourself'", "code_write" not in names_for("edit yourself"))
+check("the write capability is absent from the complete model menu",
+      all(s["function"]["name"] != "code_write" for s in TOOL_SCHEMAS))
 # "the code" is far more often Charlie's homework than it is Ted.
 check("someone else's code does not load Ted's source tools",
       "code_search" not in names_for("help me debug my java homework"))

@@ -319,30 +319,6 @@ TOOL_SCHEMAS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "code_write",
-            "description": (
-                "Change one of Ted's own source files. REQUIRES the user's explicit "
-                "confirmation, which Ted will ask for and the user must grant — never "
-                "assume it. Use only when the user has clearly asked for a code change. "
-                "Provide the COMPLETE new contents of the file, not a patch."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "e.g. core/routines.py"},
-                    "content": {"type": "string",
-                                "description": "The entire new file contents"},
-                    "reason": {"type": "string",
-                               "description": "One line on what this change does"}
-                },
-                "required": ["path", "content"]
-            }
-        }
-    },
-
     # ── Apps ──────────────────────────────────────────────────────────────────
     {
         "type": "function",

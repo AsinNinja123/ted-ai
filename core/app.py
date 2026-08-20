@@ -107,7 +107,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (attachments, bouncer, codebase, features, lingo, llm, memory,
+from core import (attachments, bouncer, codebase, events, features, lingo, llm, memory,
                   messages, music, notebook, routing, routines, system_state,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
@@ -452,7 +452,14 @@ class TedApi:
                 "id": ev.get("id"),
                 "at": time.time(),
             }
-            js(self.window, f"tedHud.memoryEvent({json.dumps(ev)})")
+            # The HUD and launch log normally consume this same event. Keep the
+            # direct bridge only as a compatibility fallback when a standalone
+            # dashboard process owns port 5175 and therefore cannot share this
+            # in-process bus.
+            has_local_stream = events.BUS.subscriber_count > 0
+            events.emit("memory", ev)
+            if not has_local_stream:
+                js(self.window, f"tedHud.memoryEvent({json.dumps(ev)})")
         except Exception as e:
             error_log.error(f"[memory] event to HUD failed: {e}")
 

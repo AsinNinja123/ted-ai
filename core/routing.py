@@ -182,14 +182,14 @@ _FAMILIES = (
      r"in (?:core|tests|ui)/|\.py\b)\b",
      ("code_overview", "code_search", "code_read", "code_tree",
       "code_history", "code_diff")),
-    # A change to Ted himself is its own family: code_write must not ride along
-    # on an ordinary "show me your code", where offering it invites the model
-    # to propose an edit nobody asked for.
+    # A request to change Ted still gets read/search context, but no write
+    # schema. Charlie deliberately removed self-modifying code from the model's
+    # menu; confirmation around an implementation is weaker than no capability.
     (r"\b(?:change|edit|modify|fix|update|rewrite|patch|refactor|add)\b"
      r"[^.?!]*\b(?:your|ted'?s|own)\s+(?:own\s+)?"
      r"(?:code|codebase|source|file|module)\b|"
      r"\bedit yourself\b|\bchange yourself\b|\bmodify your own\b",
-     ("code_write", "code_read", "code_search")),
+     ("code_read", "code_search")),
     (r"\b(?:message|text|imessage|send .*? to|tell .*? that)\b",
      ("send_message",)),
     (r"\b(?:remind|reminder|timer|alarm|clock)\b",
