@@ -129,6 +129,7 @@ LLM_STREAM_CALLS = []
 LLM_STREAM_RUNTIMES = []      # the ToolRuntime handed to each streaming call
 LLM_CONTEXT_SCOPES = []
 LLM_REQUIRE_TOOLS = []
+LLM_RESPONSE_MODES = []
 LLM_STREAM_REPLY = ["LLM reply."]
 
 
@@ -138,11 +139,13 @@ LLM_ATTACHMENTS = []
 def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=False,
                         window=None, voice_mode=False, tool_runtime=None,
                         context_scope="full", operational_context="",
-                        require_tool=False, min_action_calls=0, attachments=None):
+                        require_tool=False, min_action_calls=0, attachments=None,
+                        response_mode="", telemetry_chat_id=None):
     LLM_STREAM_CALLS.append(text)
     LLM_STREAM_RUNTIMES.append(tool_runtime)
     LLM_CONTEXT_SCOPES.append(context_scope)
     LLM_REQUIRE_TOOLS.append(require_tool)
+    LLM_RESPONSE_MODES.append(response_mode)
     LLM_ATTACHMENTS.append(list(attachments or []))
     for piece in LLM_STREAM_REPLY:
         yield piece
@@ -196,6 +199,7 @@ def make_api():
     LLM_STREAM_RUNTIMES.clear()
     LLM_CONTEXT_SCOPES.clear()
     LLM_REQUIRE_TOOLS.clear()
+    LLM_RESPONSE_MODES.clear()
     api = app_mod.TedApi()
     # Ted boots muted since the chat-first pivot. Most cases below describe a
     # live voice session, so start unmuted and let the mute cases opt in.
@@ -331,6 +335,28 @@ check("a transcript goes into the input box",
 check("…and is never sent to the model on its own", LLM_STREAM_CALLS == [])
 
 print("\n— _respond: fall-through to the streaming LLM —")
+api = make_api()
+api._respond("from now on just give yes or no answers")
+check("yes/no format instructions are accepted without consulting the model",
+      api.response_mode == "yes_no" and api.last_reply == "Yes."
+      and LLM_STREAM_CALLS == [])
+api._respond("is this still active")
+check("yes/no mode is carried into later model turns",
+      LLM_STREAM_CALLS == ["is this still active"]
+      and LLM_RESPONSE_MODES == ["yes_no"])
+api._respond("answer normally")
+check("normal-answer instructions clear the session format without debate",
+      api.response_mode == "" and api.last_reply == "Okay."
+      and LLM_STREAM_CALLS == ["is this still active"])
+
+api = make_api()
+api._respond("only answer with one word")
+check("one-word format instructions are also deterministic",
+      api.response_mode == "one_word" and api.last_reply == "Okay."
+      and LLM_STREAM_CALLS == [])
+check("mentioning yes or no without an instruction does not change the mode",
+      app_mod._response_mode_change("is that a yes or no question") is None)
+
 api = make_api()
 api._respond("how are you")
 check("non-command reaches the streaming LLM once", LLM_STREAM_CALLS == ["how are you"])

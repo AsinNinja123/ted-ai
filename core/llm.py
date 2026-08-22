@@ -371,7 +371,9 @@ SYSTEM_PROMPT = (
     "Say things plainly: either you know, or you say you're not sure and move on. "
     "Flag or look up half-remembered stats, dates, names, and versions. Work out "
     "multi-step requests before answering. Assume the sensible interpretation, "
-    "state it only when useful, and go. Read what he meant, not just what he typed."
+    "state it only when useful, and go. Read what he meant, not just what he typed. "
+    "Follow his requested response format and length; never refuse merely because "
+    "the requested answer is terse."
 )
 
 THINKING_CONTEXT = (
@@ -968,7 +970,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                   window=None, voice_mode=False, tool_runtime=None,
                   context_scope="full", operational_context="",
                   require_tool=False, min_action_calls=0, attachments=None,
-                  telemetry_chat_id=None):
+                  telemetry_chat_id=None, response_mode=""):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
@@ -976,6 +978,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     voice_mode      — True → reply is spoken aloud: short, no formatting.
                       False → text chat: fuller answers, markdown/code allowed.
     tool_runtime    — a ToolRuntime, or None for a pure-conversation call.
+    response_mode   — "yes_no" or "one_word" when Charlie has explicitly
+                      chosen a terse response format for this live session.
 
     With tool_runtime set this is the ONLY model call a turn needs. The request
     carries the tool schemas and is streamed, so the model either answers in
@@ -1202,6 +1206,28 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             "block with its language."
         )
 
+    # This instruction is deliberately last and therefore closest to the user
+    # message. The session controller—not the model—decides when it is active,
+    # because the original failure was the model treating a harmless format
+    # request as an invitation to argue. Action results remain exempt: Ted must
+    # never compress verified ground truth into a misleading "Yes" or "No."
+    if response_mode == "yes_no":
+        context_parts.append(
+            "ACTIVE USER RESPONSE FORMAT: For conversational answers, output "
+            "exactly Yes or No and nothing else. This is Charlie's explicit "
+            "instruction, not a question or a topic to debate. Do not refuse or "
+            "explain the format. A verified tool/action result overrides this "
+            "format so the actual outcome remains explicit."
+        )
+    elif response_mode == "one_word":
+        context_parts.append(
+            "ACTIVE USER RESPONSE FORMAT: For conversational answers, output "
+            "exactly one word and nothing else. This is Charlie's explicit "
+            "instruction, not a question or a topic to debate. Do not refuse or "
+            "explain the format. A verified tool/action result overrides this "
+            "format so the actual outcome remains explicit."
+        )
+
     context = "(Context: " + " ".join(context_parts) + ")"
 
     # Trim conversation to MAX_HISTORY recent turns; always keep [0] (system prompt).
@@ -1281,7 +1307,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     _turn.context_scope = context_scope
     _turn.history_msgs = len(recent)
     _turn.forced = _providers.get_provider_mode()
-    _turn.reasoning = reasoning_effort_for(user_input)
+    _turn.reasoning = ("none" if response_mode and not _real_tools and not require_tool
+                       else reasoning_effort_for(user_input))
     _turn.prompt_tokens = max(1, round(_prompt_chars / 4))
     _turn.ms_retrieval = _ctx_ms
     # Where the prompt actually went. Computing this per turn is the difference
@@ -1323,7 +1350,12 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         tool_kwargs = dict(_tools_kw)
         if force_tool and tool_runtime is not None:
             tool_kwargs["tool_choice"] = "required"
-        _effort = effort or reasoning_effort_for(user_input)
+        # Terse conversation should not spend a hidden reasoning budget finding
+        # ways around a direct format instruction. Real tool turns retain their
+        # normal effort because choosing and validating an action still matters.
+        _effort = effort or ("none" if response_mode and not _real_tools
+                             and not require_tool
+                             else reasoning_effort_for(user_input))
         _cap = completion_budget_for(user_input, _effort, voice_mode)
         return chat_create(
             messages=messages if msgs is None else msgs,
@@ -1446,6 +1478,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     stream_retry_used = False
     completion_retry_used = False
     thinking_retry_used = False
+    format_retry_used = False
     completed_tool_calls = 0
     try:
         msgs = messages
@@ -1465,7 +1498,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             try:
                 turn_text = yield from _stream_turn(
                     resp, calls,
-                    suppress_text=bool(action_results) or expecting_tool,
+                    suppress_text=(bool(action_results) or expecting_tool
+                                   or bool(response_mode)),
                     reasoned=reasoned, usage=_usage)
             except Exception as e:
                 # Groq can accept a completion and only report malformed tool
@@ -1535,6 +1569,45 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     continue
                 except Exception as e:
                     print(f"[thinking] retry failed: {e}")
+
+            # Prompting makes the requested format likely; this gate makes it
+            # reliable. Hold model text until it passes, retry one violation,
+            # and only then release a canonical terse answer. Without holding
+            # it, a local model's opening lecture would already be on screen.
+            if response_mode and not calls and not action_results:
+                if response_mode == "yes_no":
+                    _format_ok = bool(re.fullmatch(
+                        r"\s*(?:yes|no)[.!?]?\s*", turn_text, re.I))
+                else:
+                    _format_ok = bool(re.fullmatch(
+                        r"\s*[\w'-]+[.!?]?\s*", turn_text, re.UNICODE))
+                if (not _format_ok and not format_retry_used
+                        and rounds < MAX_TOOL_ROUNDS):
+                    format_retry_used = True
+                    _turn.note_retry("response-format")
+                    msgs = msgs + [
+                        {"role": "assistant", "content": turn_text},
+                        {"role": "system", "content": (
+                            "That violated Charlie's active response format. "
+                            + ("Reply with only Yes or No."
+                               if response_mode == "yes_no"
+                               else "Reply with exactly one word.")
+                            + " Do not discuss this correction."
+                        )},
+                    ]
+                    resp = _do_groq_call(msgs, effort="none")
+                    continue
+                if not _format_ok:
+                    if response_mode == "yes_no":
+                        _answer = re.search(r"\b(yes|no)\b", turn_text, re.I)
+                        turn_text = ((_answer.group(1).capitalize()
+                                      if _answer else "No") + ".")
+                    else:
+                        _answer = re.search(r"[\w'-]+", turn_text, re.UNICODE)
+                        turn_text = _answer.group(0) if _answer else "Okay"
+                # It was deliberately suppressed above. Release it now; the
+                # normal branch below records it in full_reply exactly once.
+                yield turn_text
 
             # Prose that CLAIMS a completed action while calling nothing is a
             # model-routing failure, not a reason to make the user repeat

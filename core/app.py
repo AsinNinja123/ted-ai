@@ -308,6 +308,34 @@ def _use_deterministic_command(text):
         r"tuesday|wednesday|thursday|friday|saturday|sunday|\d+ minutes)|"
         r"index my documents|scan my inbox|list indexed files)\b", t))
 
+
+def _response_mode_change(text):
+    """Recognize explicit session-only response-format instructions.
+
+    Formatting is Charlie's choice, not a topic for Ted to debate. This stays
+    narrow so a question that merely contains "yes or no" does not silently
+    change every later response.
+    """
+    t = " ".join((text or "").lower().replace("/", " or ").split())
+    if re.search(
+            r"\b(?:answer|reply|respond|talk|speak) normally\b|"
+            r"\b(?:normal|full|regular) answers? (?:again|now)\b|"
+            r"\bstop (?:the )?(?:one[- ]word|yes or no) answers?\b|"
+            r"\b(?:you can|feel free to) (?:explain|elaborate) again\b", t):
+        return "normal"
+    if re.search(
+            r"\b(?:only|just) (?:answer|reply|respond|say|give(?: me)?)\b.{0,24}"
+            r"\byes or no\b|"
+            r"\b(?:answer|reply|respond|give answers?)\b.{0,24}"
+            r"\b(?:only |just )?yes or no\b", t):
+        return "yes_no"
+    if re.search(
+            r"\b(?:only|just) (?:answer|reply|respond|say|use)\b.{0,18}"
+            r"\b(?:one|1)[- ]word\b|"
+            r"\b(?:answer|reply|respond)\b.{0,18}\b(?:one|1)[- ]word\b", t):
+        return "one_word"
+    return None
+
 # ---------- time-based startup greetings ----------
 _GREET_MORNING = [
     f"Good morning {OWNER_NAME}. How can I assist you?",
@@ -402,6 +430,7 @@ class TedApi:
         self.user_frustrated    = False        # True → tell Groq to drop cheerful energy
         self._frustration_log   = []           # rolling window of (timestamp, bool)
         self.thinking_mode      = False        # True → Socratic mode (no advice, only questions)
+        self.response_mode      = ""           # "yes_no" | "one_word" for this live session
         self.held_thought       = None         # topic saved by "hold that thought"
         self.whispering         = False        # True → lower TTS volume to match user's level
 
@@ -930,6 +959,35 @@ class TedApi:
 
         set_state(w, "thinking")
 
+        # ── response format: Charlie chooses brevity; Ted does not debate it ──
+        # The observed failure was "from now on just give yes or no answers"
+        # receiving "No", then a lecture about why Ted would not comply. This
+        # is session state, like thinking mode—not a preference to extract into
+        # permanent memory and not a request the model gets to reinterpret.
+        _mode_change = _response_mode_change(text)
+        if _mode_change is not None:
+            self.response_mode = "" if _mode_change == "normal" else _mode_change
+            reply = "Yes." if _mode_change == "yes_no" else "Okay."
+            self.last_reply = reply
+            add_message(w, "ted", reply)
+            speak(w, reply, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": reply},
+            ])
+            if len(self.active_conversation) > 42:
+                self.active_conversation = (
+                    [self.active_conversation[0]] + self.active_conversation[-40:]
+                )
+            _mturn = telemetry.Turn(text, source="reflex",
+                                    chat_id=self._active_chat_id)
+            _mturn.provider = "reflex"
+            _mturn.forced = "n/a"
+            _mturn.brain_choice = "session response-format control"
+            _mturn.finish(reply=reply)
+            set_state(w, "idle")
+            return False
+
         # [BOOK §6.4] RUNG 6 ── personal shorthand: "when I say X I mean Y" ──
         # Definitions are cheap, explicit, and should become available to the
         # very next routing decision without waiting for fact extraction.
@@ -1185,6 +1243,8 @@ class TedApi:
         # save before entering this path.
         _telemetry_chat = ({"telemetry_chat_id": self._active_chat_id}
                            if self._active_chat_id is not None else {})
+        _response_style = ({"response_mode": self.response_mode}
+                           if self.response_mode else {})
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -1196,7 +1256,8 @@ class TedApi:
                                 require_tool=routing.likely_action_request(routing_text),
                                 min_action_calls=routing.expected_action_calls(routing_text),
                                 attachments=_attached,
-                                **_telemetry_chat)
+                                **_telemetry_chat,
+                                **_response_style)
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale

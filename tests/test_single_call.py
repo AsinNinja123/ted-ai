@@ -164,6 +164,21 @@ _orig_chat_create = llm.chat_create
 # ═════════════════════════════════════════════════════════════════════════════
 print("— conversation: one call, streamed straight through —")
 
+llm.chat_create = scripted(
+    FakeStream([text_chunk("No, because that would make me useless.")]),
+    FakeStream([text_chunk("Yes.")]),
+)
+reply, _ = run("is that correct", response_mode="yes_no")
+format_call = llm.chat_create.kwargs[0]
+format_context = format_call["messages"][-2]["content"]
+check("active yes/no mode is stated nearest the user message",
+      "exactly Yes or No and nothing else" in format_context
+      and "not a question or a topic to debate" in format_context)
+check("terse conversation disables hidden reasoning and returns the answer",
+      format_call["reasoning_effort"] == "none" and reply == "Yes."
+      and llm.chat_create.calls == 2
+      and "useless" not in reply)
+
 escaped = r'{\n  "facts": [{"subject": "Charlie", "relationship": "LIKES", "object": "golf"}]\n}'
 check("fact parser accepts Groq's escaped-whitespace JSON",
       llm._parse_fact_payload(escaped) == [{"subject": "Charlie",
