@@ -1891,6 +1891,13 @@ var tedHud={
     else { tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.showDiagnostics(); }
   },
 
+  /* Fallback door for runtime events. Normally the HUD receives these over
+     SSE; when a standalone dashboard owns port 5175, Ted pushes them straight
+     in through here instead so the thought bubble still draws. */
+  runtimeEvent:function(kind,envelope){
+    try{ renderTraceEvent(kind,envelope); }catch(e){}
+  },
+
   /* compat stubs — Python may still call these; nothing to show in chat mode.
      Each one is a function that does nothing, so a call from Python cannot
      throw. The Ted Bear stubs are gone along with the bear itself. */

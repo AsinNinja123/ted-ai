@@ -69,16 +69,17 @@ async def exercise_agent():
           dry.ok and dry.evidence["would_close"] == ["Notes", "Calendar"])
     check("dry_run has no side effects", calls == [])
 
-    task = asyncio.create_task(agent.execute(
-        "clean_up", plan_id=plan.id, confirmation_timeout=1))
-    for _ in range(20):
-        await asyncio.sleep(.01)
-        pending = gate.pending_ids()
-        if pending:
-            break
-    check("a consequential task pauses behind one confirmation Future", len(pending) == 1)
-    check("the UI can resolve that Future by request id", gate.resolve(pending[0], True))
-    done = await task
+    # MacAgent holds NO opinion about consequence. TedApi asks
+    # core/tool_handlers.needs_confirmation before the call ever reaches an
+    # agent, and that flow asks in chat and answers on the next turn rather
+    # than blocking this thread on a click — which matters because _run_agent
+    # drives the agent from Ted's synchronous turn thread, and in voice mode
+    # there is no button to press at all.
+    check("MacAgent defers the consequence decision to the one gate",
+          not agent.needs_confirmation("clean_up", {})
+          and not agent.needs_confirmation("close_app", {"name": "Notes"}))
+
+    done = await agent.execute("clean_up", plan_id=plan.id)
     check("one agent call owns the whole close loop",
           calls == [("close_app", {"name": "Notes"}),
                     ("close_app", {"name": "Calendar"})])
@@ -86,14 +87,38 @@ async def exercise_agent():
           done.ok and done.evidence["closed"] == ["Notes", "Calendar"]
           and done.did == "Closed Notes, Calendar.")
 
+    # Sparing an app is a narrowing of the same request, not a new one.
     calls.clear()
-    declined_task = asyncio.create_task(agent.execute(
+    spare = MacAgent(dispatch, lambda: ["Ted", "Notes", "Calendar", "Brave Browser"])
+    peek = await spare.execute("clean_up", {"exclude": ["Brave Browser"]},
+                               dry_run=True)
+    check("a spared app is absent from what the confirmation offers",
+          peek.evidence["would_close"] == ["Notes", "Calendar"]
+          and peek.evidence["spared"] == ["Brave Browser"])
+    kept = await spare.execute("clean_up", {"exclude": ["Brave Browser"]})
+    check("and it is never actually closed",
+          [name for _, args in calls for name in [args["name"]]]
+          == ["Notes", "Calendar"])
+    check("Ted says which app he left alone",
+          kept.did == "Closed Notes, Calendar. Left Brave Browser open.")
+
+    # The gate itself still has to work: agents that genuinely own an async
+    # approval (CommsAgent sending an email) will use it, so its contract is
+    # covered here with a stub rather than deleted along with MacAgent's use.
+    class GatedAgent(MacAgent):
+        name = "GatedAgent"
+        CONSEQUENT_METHODS = frozenset({"close_app"})
+
+    calls.clear()
+    gated = GatedAgent(dispatch, lambda: list(open_apps), confirmation_gate=gate)
+    declined_task = asyncio.create_task(gated.execute(
         "close_app", {"name": "Notes"}, confirmation_timeout=1))
     for _ in range(20):
         await asyncio.sleep(.01)
         pending = gate.pending_ids()
         if pending:
             break
+    check("a consequential task pauses behind one confirmation Future", len(pending) == 1)
     gate.resolve(pending[0], False)
     declined = await declined_task
     check("a denial is an honest non-success", not declined.ok
@@ -101,7 +126,7 @@ async def exercise_agent():
     check("a denied action never reaches the old dispatcher", calls == [])
 
     # Default agents share the gate exposed by /api/confirm/<request-id>.
-    routed = MacAgent(dispatch, lambda: ["Ted", "Notes"])
+    routed = GatedAgent(dispatch, lambda: ["Ted", "Notes"])
     route_task = asyncio.create_task(routed.execute(
         "close_app", {"name": "Notes"}, confirmation_timeout=1))
     for _ in range(20):

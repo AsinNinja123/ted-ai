@@ -1210,6 +1210,79 @@ already.
 
 \pagebreak
 
+## §7.7 The cleanup lane — a pattern for the action, a model for the language
+
+**Anchor:** `[BOOK §7.7]` · `routing.cleanup_reflex`, `routing.cleanup_request`,
+`routing.extract_kept_apps`, and the block in `core/app.py::_respond` that uses them.
+
+"Clean up" used to cost four cloud calls. The model would call `close_app` on one
+app, wait for the result, call it on the next, and so on — four requests against a
+6,000-tokens-per-minute ceiling for a job Python can do in a loop.
+
+Giving the model a `clean_up` tool did not fix it. The tool was in the menu, listed
+first, with a description ending "Do NOT chain close_app calls to do this." It chained
+`close_app` anyway. That is measured, not assumed — the log is in the Aug 19 handoff.
+
+So the lane splits the decision in two:
+
+| Question | Who answers | Cost |
+|---|---|---|
+| Is this a cleanup? | `_CLEANUP_RE`, if the whole message is the idiom | nothing |
+| …and what does it spare? | `llama3.2:3b`, locally | ~0.1s, no cloud tokens |
+| Do it | `MacAgent.clean_up` | one call, N closes |
+
+`cleanup_reflex` matches only when the *entire* message is a cleanup idiom — "clean
+up", "tidy up", "close everything", "clear my desktop". Nothing left over to
+interpret, so nothing needs interpreting.
+
+`cleanup_request` is the same pattern without the end anchor. "Clean up but leave
+Brave" has a cleanup's shape and a tail the pattern cannot read. That is where the
+small model comes in, and `extract_kept_apps` asks it one question that answers both
+halves at once: `NO` (not a cleanup at all), `NONE` (a cleanup sparing nothing), or a
+list of app names.
+
+### Why not a regex for the tail
+
+There was one. It grew `except`, `besides`, `but not`, `minus`, `without`, `save for`,
+`barring`, `aside from`, `other than`, `keep X open`, `leave X running` — and still
+missed phrasings on first contact. That is the vending machine Chapter 7 exists to
+avoid: any wording the author did not imagine simply fails.
+
+The rule this file lives by, unchanged: **the router picks capabilities, never
+answers.** Deciding *cleanup, not four closes* is a capability decision. Deciding
+*which apps* is language, and language belongs to a model.
+
+### The three safety properties
+
+These matter more than accuracy, because the failure they prevent is closing
+something you asked to keep.
+
+1. **The running-app list is both the menu and the whitelist.** The model is shown
+   what is actually open and must answer with those names. Anything else is dropped.
+   It cannot spare a process that does not exist, and it cannot be talked into
+   naming something that was never on screen.
+2. **`None` is not `[]`.** `None` means the router did not answer — Ollama down, a
+   timeout, a reply with no recognisable app in it. The caller must then decline the
+   lane entirely and let the turn go the normal way. `[]` means it answered, and the
+   answer was "nothing is spared". Collapsing those two is how you close Brave.
+3. **A plain refusal never reaches the model.** Asked "which apps does *no* spare?",
+   a 3B will sometimes name one, and Ted would narrow a list you were rejecting
+   outright. `TedApi._PLAIN_REFUSAL` is checked first.
+
+### Where it plugs in
+
+`_respond` runs this lane before `plan_reflex`, against the **raw** text rather than
+`routing_text`. Lingo (Chapter 18) expands "Clean up" into "Close every application
+besides Ted and the Terminal", and matching that expansion read "clean up Chrome" as
+a whole-desktop cleanup. What Charlie typed is the request; the expansion exists for
+the model, and this lane does not use one.
+
+Diagnostics record which half ran: `provider="reflex"` when the pattern settled it for
+free, `provider="router"` when the small model was consulted. They are not the same
+turn and the panel is the only place that shows the difference.
+
+\pagebreak
+
 # Chapter 8 — What Ted knows before it answers
 
 **File:** `core/llm.py`, inside `ask_streaming`. **Anchor:** `[BOOK §8, §9, §11.1-§11.3]`
@@ -4065,3 +4138,145 @@ The numbers in this book were true on the day it was written. The anchors are
 maintained by the code itself. Where the two disagree, trust the anchors — and
 trust `python tools/ted_map.py --markdown` over both, because it reads the code
 rather than remembering it.
+
+\pagebreak
+
+# Chapter 36 — The agent layer
+
+**Files:** `core/agents/base.py`, `core/agents/mac.py`, `core/events.py`, and the
+guard at the top of `core/app.py::_dispatch_tool`. **Anchor:** `[BOOK §36]`
+
+## §36.1 Why it exists
+
+Ted's old shape put the cloud model inside the loop for every step of every task. It
+decided *what should happen* and *how to do each step*, and each step was a network
+round trip against a per-minute token ceiling. "Clean up" cost four of them.
+
+An agent owns a whole task. The model delegates once — "handle this Mac job" — and the
+agent runs however many steps it needs in plain Python. Four closes become one call.
+
+The rule, in one line:
+
+> The expensive model decides **what should happen**. Cheap local code decides
+> **how**, and does it.
+
+## §36.2 The contract
+
+Every agent method returns the same shape, and it is the most important interface in
+this part of the codebase:
+
+```python
+@dataclass
+class AgentResult:
+    ok: bool
+    did: str          # what actually happened, past tense
+    evidence: dict    # ground truth: real app names, real URLs, real filenames
+    failed: str | None
+    duration_ms: int
+```
+
+`evidence` is not optional — `AgentResult(True, "Closed Notes.", None)` raises
+`TypeError` on purpose. Ted has a documented history of announcing actions he did not
+take (Chapter 35), and the fix is structural: **Ted speaks from what came back, never
+from what he asked for.**
+
+`Plan` and `Delegation` are the other half. `Plan.announce()` puts the parsed intent on
+the event stream *before* any of it runs, so the log records what a turn meant to do
+next to what it actually did. Without it, one "clean up" reads as four unrelated
+closes with nothing tying them together.
+
+## §36.3 Running a coroutine from synchronous code
+
+`BaseAgent.execute` is `async`. `core/app.py` has no event loop anywhere — it is
+threads all the way down. Calling `execute()` directly builds a coroutine object and
+runs nothing, which is exactly the trap that left the first version of this layer
+written but unreachable.
+
+`TedApi._run_agent` is the bridge. `asyncio.run()` creates a loop, runs the coroutine
+to completion, closes the loop. Confirmation still works across threads because
+`ConfirmationGate.resolve()` — called from the Flask thread serving
+`/api/confirm/<id>` — hands the result back with `loop.call_soon_threadsafe`, and the
+loop is alive the whole time because the calling thread is parked inside
+`asyncio.run` waiting on it.
+
+**The rule: never call `_run_agent` from a thread that already has a running loop.**
+Nothing in Ted does today. When two agents need to run at once, replace the body with
+one long-lived loop on a daemon thread plus
+`asyncio.run_coroutine_threadsafe(...).result()`; the signature does not change.
+
+## §36.4 `_from_agent`, and why removing it hangs your Mac
+
+`MacAgent` is constructed with `dispatch=lambda name, args: self._dispatch_tool(name,
+args, _from_agent=True)`. The agent owns orchestration; the old switchboard still owns
+the individual handlers, and the agent calls back into it.
+
+The guard at the top of `_dispatch_tool` routes `MacAgent.TOOLS` to the agent — but
+only when `_from_agent` is false. Without that flag the agent's callback re-enters the
+guard as a fresh delegation and recurses until the stack blows. It is not a style
+choice.
+
+## §36.5 Who decides "consequential"
+
+`MacAgent.CONSEQUENT_METHODS` is empty, deliberately.
+
+`core/tool_handlers.needs_confirmation` is the single decision function both gates in
+`app.py` already ask (§11.7), and the guard asks it too — before the call ever reaches
+an agent. Ted's established flow is to ask in chat and take the answer on the next
+turn. The agent's own `ConfirmationGate` blocks the thread waiting on a click, which
+would freeze a turn for up to sixty seconds and is unusable in voice mode where there
+is no button.
+
+The gate is still built, still tested, and still wired to `/api/confirm/<id>`, because
+an agent that genuinely owns an async approval will want it. `MacAgent` is not that
+agent. Two components holding opinions about the same question is the duplicated
+judgment bug from Chapter 34.
+
+One payoff of keeping the decision outside: the confirmation prompt is generated from a
+real `dry_run`. "That would close Preview, ChatGPT, Claude" is enumerated from what is
+actually open, not guessed.
+
+## §36.6 `describe()` and `dry_run`
+
+Two capabilities every agent inherits, both aimed at the same failure.
+
+`describe()` reports what the agent can do *right now* from live state —
+`MacAgent: 3 closable user apps open`. A static tool schema cannot say that.
+
+`dry_run` returns what the agent *would* do without doing it. It is what makes a
+confirmation honest, and it is the natural place to hang any future approval UI.
+
+## §36.7 The event stream
+
+`core/events.py` is one bounded in-process bus. The launch log and the HUD's thought
+bubble both read it, so they cannot disagree about what happened.
+
+The HUD subscribes over SSE at `/api/events`. `BUS.add_listener()` is for in-process
+consumers and deliberately does **not** count as a subscriber — `TedApi`'s HUD mirror
+uses it to push events directly through `tedHud.runtimeEvent` when
+`subscriber_count == 0`, which happens when a standalone `python -m dashboard` owns
+port 5175 and Ted's own bus has no browser on it. Without that path the thought bubble
+goes dark with no error anywhere.
+
+**The bubble renders events, never narration.** Do not add a "explain your reasoning"
+call and print the result — a model writing a plausible account after the fact is the
+phantom-success problem in nicer clothes, and it looks like proof. Every line comes
+from `Plan` and `AgentResult` fields, so an empty `evidence` displays nothing.
+
+## §36.8 Adding the next agent
+
+1. Subclass `BaseAgent` in `core/agents/`, set `name` and `TOOLS`.
+2. Implement `_run`, `_dry_run`, `describe`.
+3. Leave `CONSEQUENT_METHODS` empty unless the agent genuinely owns an async approval;
+   otherwise add the tool to `tool_handlers.CONFIRMATION_TOOLS` instead.
+4. Construct it in `TedApi.__init__` with the `_from_agent=True` dispatch.
+5. Extend the guard in `_dispatch_tool`.
+6. Delete the tool's branches from the switchboard only once the agent covers them.
+
+The roster the restructure is aimed at — `MacAgent` (done), `MusicAgent`, `CommsAgent`,
+`PlannerAgent`, `MemoryAgent`, `WebAgent`, `CodeAgent` — is in
+`docs/TED_RESTRUCTURE_HANDOFF.md`, along with which of the 63 tools each one takes.
+
+**Memory is not an agent.** Every agent reads `core/memory.py` directly, like a
+database. Agents never call each other: brain at the centre, agents on spokes. If two
+agents must coordinate, the brain coordinates them — it is the only component that
+should be composing intent.

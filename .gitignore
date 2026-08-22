@@ -61,3 +61,13 @@ native/ted_control
 inbox/*
 !inbox/.gitkeep
 ted_map.html
+
+# === holding pen for files on their way out ===
+# device_bash cannot delete, so removals land here first. Never source.
+_to_delete/
+
+# === test scratch ===
+# test_codebase.py writes a probe into docs/ and removes it. A run that dies
+# before the cleanup leaves these behind, and the NEXT run then fails on them.
+docs/_ted_write_test.md
+docs/_ted_write_test.md.ted-backup

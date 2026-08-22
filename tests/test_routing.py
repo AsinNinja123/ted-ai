@@ -270,5 +270,40 @@ check("a router that raises never breaks the turn",
           "is gavin coming over tonight", ask=_boom).decided_by == "rule")
 
 print("\n" + "=" * 50)
+print("\n— the cleanup lane: pattern picks the action, a model reads the tail —")
+APPS = ["Preview", "ChatGPT", "Brave Browser", "Claude"]
+say = lambda reply: (lambda system, user, num_predict=4: reply)
+
+check("bare 'clean up' never asks a model at all",
+      routing.cleanup_reflex("clean up") and routing.cleanup_reflex("tidy up"))
+check("a tail is still recognised as a cleanup's shape",
+      not routing.cleanup_reflex("clean up but leave brave")
+      and routing.cleanup_request("clean up but leave brave"))
+check("something that only starts the same way is not settled by the pattern",
+      not routing.cleanup_reflex("clean up Chrome"))
+
+check("a spared app is resolved to the exact running name",
+      routing.extract_kept_apps("clean up but leave brave", APPS,
+                                ask=say("Brave Browser")) == ["Brave Browser"])
+check("a partial name still resolves",
+      routing.extract_kept_apps("clean up but leave brave", APPS,
+                                ask=say("brave")) == ["Brave Browser"])
+check("several spared apps come back in order",
+      routing.extract_kept_apps("x", APPS, ask=say("Brave Browser, Claude"))
+      == ["Brave Browser", "Claude"])
+check("NONE means a cleanup that spares nothing",
+      routing.extract_kept_apps("clean up", APPS, ask=say("NONE")) == [])
+check("NO means this was never a cleanup",
+      routing.extract_kept_apps("clean up Chrome", APPS, ask=say("NO"))
+      == routing.NOT_A_CLEANUP)
+check("an invented app name is refused, not guessed at",
+      routing.extract_kept_apps("x", APPS, ask=say("Firefox")) is None)
+check("a silent router is refused too",
+      routing.extract_kept_apps("x", APPS, ask=say("")) is None)
+check("a router that raises cannot take the turn down",
+      routing.extract_kept_apps(
+          "x", APPS,
+          ask=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ollama down"))) is None)
+
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

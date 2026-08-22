@@ -90,7 +90,7 @@ except Exception:
 # and then said "I checked the weather" is fine; a turn that called nothing and
 # said "I closed VS Code" is not. (core/llm.py, claims_completed_action)
 ACTION_TOOLS = frozenset({
-    "open_app", "close_app", "browse_to", "play_youtube", "play_music", "play_playlist",
+    "open_app", "close_app", "clean_up", "browse_to", "play_youtube", "play_music", "play_playlist",
     "spotify_control", "send_message", "set_reminder", "set_timer",
     "add_to_playlist", "remove_from_playlist", "create_playlist", "delete_playlist",
     "calendar_add", "notes_add", "clipboard_write",
@@ -106,6 +106,9 @@ ACTION_TOOLS = frozenset({
 # controls remain immediate; communication and destructive email changes do not.
 CONFIRMATION_TOOLS = frozenset({"send_message", "send_email", "email_action",
                                 "delete_playlist",
+                                # No target was named and the blast radius is
+                                # every open app, so this one asks first.
+                                "clean_up",
                                 # Ted may read all of his own source and change
                                 # none of it without Charlie saying yes first.
                                 "code_write"})

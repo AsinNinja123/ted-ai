@@ -1,4 +1,8 @@
-"""MacAgent: one owner for a complete Mac task, not one model call per click."""
+"""MacAgent: one owner for a complete Mac task, not one model call per click.
+
+The Ted Code Book — Chapter 36. Start at §36.4 if you are here because something
+recursed, §36.5 if you are here about a confirmation prompt.
+"""
 
 from __future__ import annotations
 
@@ -21,10 +25,24 @@ class MacAgent(BaseAgent):
         "clipboard_write", "screen_describe", "ui_inspect", "ui_fill",
         "ui_press",
     })
-    CONSEQUENT_METHODS = frozenset({
-        "clean_up", "close_app", "press_key", "type_text", "ui_fill", "ui_press",
+    # Empty on purpose. Whether a call is consequential is decided by
+    # core/tool_handlers.needs_confirmation, which TedApi asks before it ever
+    # reaches this agent (§11.7). Holding a second opinion here is how the two
+    # paths drift apart: closing, typing and clicking were all immediate before
+    # the agent existed, and listing them here would have quietly added a yes/no
+    # prompt Charlie never asked for.
+    CONSEQUENT_METHODS = frozenset()
+    # clean_up closes everything in one shot with no per-app model judgment in
+    # between, so this list is the ONLY thing standing between "tidy up" and
+    # Ted quitting himself. It deliberately does not trust
+    # core/actions._SELF_PROCESSES, which is currently {""} in the working tree
+    # and therefore protects nothing. Terminal and iTerm are here because Ted
+    # is often launched from one, and closing his own host mid-loop ends the
+    # turn with no reply and no error.
+    DEFAULT_PROTECTED_APPS = frozenset({
+        "Ted", "Python", "python3", "Terminal", "iTerm2", "iTerm",
+        "Electron", "Finder",
     })
-    DEFAULT_PROTECTED_APPS = frozenset({"Ted", "Python", "python3"})
 
     def __init__(self, dispatch, list_apps, *, protected_apps=None,
                  confirmation_gate=None):
@@ -46,14 +64,23 @@ class MacAgent(BaseAgent):
     def needs_confirmation(self, method, args):
         return method in self.CONSEQUENT_METHODS
 
+    def _targets(self, args):
+        """Apps this cleanup would close: open, not protected, not spared.
+
+        `exclude` holds names the user asked to keep, already resolved to real
+        running app names by the caller — this agent does not guess at spelling.
+        """
+        spared = {str(name).lower() for name in (args or {}).get("exclude") or ()}
+        return [app for app in (self._list_apps() or [])
+                if app not in self._protected and app.lower() not in spared]
+
     def _dry_run(self, method, args):
         if method == "clean_up":
-            apps = list(self._list_apps() or [])
-            targets = [app for app in apps if app not in self._protected]
             return AgentResult(
                 ok=True,
                 did="No apps were changed (dry run).",
-                evidence={"dry_run": True, "would_close": targets},
+                evidence={"dry_run": True, "would_close": self._targets(args),
+                          "spared": list((args or {}).get("exclude") or ())},
             )
         if method not in self.TOOLS:
             return AgentResult(False, "Nothing was changed.", {},
@@ -66,7 +93,7 @@ class MacAgent(BaseAgent):
 
     def _run(self, method, args):
         if method == "clean_up":
-            return self._clean_up()
+            return self._clean_up(args)
         if method not in self.TOOLS:
             return AgentResult(False, "Nothing was changed.", {},
                                failed=f"MacAgent has no method called '{method}'.")
@@ -82,9 +109,10 @@ class MacAgent(BaseAgent):
             failed=result if failed else None,
         )
 
-    def _clean_up(self):
+    def _clean_up(self, args=None):
         before = list(self._list_apps() or [])
-        targets = [app for app in before if app not in self._protected]
+        targets = self._targets(args)
+        spared = list((args or {}).get("exclude") or ())
         results = []
         closed = []
         failures = []
@@ -98,6 +126,7 @@ class MacAgent(BaseAgent):
             "apps_before": before,
             "attempted": targets,
             "closed": closed,
+            "spared": spared,
             "results": results,
         }
         if not targets:
@@ -106,4 +135,7 @@ class MacAgent(BaseAgent):
             did = (f"Closed {', '.join(closed)}." if closed else "No apps were closed.")
             return AgentResult(False, did, evidence,
                                failed=f"Could not close: {', '.join(failures)}.")
-        return AgentResult(True, f"Closed {', '.join(closed)}.", evidence)
+        did = f"Closed {', '.join(closed)}."
+        if spared:
+            did += f" Left {', '.join(spared)} open."
+        return AgentResult(True, did, evidence)

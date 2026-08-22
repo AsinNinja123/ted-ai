@@ -1,5 +1,8 @@
 """Small in-process event channel shared by Ted's runtime and local dashboard.
 
+The Ted Code Book — §36.7.
+
+
 Events are facts about work that actually happened: a plan was accepted, an
 agent started, a confirmation was requested, or an agent returned evidence.
 The terminal log and the HUD consume this same stream so they cannot disagree
@@ -70,6 +73,7 @@ class EventBus:
         self._lock = threading.Lock()
         self._history = deque(maxlen=max(1, int(history_size)))
         self._subscribers = {}
+        self._listeners = []
         self._next_id = 1
         self._logger = logger
 
@@ -108,7 +112,26 @@ class EventBus:
                 self._logger(event)
             except Exception:
                 pass
+        # In-process consumers are NOT SSE subscribers on purpose: registering
+        # one must not make subscriber_count non-zero, or the HUD fallback in
+        # core/app.py would think a browser is already listening.
+        for listen in tuple(self._listeners):
+            try:
+                listen(event)
+            except Exception:
+                pass
         return event
+
+    def add_listener(self, fn):
+        """Register an in-process consumer of every event.
+
+        Used by the HUD bridge: when a standalone `python -m dashboard` owns
+        port 5175, Ted's own bus has no SSE subscriber and the thought bubble
+        would otherwise go dark with no error anywhere.
+        """
+        with self._lock:
+            self._listeners.append(fn)
+        return fn
 
     def subscribe(self, after_id=None, max_pending=128):
         """Subscribe, optionally replaying events newer than ``after_id``.

@@ -778,7 +778,7 @@ def _ollama_create(**kwargs):
 _ROUTER_TIMEOUT = 2.5
 
 
-def route_hint(system, text):
+def route_hint(system, text, num_predict=4):
     """Ask the small local model one routing question. Never raises upward.
 
     Deliberately not built on chat_create: this call must not be able to reach
@@ -794,7 +794,10 @@ def route_hint(system, text):
         "stream": False,
         "think": False,
         "keep_alive": "30m",
-        "options": {"num_predict": 4, "temperature": 0, "num_ctx": 2048},
+        # 4 tokens is enough for LOCAL/CLOUD. An extraction answering with a
+        # short list of app names needs room; the caller says how much.
+        "options": {"num_predict": max(4, int(num_predict)),
+                    "temperature": 0, "num_ctx": 2048},
     }
     try:
         response = httpx.post(f"{OLLAMA_URL}/api/chat", json=payload,

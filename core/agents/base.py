@@ -1,4 +1,8 @@
-"""Universal contracts for the star-shaped agent runtime."""
+"""Universal contracts for the star-shaped agent runtime.
+
+The Ted Code Book — Chapter 36. §36.2 is the contract, §36.3 is how synchronous
+code runs these coroutines, §36.5 is who decides an action is consequential.
+"""
 
 from __future__ import annotations
 

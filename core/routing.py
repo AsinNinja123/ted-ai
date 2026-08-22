@@ -15,7 +15,7 @@ the assistant.
 
 
 # =============================================================================
-#  READING THIS FILE            The Ted Code Book — Chapter 7 (§7.1 – §7.5)
+#  READING THIS FILE            The Ted Code Book — Chapter 7 (§7.1 – §7.7)
 # =============================================================================
 #
 #  WHAT THIS FILE IS
@@ -128,6 +128,11 @@ _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in TOOL_SCHEMAS}
 _FAMILIES = (
     (r"\b(?:open|close|quit|launch|start|bring up|pull up|app|application|window)\b",
      ("open_app", "close_app")),
+    # "clean up" shares no words with the family above, so without its own row
+    # the one tool that turns four round trips into one is never on the menu.
+    (r"\b(?:clean(?:\s*up|ing)?|tidy|declutter|close everything|close them all|"
+     r"shut everything|clear (?:my )?(?:desktop|screen))\b",
+     ("clean_up", "close_app")),
     (r"\b(?:website|browser|browse|navigate|url|\.com\b|youtube|video|watch|reddit|github|google)\b",
      ("play_youtube", "browse_to", "open_app")),
     # "play" itself was missing here, so "play a different one" arrived with an
@@ -301,6 +306,50 @@ def select_tool_schemas(text, recent_action_text=""):
             seen.add(name)
     # Discovery first makes its purpose visible even when the initial list is empty.
     return [FIND_TOOLS_SCHEMA, *chosen]
+
+
+# [BOOK §7.7] ─── THE CLEANUP REFLEX ─────────────────────────────────────────
+# "clean up" is a COMPLETE request: there is no target to resolve and exactly
+# one sensible action. It still went to the model, and qwen3.6-27b answered it
+# by chaining close_app one app at a time — two rounds, two rate-limited calls,
+# for a job Python can enumerate itself.
+#
+# This does not decide an ANSWER, which is the line this file must not cross.
+# It picks one capability for an unambiguous phrase, and the ordinary
+# confirmation gate still asks before anything closes.
+#
+# Anything naming an app ("clean up Chrome", "close Safari") is deliberately
+# NOT a match — a named target is close_app's job and the model resolves it.
+_CLEANUP_RE = re.compile(
+    r"^(?:(?:hey|okay|ok|alright|please|ted|let\'?s)[, ]+)*"
+    r"(?:(?:can|could|would|will)\s+you\s+|i\s+(?:want|need)\s+you\s+to\s+)?"
+    r"(?:clean\s*(?:up|things up|it up)?|tidy\s*(?:up)?|declutter"
+    r"|close\s+(?:everything|all\s+(?:my\s+)?apps|them\s+all)"
+    r"|shut\s+everything\s+down"
+    r"|close\s+(?:every|all)\s+(?:other\s+)?app(?:lication)?s?"
+    r"|clear\s+(?:my\s+)?(?:desktop|screen))"
+    r"[\s.!?]*$", re.I)
+
+# Same opening, without the end anchor: "clean up but leave brave" is a cleanup
+# whose tail is a constraint, not a different request. What the tail MEANS is
+# extract_kept_apps' job.
+_CLEANUP_PREFIX_RE = re.compile(_CLEANUP_RE.pattern.replace(r"[\s.!?]*$", r"\b"), re.I)
+
+
+def cleanup_reflex(text):
+    """True when the message is a whole-desktop cleanup and nothing else."""
+    return bool(_CLEANUP_RE.match(" ".join(str(text or "").strip().split())))
+
+
+def cleanup_request(text):
+    """True when the message STARTS with a cleanup idiom but says more.
+
+    "clean up but leave brave" is still a cleanup; the tail is a constraint on
+    it. Only the opening idiom is recognised here — working out what the tail
+    means is :func:`extract_kept_apps`'s job, and it asks a model rather than a
+    pattern, because the ways to say "except that one" do not enumerate.
+    """
+    return bool(_CLEANUP_PREFIX_RE.match(" ".join(str(text or "").strip().split())))
 
 
 def plan_document(text):
@@ -651,6 +700,101 @@ def classify_brain_with_model(text, schemas=(), has_attachment=False, pinned="",
     if found.group(1) == "LOCAL":
         return BrainChoice(BRAIN_LOCAL, "the local router took it", "model")
     return BrainChoice(BRAIN_CLOUD, "the local router escalated it", "model")
+
+
+# [BOOK §7.7] ─── ASKING THE SMALL MODEL WHICH APPS TO SPARE ─────────────────
+# The first version of this was a regex with fourteen alternatives — except,
+# besides, minus, without, save for, barring, but not, leave X open… and it
+# still missed phrasings on the first try. That is the vending machine this
+# file exists to avoid: any wording the author did not imagine simply fails.
+#
+# So the reflex decides the ACTION (a cleanup, one call, not four) and a model
+# reads the LANGUAGE. Same split classify_brain_with_model already uses, and
+# the same local llama3.2:3b, so it costs ~0.1s and no cloud tokens.
+#
+# Two safety properties matter more than accuracy here:
+#   * The candidate list is the apps actually running, and anything the model
+#     says that is not on it is dropped. A hallucinated name cannot spare a
+#     process that does not exist, or worse, be read as something else.
+#   * None (router unavailable) is NOT the same as [] (nothing to spare). The
+#     caller must fall through to the normal path on None rather than close an
+#     app the user may have asked it to keep.
+_KEEP_SYSTEM = (
+    "You label a request about closing macOS apps. You never answer it.\n"
+    "You are given the apps that are currently open.\n"
+    "Reply with exactly one of:\n"
+    "  NO     - the request is not about closing most or all open apps\n"
+    "  NONE   - it is a general cleanup and no app is spared\n"
+    "  <names> - it is a general cleanup, sparing these apps (comma separated,\n"
+    "            spelled exactly as in the open-apps list)\n"
+    "Closing ONE named app is NO. Tidying files, folders or anything that is\n"
+    "not an open app is NO. When unsure, reply NO."
+)
+
+_KEEP_USER = (
+    "Open apps: {apps}\n"
+    "--- BEGIN MESSAGE ---\n{text}\n--- END MESSAGE ---\n"
+    "NO, NONE, or names from the list:"
+)
+
+# The router said this is not a general cleanup at all.
+NOT_A_CLEANUP = "not-a-cleanup"
+
+
+def extract_kept_apps(text, running, ask=None):
+    """Decide whether a request is a general cleanup, and what it spares.
+
+    Returns one of:
+      ``NOT_A_CLEANUP`` - the small model says this is something else
+      ``None``          - the router could not answer; the caller must NOT act
+      ``[]``            - a cleanup that spares nothing
+      ``[names]``       - a cleanup sparing these exact running apps
+
+    ``running`` is the candidate list and the whitelist at once: a name the
+    model invents is dropped rather than guessed at. ``ask`` is injected so
+    this is testable without Ollama, exactly as classify_brain_with_model does.
+    """
+    candidates = [str(app) for app in (running or []) if str(app).strip()]
+    if ask is None:
+        from core.providers import route_hint
+        ask = route_hint
+    try:
+        raw = ask(_KEEP_SYSTEM,
+                  _KEEP_USER.format(apps=", ".join(candidates) or "(none)",
+                                    text=(text or "")[:500]),
+                  num_predict=48) or ""
+    except Exception as exc:
+        print(f"[router] keep-list unavailable: {exc}")
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    if re.match(r"^\W*NO\b", raw, re.I):
+        return NOT_A_CLEANUP
+    if re.search(r"\bNONE\b", raw, re.I):
+        return []
+
+    by_lower = {app.lower(): app for app in candidates}
+    kept = []
+    for piece in re.split(r"[,\n;]+", raw):
+        piece = piece.strip().strip('.\'"` ')
+        if not piece:
+            continue
+        app = by_lower.get(piece.lower())
+        if app is None:
+            # Substring both ways catches "brave" for "Brave Browser" without
+            # inviting the fuzzy matching that once turned blender into Finder.
+            app = next((c for c in candidates
+                        if piece.lower() in c.lower() or c.lower() in piece.lower()),
+                       None)
+        if app and app not in kept:
+            kept.append(app)
+    if not kept:
+        # It answered, but with nothing recognisable. Refusing to act is the
+        # only safe reading: it may have named an app it could not spell.
+        print(f"[router] no known app in keep-list {raw[:60]!r}")
+        return None
+    return kept
 
 
 @dataclass(frozen=True)

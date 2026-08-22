@@ -94,6 +94,7 @@ to the JS side.
 #          evaluated and dropped into the text.
 # =============================================================================
 
+import asyncio
 import base64
 import json
 import mimetypes
@@ -112,6 +113,7 @@ from core import (attachments, bouncer, codebase, events, features, lingo, llm, 
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           search_contacts, send_imessage_to_address)
+from core.agents import Delegation, MacAgent, Plan
 from core.hud_bridge import (js, set_state as _hud_set_state, add_message,
                              show_issue as _hud_show_issue)
 from core.intents import (
@@ -425,6 +427,20 @@ class TedApi:
         self._last_wake_time     = 0.0             # epoch; for wake-word cooldown (echo prevention)
         self._last_fired_timer   = None            # last timer that fired — for snooze
 
+        # ── The agent layer. MacAgent owns whole Mac tasks; it calls back into
+        #    _dispatch_tool for the individual handlers, which is why the
+        #    dispatch it receives is flagged _from_agent=True. Without that
+        #    flag the guard in _dispatch_tool would route straight back into
+        #    the agent and recurse until the stack blew.
+        self.mac_agent = MacAgent(
+            dispatch=lambda name, args: self._dispatch_tool(
+                name, args, _from_agent=True),
+            list_apps=get_running_apps,
+        )
+        # When a standalone dashboard owns port 5175 the HUD is not on this
+        # process's SSE stream, so agent events would vanish with no error.
+        events.BUS.add_listener(self._mirror_event_to_hud)
+
         # ── Attention: after ATTENTION_WINDOW s of silence Ted goes to standby
         #    and only "Hey Ted" (or typing) re-engages — so room conversation
         #    doesn't get answered. Starts engaged.
@@ -435,6 +451,83 @@ class TedApi:
     # rather than "never mind". Short on purpose: past this, the cancel reading
     # is the likelier one and the ambiguous phrase goes back to meaning cancel.
     MEMORY_REFERENT_WINDOW = 180.0
+
+    # [BOOK §36.3] ─── RUNNING AN AGENT FROM SYNCHRONOUS CODE ─────────────────
+    # Every agent method is a coroutine, because confirmation has to be able to
+    # wait for a browser click without freezing the thread. This file has no
+    # event loop of its own — it is threads all the way down — so calling
+    # agent.execute() directly would build a coroutine object and run nothing.
+    #
+    # asyncio.run() makes a loop, runs the coroutine to completion, closes the
+    # loop. Confirmation still works across threads: ConfirmationGate.resolve()
+    # (called from the Flask thread that serves /api/confirm) hands the result
+    # back with loop.call_soon_threadsafe, and the loop is alive the whole time
+    # because this thread is parked inside asyncio.run waiting for it.
+    #
+    # The rule: never call this from a thread that already has a running loop.
+    # Nothing in Ted does today. When two agents need to run at once, replace
+    # the body with one long-lived loop on a daemon thread plus
+    # asyncio.run_coroutine_threadsafe(...).result() — the signature stays.
+    def _run_agent(self, agent, method, args=None, plan_id=None, dry_run=False):
+        """Run one agent method to completion and return its AgentResult."""
+        return asyncio.run(agent.execute(method, args or {}, plan_id=plan_id,
+                                         dry_run=dry_run))
+
+    # A plain refusal must never reach the small model. Asked "which apps does
+    # 'no' spare?", a 3B will sometimes name one, and Ted would narrow a list
+    # the user was trying to reject outright.
+    _PLAIN_REFUSAL = frozenset({
+        "no", "nope", "nah", "cancel", "stop", "never mind", "nevermind",
+        "forget it", "no thanks", "don't", "dont", "no dont", "no don't",
+    })
+
+    @staticmethod
+    def _keep_apps_from_reply(text):
+        """Apps a reply at the cleanup prompt asks to spare, else an empty list.
+
+        Empty means "this was not a correction", and the caller falls through to
+        the cancellation it has always been — which is also what happens when
+        the router is unavailable. Failing closed is the whole point.
+        """
+        if _normalize_cmd(text) in TedApi._PLAIN_REFUSAL:
+            return []
+        verdict = routing.extract_kept_apps(text, get_running_apps())
+        if verdict in (None, routing.NOT_A_CLEANUP) or not verdict:
+            return []
+        return list(verdict)
+
+    @staticmethod
+    def _agent_reply(result):
+        """Speak an AgentResult the way ACTION tools are spoken: ground truth.
+
+        did and failed are often the same sentence for a single-step call —
+        "Google Chrome isn't open." is both what happened and why it failed.
+        Printing both produced a stutter in the log and in Ted's mouth.
+        """
+        if result.ok:
+            return result.did
+        parts = [p for p in (result.did, result.failed) if p]
+        if len(parts) == 2 and parts[0] != parts[1]:
+            return f"{parts[0]} {parts[1]}"
+        return parts[0] if parts else "That didn't go through."
+
+    def _mirror_event_to_hud(self, event):
+        """Fallback path for runtime events when no browser is on the stream.
+
+        Memory events are excluded because _on_memory_event already has its own
+        fallback; mirroring them here too would draw every toast twice.
+        """
+        if events.BUS.subscriber_count > 0:
+            return
+        if event.kind not in ("plan", "agent_started", "agent_result",
+                              "confirmation_required", "confirmation_resolved"):
+            return
+        try:
+            js(self.window,
+               f"tedHud.runtimeEvent({json.dumps(event.kind)},"
+               f"{json.dumps(event.as_dict())})")
+        except Exception:
+            pass
 
     def _on_memory_event(self, ev):
         """Draw a memory change on the HUD. Registered once, in __init__.
@@ -737,6 +830,17 @@ class TedApi:
             elif pending["name"] == "send_message" and (
                     revised := _revised_message_args(text, pending["args"])):
                 result = self._dispatch_tool("send_message", revised)
+            elif pending["name"] == "clean_up" and (
+                    _keep := self._keep_apps_from_reply(text)):
+                # "don't close brave" is a narrowing of the same request. The
+                # old yes/no reading made Charlie restart the whole thing to
+                # save one app. Same distinction _revised_message_args draws
+                # for a pending message — consent is still explicit, it is just
+                # consent to a corrected list.
+                _args = dict(pending["args"])
+                _args["exclude"] = list(dict.fromkeys(
+                    list(_args.get("exclude") or []) + _keep))
+                result = self._dispatch_tool("clean_up", _args)
             else:
                 result = "Canceled — nothing was sent or changed."
             if echo_user:
@@ -906,6 +1010,59 @@ class TedApi:
                 {"role": "user", "content": text},
                 {"role": "assistant", "content": result},
             ])
+            return False
+
+        # [BOOK §7.7] The cleanup lane.
+        #
+        # The model WAS given a clean_up tool, listed first, with a description
+        # ending "Do NOT chain close_app calls to do this". It chained
+        # close_app anyway — twice, on a rate-limited free tier. So this lane
+        # does not ask it whether to clean up.
+        #
+        # Bare "clean up" is settled by the pattern and costs nothing. A tail
+        # like "but leave brave" is a cleanup whose SHAPE the pattern knows and
+        # whose MEANING it does not, so llama3.2:3b reads the tail. A regex
+        # tried that and needed a new alternative for every phrasing.
+        #
+        # Deliberately the RAW text, not routing_text: lingo (ch. 18) expands
+        # "Clean up" into a sentence, and matching the expansion read "clean up
+        # Chrome" as a whole-desktop cleanup. What Charlie typed is the request.
+        _clean_keep = []
+        _clean_asked = False
+        _is_clean = routing.cleanup_reflex(text)
+        if not _is_clean and routing.cleanup_request(text):
+            _clean_asked = True
+            _verdict = routing.extract_kept_apps(text, get_running_apps())
+            if _verdict == routing.NOT_A_CLEANUP:
+                _is_clean = False            # "clean up Chrome" is one close
+            elif _verdict is None:
+                _is_clean = False            # router silent — never guess here
+            else:
+                _is_clean, _clean_keep = True, _verdict
+        if _is_clean:
+            _cturn = telemetry.Turn(text, source="reflex")
+            # Say which it actually was. A turn the small local router shaped is
+            # not the same as one the pattern settled for free, and the
+            # diagnostics panel is the only place that difference shows.
+            _cturn.provider = "router" if _clean_asked else "reflex"
+            _cturn.forced = "n/a"
+            print(f"[plan] cleanup via {'llama router' if _clean_asked else 'reflex'}"
+                  + (f", sparing {', '.join(_clean_keep)}" if _clean_keep else ""))
+            result = self._dispatch_and_record("clean_up", {"exclude": _clean_keep})
+            _cturn.note_tool("clean_up")
+            self.interrupt_speech = False
+            if echo_user:
+                add_message(w, "user", text)
+            self.last_reply = result
+            add_message(w, "ted", result)
+            speak(w, result, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": result},
+            ])
+            _cturn.finish(reply=result,
+                          error=result if th.looks_like_failure(result) else "")
+            set_state(w, "idle")
             return False
 
         reflex = routing.plan_reflex(routing_text)
@@ -2043,15 +2200,36 @@ class TedApi:
                 ],
             })
 
+            # [BOOK §36.2] Say what this round intends BEFORE doing any of it.
+            # The launch log used to show tool calls one at a time with no
+            # record of the intent that spawned them, which is why one "clean
+            # up" read as four unrelated closes. The plan is also what draws
+            # the header of the thought bubble; without announce() the HUD
+            # shows agent lines with nothing above them.
+            _calls = []
+            for tc in msg.tool_calls:
+                try:
+                    _calls.append((tc, json.loads(tc.function.arguments)))
+                except Exception:
+                    _calls.append((tc, {}))
+            _plan = Plan(
+                heard=text,
+                steps=[Delegation(
+                    "MacAgent" if (tc.function.name in MacAgent.TOOLS
+                                   or tc.function.name == "clean_up")
+                    else "direct",
+                    tc.function.name, dict(a))
+                    for tc, a in _calls],
+                parallel=False,
+            ).announce()
+            print(f"[plan] {' | '.join(d.agent + '.' + d.method for d in _plan.steps)}")
+
             # Execute each tool and append its result
             _round_results = []
             _all_actions = True
-            for tc in msg.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments)
-                except Exception:
-                    args = {}
-                result = self._dispatch_tool(tc.function.name, args)
+            for tc, args in _calls:
+                result = self._dispatch_tool(tc.function.name, args,
+                                             plan_id=_plan.id)
                 if result is None:
                     # A None here means the handler crashed or the tool is unknown.
                     # Never turn that into a cheerful "Done." — report the truth.
@@ -2188,10 +2366,53 @@ class TedApi:
     #     in the schema's "required" list may simply be absent.
     #   * Return the SENTENCE Ted will say, and let it be the truth. Do not
     #     return "Done" because the call did not raise. (§11.8)
-    def _dispatch_tool(self, name, args, confirmed=False):
+    def _dispatch_tool(self, name, args, confirmed=False, plan_id=None,
+                       _from_agent=False):
         """Route a tool call from the LLM to the right Python handler.
         Returns a spoken-style result string; on any error returns an honest
         failure message (never None-→-"Done.")."""
+        # [BOOK §36.4] Mac work belongs to MacAgent now. The agent owns the task
+        # and reports one AgentResult with evidence; the branches below still
+        # own the individual handlers, and the agent calls back into them.
+        #
+        # _from_agent is what stops that callback re-entering here as a fresh
+        # delegation. It is not a style choice — without it this recurses.
+        if not _from_agent and (name in MacAgent.TOOLS or name == "clean_up"):
+            js(self.window, f"tedHud.noteAppUse({json.dumps(name)})")
+            # Not every door into this method comes from the tool loop: the
+            # reflex path and the "yes, do it" confirmation path both arrive
+            # with no plan. The HUD drops any agent event whose plan_id it has
+            # never seen, so without this the thought bubble would silently
+            # skip exactly the runs the user is watching for.
+            if plan_id is None:
+                plan_id = Plan(
+                    heard=self._cur_user_text or name,
+                    steps=[Delegation("MacAgent", name, dict(args or {}))],
+                ).announce().id
+                print(f"[plan] MacAgent.{name}")
+            # th.needs_confirmation is the one function BOTH gates ask (§11.7).
+            # Asking it here too is what stops the agent path from quietly
+            # dropping a gate the handler path still enforces. The agent's own
+            # ConfirmationGate stays unused for now: it blocks the turn waiting
+            # on a click, and Ted's established flow is to ask, return, and let
+            # the next turn answer. Two confirmation models is the duplicated
+            # judgment bug again — pick this one.
+            if th.needs_confirmation(name, args) and not confirmed:
+                preview = self._run_agent(self.mac_agent, name, args,
+                                          plan_id=plan_id, dry_run=True)
+                self._pending_tool_confirmation = {
+                    "name": name, "args": dict(args),
+                    "expires": time.time() + 60,
+                }
+                would = preview.evidence.get("would_close") or []
+                if not would:
+                    self._pending_tool_confirmation = None
+                    return "Nothing of yours is open, so there is nothing to close."
+                return (f"That would close {', '.join(would)}. "
+                        "Say yes to do it, or anything else to cancel.")
+            result = self._run_agent(self.mac_agent, name, args,
+                                     plan_id=plan_id)
+            return self._agent_reply(result)
         try:
             # Surface tool use in the HUD's connected-apps panel (best-effort)
             js(self.window, f"tedHud.noteAppUse({json.dumps(name)})")

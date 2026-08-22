@@ -272,9 +272,31 @@ def collect_routing() -> dict:
     # is whether the default path builds a ToolRuntime instead of probing.
     probe_gone = "tool_runtime=_runtime" in src and "llm.ToolRuntime(" in src
     reflex = "routing.plan_reflex(" in src
+    cleanup = "routing.cleanup_reflex(" in src
     return {"deterministic": kept, "guard_doc": guard.strip().split("\n")[0] if guard else "",
             "legacy_flag": legacy, "single_call": probe_gone, "reflex": reflex,
-            "purpose": STEP_PURPOSE}
+            "cleanup_lane": cleanup, "purpose": STEP_PURPOSE}
+
+
+def collect_agents() -> list:
+    """Task-owning agents in core/agents/, with how many tools each has taken.
+
+    Read from the code rather than a list kept by hand, because the whole point
+    of the number is to show how far the migration off _dispatch_tool has got.
+    """
+    out = []
+    folder = os.path.join(ROOT, "core", "agents")
+    if not os.path.isdir(folder):
+        return out
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".py") or name.startswith("__"):
+            continue
+        src = read(os.path.join(folder, name))
+        for cls in re.findall(r"^class (\w+)\(BaseAgent\):", src, re.M):
+            tools = re.search(r"TOOLS = frozenset\(\{(.*?)\}\)", src, re.S)
+            count = len(re.findall(r'"[a-z_]+"', tools.group(1))) if tools else 0
+            out.append({"name": cls, "file": f"core/agents/{name}", "tools": count})
+    return out
 
 
 # ── the parts ────────────────────────────────────────────────────────────────
@@ -506,6 +528,7 @@ def collect() -> dict:
         "models": models,
         "tools": collect_tools(),
         "routing": collect_routing(),
+        "agents": collect_agents(),
         "files": collect_files(),
         "memory": memory,
         "state": state,
@@ -796,8 +819,15 @@ def render_markdown(d: dict, stable: bool = False) -> str:
     route = ("local app reflex + one streamed loop" if d["routing"].get("reflex")
              and d["routing"]["single_call"] else
              "one streamed loop" if d["routing"]["single_call"] else "two calls")
+    if d["routing"].get("cleanup_lane"):
+        route += " + cleanup lane (llama router)"
     L.append(f"| Routing | {route}"
              f"{'; legacy path behind TED_LEGACY_LADDER=1' if d['routing']['legacy_flag'] else ''} |")
+    agents = d.get("agents") or []
+    if agents:
+        L.append("| Agents | "
+                 + ", ".join(f"{a['name']} ({a['tools']} tools)" for a in agents)
+                 + " — see Code Book ch. 36 |")
     if stable:
         L.append(f"| Memory | {rows.get('facts', 0)} facts, "
                  f"{about(rows.get('chat_turns', 0))} chat turns, "

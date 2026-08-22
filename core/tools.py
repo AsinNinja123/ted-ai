@@ -341,7 +341,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "close_app",
-            "description": "Close or quit a macOS application. Use for 'close', 'quit', 'kill', 'exit' + app name.",
+            "description": (
+                "Close or quit ONE named macOS application. Use for 'close', "
+                "'quit', 'kill', 'exit' + a specific app name. If the user "
+                "wants several apps closed, or does not name any app at all "
+                "('clean up', 'close everything', 'tidy my desktop'), call "
+                "clean_up ONCE instead of calling this repeatedly."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -349,6 +355,20 @@ TOOL_SCHEMAS = [
                 },
                 "required": ["name"]
             }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clean_up",
+            "description": (
+                "Close every open user app in one step. Use when the user asks "
+                "to clean up, tidy up, close everything, or clear their desktop "
+                "without naming which apps. Ted works out what is open, skips "
+                "his own processes, and asks for confirmation before closing "
+                "anything. Do NOT chain close_app calls to do this."
+            ),
+            "parameters": {"type": "object", "properties": {}}
         }
     },
     {
