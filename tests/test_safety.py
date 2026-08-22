@@ -69,6 +69,17 @@ check("every tool rejects invented top-level arguments",
       all((t["function"].get("parameters") or {}).get("additionalProperties") is False
           for t in tools.TOOL_SCHEMAS))
 
+print("\n— Ted does not quit himself —")
+from core import actions
+check("the self-protection list is not empty",
+      bool(actions._SELF_PROCESSES) and "" not in actions._SELF_PROCESSES)
+for name in ("python", "python3", "ted", "terminal"):
+    check(f"{name!r} is protected from 'close this app'",
+          name in actions._SELF_PROCESSES)
+check("MacAgent guards the same ground independently",
+      {"Ted", "Terminal"} <= set(
+          __import__("core.agents.mac", fromlist=["MacAgent"]).MacAgent.DEFAULT_PROTECTED_APPS))
+
 print("\n" + "=" * 50)
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

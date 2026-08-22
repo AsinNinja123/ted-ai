@@ -47,6 +47,7 @@ APPS = {
     "google": "Google Chrome",
     "google chrome": "Google Chrome",
     "browser": "Google Chrome",
+    "brave": "Brave Browser",
     "firefox": "Firefox",
     "messages": "Messages",
     "facetime": "FaceTime",
@@ -187,6 +188,7 @@ WEB_APPS = {
 # Canonical URLs for "go to X" / "browse to X" — overrides the dumb ".com" fallback
 # so Ted opens the right page instead of a sign-in landing page.
 SITE_URLS = {
+    "blackboard":       "https://nwciowa.blackboard.com/ultra/course",
     "outlook":          "https://outlook.office.com/mail/inbox",
     "outlook mail":     "https://outlook.office.com/mail/inbox",
     "my outlook":       "https://outlook.office.com/mail/inbox",
@@ -310,6 +312,11 @@ _THIS_APP_WORDS = {
 }
 
 # Processes that are Ted himself (or his host) — never quit these via "close this app".
+# This was found emptied to {""} in the working tree on 2026-08-22, which protects
+# nothing: every membership test below fails, so "close this app" could quit Ted,
+# his Terminal, or the Python running him. Restored, and covered by a test now.
+# MacAgent.DEFAULT_PROTECTED_APPS is a second, independent guard — clean_up closes
+# everything in one shot with no per-app judgment, so it does not rely on this one.
 _SELF_PROCESSES = {"python", "python3", "ted", "terminal"}
 
 
