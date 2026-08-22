@@ -20,6 +20,10 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# These calls exercise the real telemetry finish path with a fake provider.
+# Never let their synthetic replies appear in Charlie's performance review.
+os.environ["TED_DB"] = ""
+
 voice_stub = types.ModuleType("core.voice")
 voice_stub.SPEED = 1.1
 sys.modules.setdefault("core.voice", voice_stub)

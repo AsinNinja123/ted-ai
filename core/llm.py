@@ -1010,6 +1010,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                          args=(user_input,), daemon=True).start()
 
     today = date.today().strftime("%B %d, %Y")
+    # A negative rating is not vague training data: it is a concrete correction
+    # attached to a concrete answer in this chat. Carry it into exactly one
+    # successful follow-up, then consume it. This gives Charlie immediate
+    # behavioral control without turning a single dislike into a permanent
+    # personality rule.
+    _feedback = telemetry.pending_feedback(telemetry_chat_id)
+    _feedback_ids = [item["id"] for item in _feedback]
 
     # --- selective memory retrieval (run concurrently when this turn earns it) ---
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
@@ -1083,6 +1090,42 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
 
     context_parts = [f"Today is {today}."]
+    if _feedback:
+        items = []
+        repairs = {
+            "Wrong or stale fact": (
+                "Verify time-sensitive claims with available retrieval; if they cannot "
+                "be verified, say that instead of guessing."),
+            "Misunderstood the question": (
+                "Resolve the intended subject from conversation context, or ask one "
+                "short clarifying question before answering."),
+            "Missed context": (
+                "Re-read the recent conversation and use the relevant established facts."),
+            "Weak reasoning": (
+                "Check the assumptions and inference chain from first principles."),
+            "Too wordy": "Lead with the answer and make it substantially shorter.",
+            "Wrong tone": "Match Charlie's tone and remove unnecessary performance or filler.",
+            "Tool or result was wrong": (
+                "Do not repeat the action claim; re-check live state and report only "
+                "a verified result."),
+        }
+        for item in reversed(_feedback):
+            problem = item.get("feedback_reason") or "the answer was not useful"
+            note = item.get("feedback_note") or ""
+            items.append(
+                f"Prior question: {_cap(item.get('user_text'), 260)} | "
+                f"Prior answer: {_cap(item.get('reply'), 320)} | "
+                f"Problem: {_cap(problem, 80)} | "
+                f"Required change: {repairs.get(problem, 'Use the note below to change the approach.')}"
+                + (f" | Charlie's note: {_cap(note, 300)}" if note else ""))
+        context_parts.append(
+            "CHARLIE'S NEGATIVE FEEDBACK ON A PRIOR ANSWER: "
+            + " || ".join(items)
+            + ". On this reply, reconsider the issue from first principles. "
+              "Do not defend or repeat the disliked answer. Correct the named "
+              "problem, acknowledge a prior mistake when relevant, and ask one "
+              "clarifying question instead of making another unsupported assumption."
+        )
     if operational_context:
         # Live computer hierarchy can include browser tabs and terminal
         # branches. 900 characters cut it off after the app names, defeating
@@ -1760,6 +1803,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 yield full_reply
         _log_turn(_turn, full_reply, _usage, total_calls, rounds)
         _remember_exchange(user_input, full_reply, conversation)
+        if _feedback_ids and not _turn.error and _turn.written:
+            telemetry.mark_feedback_applied(_feedback_ids)
 
 
 def _log_turn(turn, reply, usage, total_calls, rounds):

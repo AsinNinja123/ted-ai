@@ -563,6 +563,37 @@ def api_diag_delete_turns():
     return jsonify({"deleted": telemetry.delete_rows(ids)})
 
 
+_FEEDBACK_REASONS = {
+    "wrong_fact": "Wrong or stale fact",
+    "misunderstood": "Misunderstood the question",
+    "missed_context": "Missed context",
+    "weak_reasoning": "Weak reasoning",
+    "too_wordy": "Too wordy",
+    "tone": "Wrong tone",
+    "tool_result": "Tool or result was wrong",
+    "other": "Other",
+}
+
+
+@app.post("/api/diagnostics/turns/<int:turn_id>/feedback")
+def api_diag_feedback(turn_id):
+    """Attach actionable feedback to the exact answer Charlie rated."""
+    from core import telemetry
+    body = request.get_json(silent=True) or {}
+    rating = body.get("rating")
+    if rating not in (-1, 1):
+        return jsonify({"error": "rating must be -1 or 1"}), 400
+    reason_key = str(body.get("reason", ""))
+    if rating == -1 and reason_key not in _FEEDBACK_REASONS:
+        return jsonify({"error": "choose what went wrong"}), 400
+    reason = _FEEDBACK_REASONS.get(reason_key, "")
+    note = str(body.get("note", "")).strip()[:500]
+    if not telemetry.set_feedback(turn_id, rating, reason, note):
+        return jsonify({"error": "diagnostic turn not found"}), 404
+    return jsonify({"ok": True, "rating": rating, "reason": reason,
+                    "will_affect_next_turn": rating == -1})
+
+
 @app.post("/api/diagnostics/clear")
 def api_diag_clear():
     from core import telemetry

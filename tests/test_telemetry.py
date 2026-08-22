@@ -68,8 +68,25 @@ check("selected reports include only the requested turn",
       "close chrome" in telemetry.report_for_ids([telemetry.recent()[0]["id"]])
       and "play a different one" not in telemetry.report_for_ids(
           [telemetry.recent()[0]["id"]]))
+linked_id = telemetry.recent()[0]["id"]
+check("a thumbs-down is stored on the exact answer",
+      telemetry.set_feedback(linked_id, -1, "Misunderstood the question",
+                             "Ask which app I meant"))
+pending = telemetry.pending_feedback(42)
+check("…becomes pending guidance only for that chat",
+      len(pending) == 1 and pending[0]["id"] == linked_id
+      and telemetry.pending_feedback(43) == [])
+check("…is included when those diagnostics are copied",
+      "thumbs down" in telemetry.report_for_ids([linked_id]).lower()
+      and "Ask which app I meant" in telemetry.report_for_ids([linked_id]))
+check("…can be consumed after a successful reconsidered reply",
+      telemetry.mark_feedback_applied([linked_id]) == 1
+      and telemetry.pending_feedback(42) == [])
+check("a thumbs-up records quality without creating guidance",
+      telemetry.set_feedback(linked_id, 1)
+      and telemetry.pending_feedback(42) == [])
 check("individual diagnostics can be deleted without clearing the log",
-      telemetry.delete_rows([telemetry.recent()[0]["id"]]) == 1
+      telemetry.delete_rows([linked_id]) == 1
       and len(telemetry.recent()) == 1)
 
 degraded = telemetry.Turn("hello during a rate limit", source="chat")
@@ -216,6 +233,8 @@ print("\n— the HUD can actually reach the diagnostics panel —")
 
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 hud = open(os.path.join(_root, "ui", "ted_hud.html"), encoding="utf-8").read()
+diag = open(os.path.join(_root, "dashboard", "diagnostics.html"),
+            encoding="utf-8").read()
 check("there is a Diagnostics button in the sidebar, next to Memory",
       'id="diagbtn"' in hud and 'id="membtn"' in hud)
 check("…wired to a toggle", "tedHud.toggleDiagnostics()" in hud)
@@ -251,6 +270,9 @@ check("…and advertises the capability so the HUD can detect an old server",
 check("diagnostics are grouped and can be copied or deleted by selection",
       '"/api/diagnostics/sessions"' in app
       and 'api_diag_selected_report' in app and 'api_diag_delete_turns' in app)
+check("answers can be rated with specific actionable feedback",
+      'api_diag_feedback' in app and '_FEEDBACK_REASONS' in app
+      and 'feedbackDialog' in diag and 'thumb down' in diag)
 
 
 print("\n— retrieval that finds nothing must COST nothing —")
@@ -310,6 +332,10 @@ check("the per-turn context breakdown is recorded",
       "_turn.ctx_breakdown" in llm_src)
 diag = open(os.path.join(_root, "dashboard", "diagnostics.html"), encoding="utf-8").read()
 check("…and shown in the panel", "ctxBars" in diag)
+check("negative feedback reaches one successful follow-up in the same chat",
+      "telemetry.pending_feedback(telemetry_chat_id)" in llm_src
+      and "telemetry.mark_feedback_applied(_feedback_ids)" in llm_src
+      and "reconsider the issue from first principles" in llm_src)
 
 
 print("\n— the gauge should show the real ceiling, not a number off a blog —")

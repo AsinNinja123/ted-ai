@@ -220,6 +220,40 @@ check("short single-clause turns use low-latency reasoning",
 check("exchange stored", conv[-2:] == [{"role": "user", "content": "how are you"},
                                        {"role": "assistant", "content": "Not much, you?"}])
 
+# A thumbs-down is immediate, chat-scoped guidance—not vague permanent
+# "learning." Capture the actual provider messages to prove the correction
+# reaches the next answer and is consumed only after that answer completes.
+_orig_pending = llm.telemetry.pending_feedback
+_orig_mark_applied = llm.telemetry.mark_feedback_applied
+_orig_active_provider = llm._providers.active_provider
+_orig_active_model = llm._providers.active_model
+applied_feedback = []
+llm.telemetry.pending_feedback = lambda chat_id: ([{
+    "id": 91, "user_text": "who won the finals this year",
+    "reply": "The Dodgers won in 2024.",
+    "feedback_reason": "Misunderstood the question",
+    "feedback_note": "Ask which sport I mean.",
+}] if chat_id == 42 else [])
+llm.telemetry.mark_feedback_applied = lambda ids: applied_feedback.extend(ids)
+llm._providers.active_provider = lambda: "groq"
+llm._providers.active_model = lambda: "feedback-test-model"
+llm.chat_create = scripted(FakeStream([text_chunk("Which sport do you mean?")]))
+out, _ = run("try that again", runtime(lambda n, a: "unused"),
+             telemetry_chat_id=42)
+feedback_context = llm.chat_create.kwargs[0]["messages"][-2]["content"]
+check("negative feedback is injected into the next turn in the same chat",
+      "Misunderstood the question" in feedback_context
+      and "Ask which sport I mean" in feedback_context
+      and "ask one short clarifying question" in feedback_context)
+check("…changes the next answer instead of defending the old one",
+      out == "Which sport do you mean?")
+check("…and is consumed after the reconsidered answer succeeds",
+      applied_feedback == [91])
+llm.telemetry.pending_feedback = _orig_pending
+llm.telemetry.mark_feedback_applied = _orig_mark_applied
+llm._providers.active_provider = _orig_active_provider
+llm._providers.active_model = _orig_active_model
+
 memory_reads = []
 llm.get_memory = lambda q: (memory_reads.append("memory"), "")[1]
 llm.get_facts_about = lambda who: (memory_reads.append("facts"), "")[1]

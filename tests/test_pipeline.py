@@ -28,6 +28,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Reflex paths write diagnostics even when the streaming model is stubbed. Keep
+# those synthetic "hello there" and app-close rows out of Charlie's real
+# performance review database.
+os.environ["TED_DB"] = os.path.join(tempfile.mkdtemp(), "pipeline_telemetry.db")
+
 # ── Stub the audio stack BEFORE core.app can import it ────────────────────────
 SPOKEN = []          # every text handed to speak()/speak_streaming()
 SPEED_CALLS = []     # adjust_speed deltas

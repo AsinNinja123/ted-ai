@@ -135,6 +135,11 @@ CREATE TABLE IF NOT EXISTS turn_log (
     error             TEXT    NOT NULL DEFAULT '',
     ctx_breakdown     TEXT    NOT NULL DEFAULT '',
     brain_choice      TEXT    NOT NULL DEFAULT '',
+    rating            INTEGER NOT NULL DEFAULT 0,
+    feedback_reason   TEXT    NOT NULL DEFAULT '',
+    feedback_note     TEXT    NOT NULL DEFAULT '',
+    feedback_at       TEXT    NOT NULL DEFAULT '',
+    feedback_applied  INTEGER NOT NULL DEFAULT 0,
     ok                INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_turn_log_epoch ON turn_log(epoch);
@@ -178,6 +183,17 @@ def _connect():
             conn.execute("ALTER TABLE turn_log ADD COLUMN chat_id INTEGER")
         except sqlite3.OperationalError:
             pass                     # already there
+        for column, definition in (
+            ("rating", "INTEGER NOT NULL DEFAULT 0"),
+            ("feedback_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("feedback_note", "TEXT NOT NULL DEFAULT ''"),
+            ("feedback_at", "TEXT NOT NULL DEFAULT ''"),
+            ("feedback_applied", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE turn_log ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError:
+                pass                 # already there
         conn.commit()
         _conn = conn
     except Exception as e:                                   # pragma: no cover
@@ -329,6 +345,65 @@ def by_ids(ids):
         return []
 
 
+def set_feedback(row_id, rating, reason="", note=""):
+    """Rate one model turn. A thumbs-down waits for the same chat's next turn."""
+    rating = int(rating)
+    if rating not in (-1, 1):
+        raise ValueError("rating must be -1 or 1")
+    row_id = int(row_id)
+    conn = _connect()
+    if conn is None:
+        return False
+    with _lock:
+        cur = conn.execute(
+            "UPDATE turn_log SET rating=?, feedback_reason=?, feedback_note=?, "
+            "feedback_at=?, feedback_applied=? WHERE id=?",
+            (rating, _trim(reason, 80), _trim(note, 500),
+             datetime.now().isoformat(timespec="seconds"),
+             0 if rating == -1 else 1, row_id))
+        conn.commit()
+    return cur.rowcount == 1
+
+
+def pending_feedback(chat_id, limit=3):
+    """Unapplied negative feedback for one chat, newest first."""
+    if chat_id is None:
+        return []
+    conn = _connect()
+    if conn is None:
+        return []
+    try:
+        with _lock:
+            cur = conn.execute(
+                "SELECT id, user_text, reply, feedback_reason, feedback_note "
+                "FROM turn_log WHERE chat_id=? AND rating=-1 "
+                "AND feedback_applied=0 ORDER BY id DESC LIMIT ?",
+                (int(chat_id), min(max(int(limit), 1), 10)))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def mark_feedback_applied(ids):
+    """Consume feedback only after Ted completed the reconsidered answer."""
+    clean = sorted({int(row_id) for row_id in ids if str(row_id).isdigit()})
+    if not clean:
+        return 0
+    conn = _connect()
+    if conn is None:
+        return 0
+    marks = ",".join("?" for _ in clean)
+    try:
+        with _lock:
+            cur = conn.execute(
+                f"UPDATE turn_log SET feedback_applied=1 WHERE id IN ({marks})", clean)
+            conn.commit()
+        return cur.rowcount
+    except Exception:
+        return 0
+
+
 def token_rate(window=60.0):
     """Tokens billed in the last `window` seconds.
 
@@ -423,6 +498,12 @@ def _report_for_rows(rows, heading):
             out.append(f"    ERROR: {_trim(r['error'], 300)}")
         elif r.get("degraded_reason"):
             out.append(f"    DEGRADED: {_trim(r['degraded_reason'], 300)}")
+        if r.get("rating"):
+            verdict = "up" if r["rating"] > 0 else "down"
+            detail = " — ".join(x for x in (
+                r.get("feedback_reason", ""), r.get("feedback_note", "")) if x)
+            out.append(f"    FEEDBACK: thumbs {verdict}"
+                       + (f" — {_trim(detail, 300)}" if detail else ""))
         out.append(f"    < {_trim(r['reply'], 200)}")
     return "\n".join(out)
 
