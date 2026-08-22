@@ -106,6 +106,7 @@ def side_token_rate(window=60.0):
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS turn_log (
     id                INTEGER PRIMARY KEY,
+    chat_id           INTEGER,
     ts                TEXT    NOT NULL,
     epoch             REAL    NOT NULL,
     source            TEXT    NOT NULL DEFAULT 'chat',
@@ -170,6 +171,13 @@ def _connect():
                          "brain_choice TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass                     # already there
+        # The HUD's sidebar session. Old rows intentionally stay NULL: the
+        # diagnostics page time-groups them rather than pretending we know
+        # which historical chat they belonged to.
+        try:
+            conn.execute("ALTER TABLE turn_log ADD COLUMN chat_id INTEGER")
+        except sqlite3.OperationalError:
+            pass                     # already there
         conn.commit()
         _conn = conn
     except Exception as e:                                   # pragma: no cover
@@ -200,9 +208,9 @@ class Turn:
                  "history_msgs", "tools_offered", "tools_called", "tool_rounds",
                  "ms_retrieval", "ms_accepted", "ms_first_token", "retries",
                  "rate_limited", "degraded_reason", "error", "ctx_breakdown",
-                 "brain_choice", "written")
+                 "brain_choice", "chat_id", "written")
 
-    def __init__(self, user_text="", source="chat"):
+    def __init__(self, user_text="", source="chat", chat_id=None):
         self.t0 = time.time()
         self.source = source
         self.user_text = user_text or ""
@@ -228,6 +236,7 @@ class Turn:
         self.error = ""
         self.ctx_breakdown = ""
         self.brain_choice = ""
+        self.chat_id = int(chat_id) if chat_id is not None else None
         self.written = False
 
     # -- collection ------------------------------------------------------
@@ -257,15 +266,15 @@ class Turn:
             total = self.prompt_tokens + self.completion_tokens
             with _lock:
                 conn.execute(
-                    "INSERT INTO turn_log (ts, epoch, source, user_text, reply, "
+                    "INSERT INTO turn_log (chat_id, ts, epoch, source, user_text, reply, "
                     "provider, model, forced, prompt_tokens, completion_tokens, "
                     "total_tokens, tokens_estimated, reasoning, context_scope, "
                     "history_msgs, tools_offered, tools_called, tool_rounds, "
                     "ms_retrieval, ms_accepted, ms_first_token, ms_total, "
                     "retries, rate_limited, degraded_reason, error, "
                     "ctx_breakdown, brain_choice, ok) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (datetime.now().isoformat(timespec="seconds"), self.t0,
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (self.chat_id, datetime.now().isoformat(timespec="seconds"), self.t0,
                      self.source, _trim(self.user_text, 2000),
                      _trim(self.reply, 4000), self.provider, self.model,
                      self.forced, self.prompt_tokens, self.completion_tokens,
@@ -295,6 +304,25 @@ def recent(limit=50, offset=0):
             cur = conn.execute(
                 "SELECT * FROM turn_log ORDER BY id DESC LIMIT ? OFFSET ?",
                 (int(limit), int(offset)))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def by_ids(ids):
+    """Return selected turns chronologically, ignoring unknown row IDs."""
+    clean = sorted({int(row_id) for row_id in ids if str(row_id).isdigit()})
+    if not clean:
+        return []
+    conn = _connect()
+    if conn is None:
+        return []
+    try:
+        marks = ",".join("?" for _ in clean)
+        with _lock:
+            cur = conn.execute(
+                f"SELECT * FROM turn_log WHERE id IN ({marks}) ORDER BY id", clean)
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
     except Exception:
@@ -375,6 +403,35 @@ def stats(window=3600.0):
         return {}
 
 
+def _report_for_rows(rows, heading):
+    """Format already-selected rows without silently pulling in other chats."""
+    if not rows:
+        return "No turns selected."
+    out = [heading, ""]
+    for r in rows:
+        out.append(
+            f"[{r['ts']}] {r['provider'] or '-'}"
+            f"{'(forced ' + r['forced'] + ')' if r['forced'] != 'auto' else ''} "
+            f"{r['total_tokens']}tok{'~' if r['tokens_estimated'] else ''} "
+            f"{r['ms_total']}ms"
+            f"{' RATE-LIMITED' if r['rate_limited'] else ''}"
+            f"{' retries=' + r['retries'] if r['retries'] else ''}")
+        out.append(f"    > {_trim(r['user_text'], 160)}")
+        if r["tools_called"]:
+            out.append(f"    tools: {r['tools_called']}")
+        if r["error"]:
+            out.append(f"    ERROR: {_trim(r['error'], 300)}")
+        elif r.get("degraded_reason"):
+            out.append(f"    DEGRADED: {_trim(r['degraded_reason'], 300)}")
+        out.append(f"    < {_trim(r['reply'], 200)}")
+    return "\n".join(out)
+
+
+def report_for_ids(ids, title="Selected diagnostics"):
+    rows = by_ids(ids)
+    return _report_for_rows(rows, f"Ted report — {title} — {len(rows)} turns")
+
+
 def as_report(limit=25):
     """A plain-text digest of the last N turns.
 
@@ -394,23 +451,26 @@ def as_report(limit=25):
         f"Tokens in the last minute: {s.get('tpm', 0)} of {s.get('tpm_limit', 0)}.",
         "",
     ]
-    for r in reversed(rows):
-        out.append(
-            f"[{r['ts']}] {r['provider'] or '-'}"
-            f"{'(forced ' + r['forced'] + ')' if r['forced'] != 'auto' else ''} "
-            f"{r['total_tokens']}tok{'~' if r['tokens_estimated'] else ''} "
-            f"{r['ms_total']}ms"
-            f"{' RATE-LIMITED' if r['rate_limited'] else ''}"
-            f"{' retries=' + r['retries'] if r['retries'] else ''}")
-        out.append(f"    > {_trim(r['user_text'], 160)}")
-        if r["tools_called"]:
-            out.append(f"    tools: {r['tools_called']}")
-        if r["error"]:
-            out.append(f"    ERROR: {_trim(r['error'], 300)}")
-        elif r.get("degraded_reason"):
-            out.append(f"    DEGRADED: {_trim(r['degraded_reason'], 300)}")
-        out.append(f"    < {_trim(r['reply'], 200)}")
+    out.extend(_report_for_rows(list(reversed(rows)), "").splitlines()[2:])
     return "\n".join(out)
+
+
+def delete_rows(ids):
+    """Delete only explicitly selected diagnostics rows."""
+    clean = sorted({int(row_id) for row_id in ids if str(row_id).isdigit()})
+    if not clean:
+        return 0
+    conn = _connect()
+    if conn is None:
+        return 0
+    try:
+        marks = ",".join("?" for _ in clean)
+        with _lock:
+            cur = conn.execute(f"DELETE FROM turn_log WHERE id IN ({marks})", clean)
+            conn.commit()
+        return cur.rowcount
+    except Exception:
+        return 0
 
 
 def clear():

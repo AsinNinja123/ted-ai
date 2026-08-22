@@ -60,6 +60,18 @@ check("…marked as measured, not estimated", r["tokens_estimated"] == 0)
 check("…the tool it called", r["tools_called"] == "play_music")
 check("…and is marked ok", r["ok"] == 1)
 
+linked = telemetry.Turn("close chrome", source="chat", chat_id=42)
+linked.finish(reply="Closed Google Chrome.")
+check("a diagnostic turn carries its real HUD chat ID",
+      telemetry.recent()[0]["chat_id"] == 42)
+check("selected reports include only the requested turn",
+      "close chrome" in telemetry.report_for_ids([telemetry.recent()[0]["id"]])
+      and "play a different one" not in telemetry.report_for_ids(
+          [telemetry.recent()[0]["id"]]))
+check("individual diagnostics can be deleted without clearing the log",
+      telemetry.delete_rows([telemetry.recent()[0]["id"]]) == 1
+      and len(telemetry.recent()) == 1)
+
 degraded = telemetry.Turn("hello during a rate limit", source="chat")
 degraded.provider = "ollama"
 degraded.rate_limited = True
@@ -219,6 +231,10 @@ check("opening one overlay closes the others — all three are full-screen",
       and "tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.showNotebook()" in hud)
 check("closing it stops the 2s polling loop",
       "about:blank" in hud)
+check("the attachment button has its own visible border and background",
+      "#attach{border:1px solid var(--line);background:var(--panel2)" in hud)
+check("memory and diagnostics use a large close-button target",
+      "overlay-close" in hud and "width:38px;height:38px" in hud)
 
 build = open(os.path.join(_root, "tools", "make_app.sh"), encoding="utf-8").read()
 check("the bundle gets a PkgInfo — without it Finder may not see an app",
@@ -232,6 +248,9 @@ app = open(os.path.join(_root, "dashboard", "app.py"), encoding="utf-8").read()
 check("the dashboard serves /diagnostics", '"/diagnostics"' in app)
 check("…and advertises the capability so the HUD can detect an old server",
       '"diagnostics": True' in app)
+check("diagnostics are grouped and can be copied or deleted by selection",
+      '"/api/diagnostics/sessions"' in app
+      and 'api_diag_selected_report' in app and 'api_diag_delete_turns' in app)
 
 
 print("\n— retrieval that finds nothing must COST nothing —")

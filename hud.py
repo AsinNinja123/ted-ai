@@ -287,6 +287,17 @@ if __name__ == "__main__":
 
                 def raise_on_main():
                     app = AppKit.NSApplication.sharedApplication()
+                    # Activate the accessory process before ordering its window.
+                    # Doing this afterward produces the exact Dock-click flicker
+                    # Charlie saw: the window is briefly ordered, then Chrome
+                    # remains the active application and covers it again.
+                    options = (AppKit.NSApplicationActivateIgnoringOtherApps |
+                               AppKit.NSApplicationActivateAllWindows)
+                    try:
+                        AppKit.NSRunningApplication.currentApplication().activateWithOptions_(
+                            options)
+                    except Exception:
+                        app.activateIgnoringOtherApps_(True)
                     for native_window in app.windows():
                         if native_window.title().startswith("Ted"):
                             # deminiaturize: is the documented way back out of
@@ -297,12 +308,8 @@ if __name__ == "__main__":
                             # costs one line.
                             if native_window.isMiniaturized():
                                 native_window.deminiaturize_(None)
-                            native_window.makeKeyAndOrderFront_(None)
                             native_window.orderFrontRegardless()
-                    if hasattr(app, "activate"):
-                        app.activate()
-                    else:
-                        app.activateIgnoringOtherApps_(True)
+                            native_window.makeKeyAndOrderFront_(None)
 
                 Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
                     raise_on_main)

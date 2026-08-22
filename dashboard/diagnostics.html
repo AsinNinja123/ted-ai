@@ -1,311 +1,43 @@
 <!DOCTYPE html>
-<!--
-  dashboard/diagnostics.html — Ted's performance, without a terminal.
-
-  One row per interaction: when, which brain, what it cost, how long it took,
-  what it called, and what actually failed. The header carries the number that
-  decides whether the next message gets served at all — tokens in the last
-  minute against the free-tier ceiling.
-
-  Deliberately reads only. Nothing on this page can change a conversation
-  except the brain switch, which is explicit.
--->
+<!-- dashboard/diagnostics.html — inspect and export Ted's behavior by chat. -->
 <meta charset="utf-8">
 <title>Ted — diagnostics</title>
 <style>
-  :root {
-    --bg: #171614; --panel: #1f1d1a; --line: #322e29;
-    --ink: #ece6dc; --dim: #9a9086; --dimmer: #6b635b;
-    --good: #3ecf8e; --warn: #e0b341; --bad: #e0685f; --accent: #d9b880;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
-  }
-  header {
-    position: sticky; top: 0; z-index: 5; background: var(--bg);
-    border-bottom: 1px solid var(--line); padding: 14px 18px 12px;
-  }
-  h1 { margin: 0 0 12px; font-size: 15px; font-weight: 600; letter-spacing: .01em; }
-  h1 span { color: var(--dim); font-weight: 400; margin-left: 8px; font-size: 12px; }
-
-  .tiles { display: flex; gap: 8px; flex-wrap: wrap; }
-  .tile {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 12px; min-width: 96px;
-  }
-  .tile .k { color: var(--dim); font-size: 10.5px; text-transform: uppercase;
-             letter-spacing: .06em; }
-  .tile .v { font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .tile .v small { font-size: 11px; color: var(--dim); }
-
-  /* The tokens-per-minute gauge. This is the number that was invisible. */
-  .gauge { flex: 1 1 260px; min-width: 240px; }
-  .bar {
-    height: 7px; border-radius: 4px; background: #2a2621; overflow: hidden;
-    margin-top: 7px;
-  }
-  .bar i { display: block; height: 100%; background: var(--good);
-           transition: width .4s ease, background .4s ease; }
-  .bar.warn i { background: var(--warn); } .bar.bad i { background: var(--bad); }
-
-  .controls { display: flex; gap: 14px; align-items: center; margin-top: 12px;
-              flex-wrap: wrap; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px;
-         overflow: hidden; }
-  .seg button {
-    background: transparent; color: var(--dim); border: 0; padding: 5px 13px;
-    font: inherit; cursor: pointer; border-right: 1px solid var(--line);
-  }
-  .seg button:last-child { border-right: 0; }
-  .seg button.on { background: var(--accent); color: #24211c; font-weight: 600; }
-  .seg button:disabled { opacity: .38; cursor: not-allowed; }
-  .lbl { color: var(--dim); font-size: 11.5px; text-transform: uppercase;
-         letter-spacing: .06em; }
-  .btn {
-    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
-    border-radius: 7px; padding: 5px 11px; font: inherit; cursor: pointer;
-  }
-  .btn:hover { border-color: var(--accent); }
-  .note { color: var(--dimmer); font-size: 11.5px; }
-  .note.bad { color: var(--bad); }
-
-  table { width: 100%; border-collapse: collapse; }
-  th {
-    text-align: left; font-size: 10.5px; text-transform: uppercase;
-    letter-spacing: .06em; color: var(--dim); font-weight: 500;
-    padding: 9px 10px; border-bottom: 1px solid var(--line);
-    position: sticky; top: 0; background: var(--bg);
-  }
-  td { padding: 8px 10px; border-bottom: 1px solid #262320; vertical-align: top; }
-  tr.err td { background: rgba(224, 104, 95, .07); }
-  tr:hover td { background: rgba(255, 255, 255, .03); }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          font-variant-numeric: tabular-nums; }
-  .txt { max-width: 400px; }
-  .txt .u { color: var(--ink); }
-  .txt .t { color: var(--dim); margin-top: 3px; }
-  .txt .e { color: var(--bad); margin-top: 3px; font-family: ui-monospace, monospace;
-            font-size: 11.5px; word-break: break-word; }
-  .pill {
-    display: inline-block; padding: 1px 7px; border-radius: 999px;
-    font-size: 10.5px; border: 1px solid var(--line); color: var(--dim);
-    margin-right: 4px; white-space: nowrap;
-  }
-  .pill.groq   { color: var(--good); border-color: rgba(62, 207, 142, .4); }
-  .pill.ollama { color: var(--accent); border-color: rgba(217, 184, 128, .45); }
-  .pill.reflex { color: #8fb8e0; border-color: rgba(143, 184, 224, .4); }
-  .pill.none   { color: var(--bad); border-color: rgba(224, 104, 95, .45); }
-  .pill.retry  { color: var(--warn); border-color: rgba(224, 179, 65, .45); }
-  .d { color: var(--warn); margin-top: 5px; font-size: 11.5px; }
-  .est { color: var(--dimmer); }
-  .ctx { margin-top: 4px; font-family: ui-monospace, monospace; font-size: 10.5px;
-         color: var(--dim); }
-  .ctx-k { color: var(--dimmer); margin-right: 2px; }
-  .ctx-k::after { content: ":"; }
-  .empty { padding: 40px 18px; color: var(--dim); }
-  footer { padding: 14px 18px 30px; color: var(--dimmer); font-size: 11.5px; }
+  :root{--bg:#171614;--panel:#1f1d1a;--panel2:#27231f;--line:#39332d;--ink:#ece6dc;--dim:#a69b90;--dimmer:#746b63;--good:#3ecf8e;--warn:#e0b341;--bad:#e0685f;--accent:#d9b880;--accentSoft:rgba(217,184,128,.12)}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif}
+  header{position:sticky;top:0;z-index:5;background:rgba(23,22,20,.97);border-bottom:1px solid var(--line);padding:14px 18px 12px;backdrop-filter:blur(12px)}
+  h1{margin:0 0 12px;font-size:15px;font-weight:650} h1 span{color:var(--dim);font-weight:400;margin-left:8px;font-size:12px}
+  .tiles{display:flex;gap:8px;flex-wrap:wrap}.tile{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:8px 12px;min-width:96px}.tile .k{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}.tile .v{font-size:19px;font-variant-numeric:tabular-nums;margin-top:2px}.tile .v small{font-size:11px;color:var(--dim)}.gauge{flex:1 1 260px;min-width:240px}
+  .bar{height:7px;border-radius:4px;background:#2a2621;overflow:hidden;margin-top:7px}.bar i{display:block;height:100%;background:var(--good);transition:width .4s ease,background .4s ease}.bar.warn i{background:var(--warn)}.bar.bad i{background:var(--bad)}
+  .controls{display:flex;gap:9px;align-items:center;margin-top:12px;flex-wrap:wrap}.grow{flex:1}.lbl{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.seg button,.btn{background:var(--panel);color:var(--ink);border:0;padding:6px 11px;font:inherit;cursor:pointer}.seg button{border-right:1px solid var(--line);color:var(--dim)}.seg button:last-child{border:0}.seg button.on{background:var(--accent);color:#24211c;font-weight:650}.seg button:disabled,.btn:disabled{opacity:.4;cursor:default}.btn{border:1px solid var(--line);border-radius:7px}.btn:not(:disabled):hover,.mini:hover{border-color:var(--accent)}.btn.danger:not(:disabled):hover,.mini.danger:hover{border-color:var(--bad);color:var(--bad)}
+  .search{width:180px;background:var(--panel);border:1px solid var(--line);border-radius:7px;color:var(--ink);padding:6px 9px;font:inherit;outline:none}.search:focus{border-color:var(--accent)}.note{color:var(--dimmer);font-size:11.5px}.note.bad{color:var(--bad)}#selection{min-width:78px;text-align:right}
+  main{padding:14px 18px 6px}.session{border:1px solid var(--line);background:var(--panel);border-radius:11px;margin-bottom:11px;overflow:hidden}.session[open]{box-shadow:0 8px 28px rgba(0,0,0,.13)}
+  summary{display:flex;align-items:center;gap:10px;min-height:48px;padding:8px 10px;cursor:pointer;list-style:none}summary::-webkit-details-marker{display:none}summary:hover{background:rgba(255,255,255,.025)}.chev{color:var(--dimmer);width:12px;transition:transform .15s}.session[open] .chev{transform:rotate(90deg)}.session-title{font-weight:650;min-width:120px}.session-meta{color:var(--dim);font-size:11.5px}.session-actions{margin-left:auto;display:flex;gap:6px}.mini{background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--dim);padding:4px 8px;font:inherit;cursor:pointer}
+  .tablewrap{overflow:auto;border-top:1px solid var(--line)}table{width:100%;border-collapse:collapse;min-width:940px}th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:500;padding:8px 9px;border-bottom:1px solid var(--line)}td{padding:8px 9px;border-bottom:1px solid #2b2723;vertical-align:top}tr:last-child td{border-bottom:0}tr.err td{background:rgba(224,104,95,.07)}tr:hover td{background:rgba(255,255,255,.025)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}.txt{max-width:390px}.txt .u{color:var(--ink)}.txt .t{color:var(--dim);margin-top:3px}.txt .e{color:var(--bad);margin-top:3px;font-family:ui-monospace,monospace;font-size:11.5px;word-break:break-word}.pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;border:1px solid var(--line);color:var(--dim);margin:0 4px 3px 0;white-space:nowrap}.pill.groq{color:var(--good);border-color:rgba(62,207,142,.4)}.pill.ollama{color:var(--accent);border-color:rgba(217,184,128,.45)}.pill.reflex{color:#8fb8e0;border-color:rgba(143,184,224,.4)}.pill.none{color:var(--bad);border-color:rgba(224,104,95,.45)}.pill.retry{color:var(--warn);border-color:rgba(224,179,65,.45)}.d{color:var(--warn);margin-top:5px;font-size:11.5px}.est{color:var(--dimmer)}.ctx{margin-top:4px;font-family:ui-monospace,monospace;font-size:10.5px;color:var(--dim)}.ctx-k{color:var(--dimmer);margin-right:2px}.ctx-k::after{content:":"}.empty{padding:42px 18px;color:var(--dim);text-align:center}footer{padding:10px 18px 30px;color:var(--dimmer);font-size:11.5px}input[type=checkbox]{accent-color:var(--accent)}
 </style>
 
 <header>
   <h1>Diagnostics <span id="sub">loading…</span></h1>
-
   <div class="tiles">
-    <div class="tile gauge">
-      <div class="k">Tokens this minute</div>
-      <div class="v"><span id="tpm">–</span><small id="tpmLimit"></small></div>
-      <div class="bar" id="bar"><i style="width:0"></i></div>
-    </div>
-    <div class="tile"><div class="k">Turns / hr</div><div class="v" id="turns">–</div></div>
-    <div class="tile"><div class="k">Avg tokens</div><div class="v" id="avgTok">–</div></div>
-    <div class="tile"><div class="k">Avg time</div><div class="v" id="avgMs">–</div></div>
-    <div class="tile"><div class="k">Errors</div><div class="v" id="errs">–</div></div>
-    <div class="tile"><div class="k">Degraded</div><div class="v" id="degraded">–</div></div>
-    <div class="tile"><div class="k">Rate limited</div><div class="v" id="rl">–</div></div>
-    <div class="tile"><div class="k">Ran local</div><div class="v" id="local">–</div></div>
-    <div class="tile"><div class="k">Retried</div><div class="v" id="retried">–</div></div>
-    <div class="tile"><div class="k">Tool misses</div><div class="v" id="misses">–</div></div>
+    <div class="tile gauge"><div class="k">Tokens this minute</div><div class="v"><span id="tpm">–</span><small id="tpmLimit"></small></div><div class="bar" id="bar"><i style="width:0"></i></div></div>
+    <div class="tile"><div class="k">Turns / hr</div><div class="v" id="turns">–</div></div><div class="tile"><div class="k">Avg tokens</div><div class="v" id="avgTok">–</div></div><div class="tile"><div class="k">Avg time</div><div class="v" id="avgMs">–</div></div><div class="tile"><div class="k">Errors</div><div class="v" id="errs">–</div></div><div class="tile"><div class="k">Degraded</div><div class="v" id="degraded">–</div></div><div class="tile"><div class="k">Rate limited</div><div class="v" id="rl">–</div></div><div class="tile"><div class="k">Ran local</div><div class="v" id="local">–</div></div><div class="tile"><div class="k">Retried</div><div class="v" id="retried">–</div></div><div class="tile"><div class="k">Tool misses</div><div class="v" id="misses">–</div></div>
   </div>
-
-  <div class="controls">
-    <span class="lbl">Brain</span>
-    <span class="seg" id="seg">
-      <button data-mode="auto">Auto</button>
-      <button data-mode="cloud">Cloud</button>
-      <button data-mode="local">Local</button>
-    </span>
-    <span class="note" id="provNote"></span>
-    <span style="flex:1"></span>
-    <button class="btn" id="copy">Copy report</button>
-    <button class="btn" id="clear">Clear log</button>
-    <label class="note"><input type="checkbox" id="live" checked> live</label>
-  </div>
+  <div class="controls"><span class="lbl">Brain</span><span class="seg" id="seg"><button data-mode="auto">Auto</button><button data-mode="cloud">Cloud</button><button data-mode="local">Local</button></span><span class="note" id="provNote"></span><span class="grow"></span><input class="search" id="search" placeholder="Filter chats or turns…" aria-label="Filter diagnostics"><span class="note" id="selection">0 selected</span><button class="btn" id="copy" disabled>Copy selected</button><button class="btn danger" id="delete" disabled>Delete selected</button><label class="note"><input type="checkbox" id="live" checked> live</label></div>
 </header>
-
-<table>
-  <thead><tr>
-    <th style="width:74px">Time</th>
-    <th style="width:150px">Brain</th>
-    <th>Interaction</th>
-    <th style="width:104px">Tokens</th>
-    <th style="width:130px">Timing</th>
-    <th style="width:190px">Tools</th>
-  </tr></thead>
-  <tbody id="rows"></tbody>
-</table>
-<div class="empty" id="empty" hidden>Nothing recorded yet. Say something to Ted.</div>
-<footer>
-  Tokens marked <span class="est">~</span> are estimated from length — the local
-  brain does not report usage. Everything else is the provider's own count.<br>
-  Screen images are uniquely named in the macOS temporary folder and deleted
-  immediately after vision reads them. Ted keeps no screenshot history.
-</footer>
+<main id="sessions"></main><div class="empty" id="empty" hidden>Nothing recorded yet. Say something to Ted.</div>
+<footer>Choose a chat with its checkbox, or open it and choose individual turns. Deleting here removes diagnostics only—not the chat transcript or Ted’s memories. Tokens marked <span class="est">~</span> are estimates from the local brain.</footer>
 
 <script>
-const $ = s => document.querySelector(s);
-const esc = s => (s ?? "").toString().replace(/[&<>"]/g,
-  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const clip = (s, n) => { s = s ?? ""; return s.length > n ? s.slice(0, n) + "…" : s; };
-
-// Where the prompt went, per turn. "how are you cost 1,782 tokens" is a
-// complaint; "persona=576 facts=234 recall=300 knowledge=375" is a to-do list.
-function ctxBars(spec) {
-  if (!spec) return "";
-  return spec.split(";").filter(Boolean).map(part => {
-    const [k, v] = part.split("=");
-    return `<span class="ctx-k">${esc(k)}</span>${esc(v)}`;
-  }).join(" ");
-}
-
-function timeOf(ts) {
-  const d = new Date(ts);
-  return isNaN(d) ? (ts || "").slice(11, 19)
-    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-async function loadStats() {
-  const s = await (await fetch("/api/diagnostics/stats")).json();
-  const limit = s.tpm_limit || 8000, tpm = s.tpm || 0;
-  // Prefer the provider's own remaining-budget header when we have it: our own
-  // sum over the last 60s is an approximation of a window whose exact shape is
-  // the provider's business, and the header is the number that decides whether
-  // the next message is served.
-  const haveReported = s.tpm_limit_source === "provider"
-                     && typeof s.tpm_remaining === "number";
-  const used = haveReported ? Math.max(0, limit - s.tpm_remaining) : tpm;
-  const pct = Math.min(100, Math.round((used / limit) * 100));
-  $("#tpm").textContent = used.toLocaleString();
-  $("#tpmLimit").textContent = " / " + limit.toLocaleString() + "  (" + pct + "%)"
-    + (haveReported ? "" : "  assumed");
-  const bar = $("#bar");
-  bar.className = "bar" + (pct >= 90 ? " bad" : pct >= 65 ? " warn" : "");
-  bar.firstElementChild.style.width = pct + "%";
-  $("#turns").textContent   = s.turns ?? 0;
-  $("#avgTok").textContent  = s.avg_tokens ?? 0;
-  $("#avgMs").textContent   = ((s.avg_ms ?? 0) / 1000).toFixed(2) + "s";
-  $("#errs").textContent    = s.errors ?? 0;
-  $("#degraded").textContent = s.degraded ?? 0;
-  $("#rl").textContent      = s.rate_limited ?? 0;
-  $("#local").textContent   = s.local_turns ?? 0;
-  $("#retried").textContent = s.retry_turns ?? 0;
-  // Every find_tools call means the router handed the model a menu that did
-  // not contain what it needed. Individually recoverable, in bulk a bug.
-  $("#misses").textContent  = s.find_tools_turns ?? 0;
-  $("#sub").textContent = "last hour · " + (s.turns ?? 0) + " turns · "
-                        + (s.tokens ?? 0).toLocaleString() + " tokens";
-}
-
-async function loadProvider() {
-  const p = await (await fetch("/api/provider")).json();
-  document.querySelectorAll("#seg button").forEach(b => {
-    b.classList.toggle("on", b.dataset.mode === p.mode);
-    if (b.dataset.mode === "local") b.disabled = !p.local_ready;
-    if (b.dataset.mode === "cloud") b.disabled = !p.cloud_configured;
-  });
-  const bits = [];
-  if (p.active) bits.push("last answered by " + p.active
-                          + (p.active_model ? " (" + p.active_model + ")" : ""));
-  if (!p.local_ready) bits.push("local brain not reachable — is ollama running?");
-  if (p.last_cloud_error) bits.push("cloud: " + clip(p.last_cloud_error, 90));
-  const n = $("#provNote");
-  n.textContent = bits.join(" · ");
-  n.className = "note" + (p.last_cloud_error || !p.local_ready ? " bad" : "");
-}
-
-async function loadTurns() {
-  const rows = await (await fetch("/api/diagnostics/turns?limit=80")).json();
-  $("#empty").hidden = rows.length > 0;
-  $("#rows").innerHTML = rows.map(r => {
-    const called = (r.tools_called || "").split(",").filter(Boolean);
-    const offered = (r.tools_offered || "").split(",").filter(Boolean);
-    const retries = (r.retries || "").split(",").filter(Boolean);
-    const timing = [];
-    if (r.ms_retrieval) timing.push("recall " + r.ms_retrieval + "ms");
-    if (r.ms_accepted)  timing.push("accept " + r.ms_accepted + "ms");
-    return `<tr class="${r.ok ? "" : "err"}">
-      <td class="mono" title="${esc(r.ts)}">${esc(timeOf(r.ts))}</td>
-      <td>
-        <span class="pill ${esc(r.provider || "none")}">${esc(r.provider || "no provider")}</span>
-        ${r.forced && r.forced !== "auto" && r.forced !== "n/a"
-            ? `<span class="pill">forced ${esc(r.forced)}</span>` : ""}
-        ${r.rate_limited ? `<span class="pill retry">rate limited</span>` : ""}
-        ${retries.map(x => `<span class="pill retry">${esc(x)}</span>`).join("")}
-        <div class="note">${esc(r.model || "")}</div>
-      </td>
-      <td class="txt">
-        <div class="u">${esc(clip(r.user_text, 200))}</div>
-        <div class="t">${esc(clip(r.reply, 200))}</div>
-        ${r.error ? `<div class="e">${esc(clip(r.error, 300))}</div>` : ""}
-        ${!r.error && r.degraded_reason
-            ? `<div class="d">${esc(clip(r.degraded_reason, 300))}</div>` : ""}
-      </td>
-      <td class="mono">
-        ${r.total_tokens}${r.tokens_estimated ? `<span class="est">~</span>` : ""}
-        <div class="note">${r.prompt_tokens} in / ${r.completion_tokens} out</div>
-      </td>
-      <td class="mono">
-        ${((r.ms_total || 0) / 1000).toFixed(2)}s
-        <div class="note">${esc(timing.join(" · "))}</div>
-      </td>
-      <td>
-        <div class="mono">${esc(called.join(", ") || "—")}</div>
-        <div class="note">${offered.length ? offered.length + " offered" : ""}
-          ${r.context_scope ? " · " + esc(r.context_scope) : ""}
-          ${r.reasoning === "default" ? " · thinking" : ""}</div>
-        <div class="note ctx">${ctxBars(r.ctx_breakdown)}</div>
-      </td>
-    </tr>`;
-  }).join("");
-}
-
-async function refresh() {
-  try { await Promise.all([loadStats(), loadProvider(), loadTurns()]); }
-  catch (e) { $("#sub").textContent = "dashboard unreachable"; }
-}
-
-$("#seg").addEventListener("click", async e => {
-  const b = e.target.closest("button");
-  if (!b || b.disabled) return;
-  await fetch("/api/provider", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: b.dataset.mode })
-  });
-  refresh();
-});
-
-$("#copy").addEventListener("click", async () => {
-  const txt = await (await fetch("/api/diagnostics/report?limit=40")).text();
-  try { await navigator.clipboard.writeText(txt); $("#copy").textContent = "Copied"; }
-  catch { window.open("/api/diagnostics/report?limit=40", "_blank"); }
-  setTimeout(() => ($("#copy").textContent = "Copy report"), 1400);
-});
-
-$("#clear").addEventListener("click", async () => {
-  await fetch("/api/diagnostics/clear", { method: "POST" });
-  refresh();
-});
-
-refresh();
-setInterval(() => { if ($("#live").checked) refresh(); }, 2000);
+const $=s=>document.querySelector(s),esc=s=>(s??"").toString().replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));const clip=(s,n)=>{s=s??"";return s.length>n?s.slice(0,n)+"…":s};let sessions=[],selected=new Set(),loadedOnce=false;
+function ctxBars(spec){if(!spec)return"";return spec.split(";").filter(Boolean).map(part=>{const[k,v]=part.split("=");return`<span class="ctx-k">${esc(k)}</span>${esc(v)}`}).join(" ")}function timeOf(ts){const d=new Date(ts);return isNaN(d)?(ts||"").slice(11,19):d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}function dateOf(ts){const d=new Date(ts);return isNaN(d)?ts:d.toLocaleString([],{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}function updateSelection(){const n=selected.size;$("#selection").textContent=n+" selected";$("#copy").disabled=!n;$("#delete").disabled=!n}
+function rowHtml(r){const called=(r.tools_called||"").split(",").filter(Boolean),offered=(r.tools_offered||"").split(",").filter(Boolean),retries=(r.retries||"").split(",").filter(Boolean),timing=[];if(r.ms_retrieval)timing.push("recall "+r.ms_retrieval+"ms");if(r.ms_accepted)timing.push("accept "+r.ms_accepted+"ms");return`<tr class="${r.ok?"":"err"}" data-row="${r.id}"><td><input class="rowcheck" type="checkbox" ${selected.has(r.id)?"checked":""} aria-label="Select turn"></td><td class="mono" title="${esc(r.ts)}">${esc(timeOf(r.ts))}</td><td><span class="pill ${esc(r.provider||"none")}">${esc(r.provider||"no provider")}</span>${r.forced&&r.forced!=="auto"&&r.forced!=="n/a"?`<span class="pill">forced ${esc(r.forced)}</span>`:""}${r.rate_limited?`<span class="pill retry">rate limited</span>`:""}${retries.map(x=>`<span class="pill retry">${esc(x)}</span>`).join("")}<div class="note">${esc(r.model||"")}</div></td><td class="txt"><div class="u">${esc(clip(r.user_text,240))}</div><div class="t">${esc(clip(r.reply,240))}</div>${r.error?`<div class="e">${esc(clip(r.error,300))}</div>`:""}${!r.error&&r.degraded_reason?`<div class="d">${esc(clip(r.degraded_reason,300))}</div>`:""}</td><td class="mono">${r.total_tokens}${r.tokens_estimated?`<span class="est">~</span>`:""}<div class="note">${r.prompt_tokens} in / ${r.completion_tokens} out</div></td><td class="mono">${((r.ms_total||0)/1000).toFixed(2)}s<div class="note">${esc(timing.join(" · "))}</div></td><td><div class="mono">${esc(called.join(", ")||"—")}</div><div class="note">${offered.length?offered.length+" offered":""}${r.context_scope?" · "+esc(r.context_scope):""}</div><div class="note ctx">${ctxBars(r.ctx_breakdown)}</div></td><td><button class="mini copy-turn" data-id="${r.id}">Copy</button></td></tr>`}
+function render(){const q=$("#search").value.trim().toLowerCase(),open=new Set([...document.querySelectorAll("details[open]")].map(x=>x.dataset.key)),first=!loadedOnce;let shown=0;$("#sessions").innerHTML=sessions.map((s,i)=>{const hay=(s.title+" "+s.rows.map(r=>r.user_text+" "+r.reply+" "+r.tools_called).join(" ")).toLowerCase();if(q&&!hay.includes(q))return"";shown++;const ids=s.rows.map(r=>r.id),all=ids.every(id=>selected.has(id)),meta=`${dateOf(s.updated)} · ${s.turns} turn${s.turns===1?"":"s"} · ${s.tokens.toLocaleString()} tokens${s.errors?" · "+s.errors+" errors":""}`;return`<details class="session" data-key="${esc(s.key)}" ${(first&&i===0)||open.has(s.key)?"open":""}><summary><span class="chev">›</span><input class="sessioncheck" type="checkbox" ${all?"checked":""} aria-label="Select chat"><span><div class="session-title">${esc(s.title)}</div><div class="session-meta">${esc(meta)}</div></span><span class="session-actions"><button class="mini copy-chat">Copy chat</button><button class="mini danger delete-chat">Delete diagnostics</button></span></summary><div class="tablewrap"><table><thead><tr><th style="width:34px"></th><th style="width:76px">Time</th><th style="width:145px">Brain</th><th>Interaction</th><th style="width:105px">Tokens</th><th style="width:125px">Timing</th><th style="width:185px">Tools</th><th style="width:60px"></th></tr></thead><tbody>${s.rows.map(rowHtml).join("")}</tbody></table></div></details>`}).join("");$("#empty").hidden=shown>0;loadedOnce=true;updateSelection()}
+async function loadStats(){const s=await(await fetch("/api/diagnostics/stats")).json(),limit=s.tpm_limit||8000,tpm=s.tpm||0,reported=s.tpm_limit_source==="provider"&&typeof s.tpm_remaining==="number",used=reported?Math.max(0,limit-s.tpm_remaining):tpm,pct=Math.min(100,Math.round(used/limit*100));$("#tpm").textContent=used.toLocaleString();$("#tpmLimit").textContent=" / "+limit.toLocaleString()+" ("+pct+"%)"+(reported?"":" assumed");$("#bar").className="bar"+(pct>=90?" bad":pct>=65?" warn":"");$("#bar i").style.width=pct+"%";[["turns","turns"],["avgTok","avg_tokens"],["errs","errors"],["degraded","degraded"],["rl","rate_limited"],["local","local_turns"],["retried","retry_turns"],["misses","find_tools_turns"]].forEach(([id,k])=>$("#"+id).textContent=s[k]??0);$("#avgMs").textContent=((s.avg_ms??0)/1000).toFixed(2)+"s";$("#sub").textContent="last hour · "+(s.turns??0)+" turns · "+(s.tokens??0).toLocaleString()+" tokens"}
+async function loadProvider(){const p=await(await fetch("/api/provider")).json();document.querySelectorAll("#seg button").forEach(b=>{b.classList.toggle("on",b.dataset.mode===p.mode);if(b.dataset.mode==="local")b.disabled=!p.local_ready;if(b.dataset.mode==="cloud")b.disabled=!p.cloud_configured});const bits=[];if(p.active)bits.push("last answered by "+p.active+(p.active_model?" ("+p.active_model+")":""));if(!p.local_ready)bits.push("local brain not reachable");if(p.last_cloud_error)bits.push("cloud: "+clip(p.last_cloud_error,90));$("#provNote").textContent=bits.join(" · ");$("#provNote").className="note"+(p.last_cloud_error||!p.local_ready?" bad":"")}
+async function loadSessions(){sessions=await(await fetch("/api/diagnostics/sessions?limit=500")).json();render()}async function refresh(){try{await Promise.all([loadStats(),loadProvider(),loadSessions()])}catch(e){$("#sub").textContent="dashboard unreachable"}}
+async function copyIds(ids,title,button){const txt=await(await fetch("/api/diagnostics/report",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,title})})).text();try{await navigator.clipboard.writeText(txt)}catch{const t=document.createElement("textarea");t.value=txt;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove()}if(button){const old=button.textContent;button.textContent="Copied";setTimeout(()=>button.textContent=old,1200)}}async function deleteIds(ids,label){if(!ids.length||!confirm(`Delete diagnostics for ${label}?\n\nThe chat and Ted's memories will stay.`))return;await fetch("/api/diagnostics/turns",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids})});ids.forEach(id=>selected.delete(id));await refresh()}
+$("#seg").addEventListener("click",async e=>{const b=e.target.closest("button");if(!b||b.disabled)return;await fetch("/api/provider",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:b.dataset.mode})});refresh()});$("#search").addEventListener("input",render);$("#copy").onclick=e=>copyIds([...selected],"selected turns",e.currentTarget);$("#delete").onclick=()=>deleteIds([...selected],selected.size+" selected turns");
+$("#sessions").addEventListener("click",e=>{const details=e.target.closest("details"),s=sessions.find(x=>x.key===details?.dataset.key);if(!s)return;if(e.target.matches("input,button"))e.stopPropagation();if(e.target.matches(".sessioncheck")){s.rows.forEach(r=>e.target.checked?selected.add(r.id):selected.delete(r.id));render()}else if(e.target.matches(".rowcheck")){const id=Number(e.target.closest("tr").dataset.row);e.target.checked?selected.add(id):selected.delete(id);updateSelection()}else if(e.target.matches(".copy-chat"))copyIds(s.rows.map(r=>r.id),s.title,e.target);else if(e.target.matches(".delete-chat"))deleteIds(s.rows.map(r=>r.id),s.title);else if(e.target.matches(".copy-turn")){const id=Number(e.target.dataset.id);copyIds([id],"one diagnostic turn",e.target)}});
+refresh();setInterval(()=>{if($("#live").checked)refresh()},2500);
 </script>

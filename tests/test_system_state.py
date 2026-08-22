@@ -160,6 +160,9 @@ check("…with SIGUSR1 blocked before any thread can take its default action",
       hud_source.index('pthread_sigmask') < hud_source.index('import webview'))
 check("…and a miniaturized window is asked to leave the Dock explicitly",
       'isMiniaturized' in hud_source and 'deminiaturize_' in hud_source)
+check("…and activates Ted before ordering its window above Chrome",
+      hud_source.index('activateWithOptions_') <
+      hud_source.index('orderFrontRegardless'))
 check("the right rail receives and renders the full computer hierarchy",
       'setComputerState:function(state)' in ui_source
       and "term.branch" in ui_source and "tab.host" in ui_source

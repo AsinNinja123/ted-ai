@@ -967,7 +967,8 @@ def _stream_turn(resp, calls, suppress_text=False, reasoned=None,
 def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=False,
                   window=None, voice_mode=False, tool_runtime=None,
                   context_scope="full", operational_context="",
-                  require_tool=False, min_action_calls=0, attachments=None):
+                  require_tool=False, min_action_calls=0, attachments=None,
+                  telemetry_chat_id=None):
     """Yield LLM reply text chunks from Groq (streaming).
 
     frustrated      — True → append a tone-adjustment note so Ted is more direct.
@@ -1232,7 +1233,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
           f"~{max(1, round(_prompt_chars / 4))} input tokens")
 
     # One row per turn, written at the end. Everything below fills it in.
-    _turn = telemetry.Turn(user_input, source="voice" if voice_mode else "chat")
+    _turn = telemetry.Turn(user_input, source="voice" if voice_mode else "chat",
+                           chat_id=telemetry_chat_id)
     _turn.context_scope = context_scope
     _turn.history_msgs = len(recent)
     _turn.forced = _providers.get_provider_mode()

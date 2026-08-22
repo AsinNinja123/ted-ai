@@ -407,7 +407,53 @@ if _PROJECT_ROOT not in sys.path:
 #
 # This exists because Charlie was reading Ted's behaviour out of a terminal.
 # Everything here is recorded by core/telemetry.py on the reply path and only
-# read back here, so a broken dashboard cannot affect a conversation.
+# read back here. Deleting diagnostics is deliberately row-scoped and explicit;
+# it never deletes the chat transcript or anything Ted remembered from it.
+
+
+def _diagnostic_sessions(rows):
+    """Group telemetry by real HUD chat, with an honest legacy fallback."""
+    chats = {int(c["id"]): _neutral_chat_row(c)
+             for c in db.list_chats(limit=1000, include_hidden=True)}
+    grouped = {}
+    legacy = []
+    for row in sorted(rows, key=lambda item: item.get("epoch", 0)):
+        chat_id = row.get("chat_id")
+        if chat_id is not None:
+            key = f"chat:{chat_id}"
+            group = grouped.setdefault(key, {
+                "key": key, "chat_id": chat_id,
+                "title": chats.get(int(chat_id), {}).get("title", f"Chat {chat_id}"),
+                "rows": [],
+            })
+            group["rows"].append(row)
+            continue
+
+        # Rows written before chat IDs were recorded are separated by a
+        # 30-minute silence. They are labelled as older diagnostics so the UI
+        # never implies a precision the old data does not contain.
+        if not legacy or row.get("epoch", 0) - legacy[-1][-1].get("epoch", 0) > 1800:
+            legacy.append([])
+        legacy[-1].append(row)
+
+    for old_rows in legacy:
+        first, last = old_rows[0], old_rows[-1]
+        key = f"older:{first['id']}:{last['id']}"
+        grouped[key] = {
+            "key": key, "chat_id": None,
+            "title": "Older diagnostics · " + first.get("ts", "")[:16].replace("T", " "),
+            "rows": old_rows,
+        }
+
+    sessions = list(grouped.values())
+    for group in sessions:
+        group["turns"] = len(group["rows"])
+        group["errors"] = sum(1 for row in group["rows"] if not row.get("ok"))
+        group["tokens"] = sum(row.get("total_tokens", 0) or 0 for row in group["rows"])
+        group["started"] = group["rows"][0].get("ts", "")
+        group["updated"] = group["rows"][-1].get("ts", "")
+    sessions.sort(key=lambda group: group["rows"][-1].get("epoch", 0), reverse=True)
+    return sessions
 
 @app.get("/diagnostics")
 def diagnostics_page():
@@ -469,6 +515,14 @@ def api_diag_turns():
     return jsonify(telemetry.recent(limit, offset))
 
 
+@app.get("/api/diagnostics/sessions")
+def api_diag_sessions():
+    """Recent diagnostics grouped by the sidebar conversation that caused them."""
+    from core import telemetry
+    limit = min(max(int(request.args.get("limit", 500)), 1), 1000)
+    return jsonify(_diagnostic_sessions(telemetry.recent(limit)))
+
+
 @app.get("/api/diagnostics/stats")
 def api_diag_stats():
     from core import telemetry
@@ -484,6 +538,29 @@ def api_diag_report():
     from flask import Response
     limit = min(int(request.args.get("limit", 25)), 200)
     return Response(telemetry.as_report(limit), mimetype="text/plain")
+
+
+@app.post("/api/diagnostics/report")
+def api_diag_selected_report():
+    """Copy exactly the checked rows, not an arbitrary recent window."""
+    from core import telemetry
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids", [])
+    if not isinstance(ids, list) or len(ids) > 1000:
+        return jsonify({"error": "ids must be a list of at most 1000 rows"}), 400
+    title = str(body.get("title", "Selected diagnostics"))[:120]
+    return Response(telemetry.report_for_ids(ids, title), mimetype="text/plain")
+
+
+@app.delete("/api/diagnostics/turns")
+def api_diag_delete_turns():
+    """Delete selected telemetry only; chat history and memory are untouched."""
+    from core import telemetry
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids", [])
+    if not isinstance(ids, list) or len(ids) > 1000:
+        return jsonify({"error": "ids must be a list of at most 1000 rows"}), 400
+    return jsonify({"deleted": telemetry.delete_rows(ids)})
 
 
 @app.post("/api/diagnostics/clear")

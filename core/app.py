@@ -348,6 +348,9 @@ class TedApi:
         # ── Core state ─────────────────────────────────────────────────────────
         self.window           = None              # set by main() after webview creates window
         self._busy            = threading.Lock()  # held during every listen→reply turn
+        # The HUD's durable sidebar chat ID. It travels with telemetry so the
+        # diagnostics panel can copy or remove one conversation at a time.
+        self._active_chat_id  = None
         self._loop_started    = False             # prevents starting the loop twice
         # One flag used to do two jobs, which is why "mic on but speakers off"
         # was unrepresentable. Capture and speech are separate now:
@@ -974,7 +977,8 @@ class TedApi:
         # and therefore should never spend tokens asking a model what they mean.
         routine = routines.match_routine(routing_text)
         if routine is not None:
-            _rturn = telemetry.Turn(text, source="routine")
+            _rturn = telemetry.Turn(text, source="routine",
+                                    chat_id=self._active_chat_id)
             _rturn.provider = "routine"
             _rturn.forced = "n/a"
             results = self._execute_routine(routine)
@@ -995,7 +999,8 @@ class TedApi:
         # match declines the whole turn and reaches the reasoner below.
         document_plan = routing.plan_document(routing_text)
         if document_plan is not None:
-            _rturn = telemetry.Turn(text, source="document")
+            _rturn = telemetry.Turn(text, source="document",
+                                    chat_id=self._active_chat_id)
             result = self._create_document_workflow(document_plan)
             _rturn.provider = llm.providers.active_provider()
             _rturn.model = llm.providers.active_model()
@@ -1041,7 +1046,8 @@ class TedApi:
             else:
                 _is_clean, _clean_keep = True, _verdict
         if _is_clean:
-            _cturn = telemetry.Turn(text, source="reflex")
+            _cturn = telemetry.Turn(text, source="reflex",
+                                    chat_id=self._active_chat_id)
             # Say which it actually was. A turn the small local router shaped is
             # not the same as one the pattern settled for free, and the
             # diagnostics panel is the only place that difference shows.
@@ -1073,7 +1079,8 @@ class TedApi:
             # model call, which is the whole point of the lane — but if it is
             # never recorded the diagnostics panel makes it look like Ted
             # simply did less work that minute.
-            _rturn = telemetry.Turn(text, source="reflex")
+            _rturn = telemetry.Turn(text, source="reflex",
+                                    chat_id=self._active_chat_id)
             _rturn.provider = "reflex"
             _rturn.forced = "n/a"
             results = self._execute_reflex(reflex)
@@ -1173,6 +1180,11 @@ class TedApi:
         # file cannot silently ride along on the next message — and cleared
         # before the call, so a failure mid-turn does not strand it either.
         _attached, self._pending_attachments = self._pending_attachments, []
+        # Keep old/test callers byte-compatible when there is no HUD chat.
+        # Real typed HUD turns always have one because send waits for the chat
+        # save before entering this path.
+        _telemetry_chat = ({"telemetry_chat_id": self._active_chat_id}
+                           if self._active_chat_id is not None else {})
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -1183,7 +1195,8 @@ class TedApi:
                                 operational_context=_op_context,
                                 require_tool=routing.likely_action_request(routing_text),
                                 min_action_calls=routing.expected_action_calls(routing_text),
-                                attachments=_attached)
+                                attachments=_attached,
+                                **_telemetry_chat)
         # Voice expressiveness: adjust speed by content type
         resp_speed = voice.SPEED * _classify_content_speed(text)
         # Whisper volume scale
@@ -4107,10 +4120,20 @@ class TedApi:
     # queued behind the very thing it was meant to stop. A real log shows a turn
     # hung for 41 seconds while three separate stop attempts were each answered
     # "the previous request is still finishing". Stop now bypasses the lock.
-    def ask(self, text):
+    def set_active_chat(self, chat_id=None):
+        """Keep non-typed turns attached to the chat visible in the HUD."""
+        try:
+            self._active_chat_id = int(chat_id) if chat_id is not None else None
+        except (TypeError, ValueError):
+            self._active_chat_id = None
+        return True
+
+    def ask(self, text, chat_id=None):
         """Handle typed input from the HUD text box.
         Interrupts any ongoing speech, then runs _respond() on a background thread
         (so the JS call returns immediately and the webview doesn't freeze)."""
+        if chat_id is not None:
+            self.set_active_chat(chat_id)
         self.interrupt_speech = True
         engine.stop_playback()
         print(f"[input] typed request received: {text!r}", flush=True)

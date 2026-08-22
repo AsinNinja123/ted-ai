@@ -426,6 +426,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #mic.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);
   animation:micpulse 1.8s ease-in-out infinite}
 #mic svg{width:17px;height:17px}
+#attach{border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+#attach:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+#attach svg{width:18px;height:18px}
 /* Transcribe: the mic is live but Ted stays silent, so it pulses like the mic
    button and is deliberately a different colour — the two are not the same
    state and must not look like they are. */
@@ -560,7 +563,11 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #mempanel.open{display:flex}
 #mempanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:var(--dim);
   display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
-#mempanel header .x{cursor:pointer;font-size:15px;color:var(--text);letter-spacing:0}
+.overlay-close{width:38px;height:38px;display:grid;place-items:center;flex:none;
+  margin:-7px -9px -7px 0;border:1px solid var(--line);border-radius:10px;
+  background:var(--panel2);color:var(--text);font:300 25px/1 system-ui;cursor:pointer;
+  letter-spacing:0}
+.overlay-close:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
 #memframe{flex:1;border:none;width:100%;background:#0f1115}
 
 /* diagnostics overlay — same shell as memory, so the two behave identically */
@@ -570,15 +577,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #notepanel{position:fixed;inset:0;z-index:40;background:#2b2521;display:none;flex-direction:column}
 #notepanel.open{display:flex}
 #notepanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:#a2968a;
-  border-bottom:1px solid #3a322c}
-#notepanel header .x{cursor:pointer;font-size:15px;color:#e8dcc0;letter-spacing:0;float:right}
+  border-bottom:1px solid #3a322c;display:flex;justify-content:space-between;align-items:center}
+#notepanel .overlay-close{border-color:#51463d;background:#352e29;color:#e8dcc0}
 #noteframe{flex:1;border:none;width:100%;background:#2b2521}
 
 #diagpanel{position:fixed;inset:0;z-index:40;background:#171614;display:none;flex-direction:column}
 #diagpanel.open{display:flex}
 #diagpanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:var(--dim);
   display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
-#diagpanel header .x{cursor:pointer;font-size:15px;color:var(--text);letter-spacing:0}
 #diagframe{flex:1;border:none;width:100%;background:#171614}
 </style>
 </head>
@@ -715,17 +721,17 @@ falls back to the local model; the other two are pinned and never fall back.">
 </div>
 
 <div id="mempanel">
-  <header>TED'S MEMORY <span class="x" onclick="tedHud.hideMemory()">×</span></header>
+  <header>TED'S MEMORY <button class="overlay-close" aria-label="Close memory" onclick="tedHud.hideMemory()">×</button></header>
   <iframe id="memframe"></iframe>
 </div>
 
 <div id="notepanel">
-  <header>TED'S NOTEBOOK <span class="x" onclick="tedHud.hideNotebook()">×</span></header>
+  <header>TED'S NOTEBOOK <button class="overlay-close" aria-label="Close notebook" onclick="tedHud.hideNotebook()">×</button></header>
   <iframe id="noteframe"></iframe>
 </div>
 
 <div id="diagpanel">
-  <header>DIAGNOSTICS <span class="x" onclick="tedHud.hideDiagnostics()">×</span></header>
+  <header>DIAGNOSTICS <button class="overlay-close" aria-label="Close diagnostics" onclick="tedHud.hideDiagnostics()">×</button></header>
   <iframe id="diagframe"></iframe>
 </div>
 
@@ -1237,6 +1243,9 @@ function checkServer(){
       'port 5175. Close it (or restart your Mac) and relaunch Ted.');
   });
 }
+function syncActiveChat(id){
+  if(inApp()) window.pywebview.api.set_active_chat(id==null?null:id);
+}
 function ensureChat(epoch){
   if(epoch!==chatEpoch) return Promise.reject(new Error('stale chat save'));
   if(currentChat!=null) return Promise.resolve(currentChat);
@@ -1244,7 +1253,7 @@ function ensureChat(epoch){
     chatCreatePromise=apiFetch('/chats',{method:'POST'}).then(function(j){
       if(j==null||j.id==null) throw new Error('chat create returned no id');
       if(epoch!==chatEpoch) throw new Error('stale chat create');
-      currentChat=j.id; refreshChats();
+      currentChat=j.id; syncActiveChat(currentChat); refreshChats();
       return currentChat;
     }).catch(function(e){
       chatCreatePromise=null;
@@ -1254,7 +1263,7 @@ function ensureChat(epoch){
   return chatCreatePromise;
 }
 function recordTurn(role,text){
-  if(!text||!text.trim()) return;
+  if(!text||!text.trim()) return Promise.resolve(currentChat);
   turnCount++;
   var epoch=chatEpoch, turn={role:role,content:text};
   chatSaveQueue=chatSaveQueue.then(function(){
@@ -1268,6 +1277,7 @@ function recordTurn(role,text){
     console.error('Ted chat save failed',e);
     tedHud.showIssue('Chat history failed to save this turn. The request still ran.');
   });
+  return chatSaveQueue.then(function(){ return currentChat; });
 }
 function maybeSummarize(){
   if(currentChat==null) return;
@@ -1390,7 +1400,8 @@ function hideChat(id){
 function openChat(id){
   apiFetch('/chats/'+id).then(function(c){
     chatEpoch++; chatCreatePromise=null; chatSaveQueue=Promise.resolve();
-    currentChat=id; titled=(c.title!=='New chat'); turnCount=c.turns.length;
+    currentChat=id; syncActiveChat(currentChat);
+    titled=(c.title!=='New chat'); turnCount=c.turns.length;
     streamEl=null; streamBuf='';
     $('chat-title').textContent=c.title;
     $('msgs').innerHTML='';
@@ -1402,7 +1413,7 @@ function openChat(id){
 }
 function newChat(){
   chatEpoch++; chatCreatePromise=null; chatSaveQueue=Promise.resolve();
-  currentChat=null; titled=false; turnCount=0;
+  currentChat=null; syncActiveChat(null); titled=false; turnCount=0;
   hideThinking();
   streamEl=null; streamBuf='';
   thoughts={}; latestThought=null; confirmationLines={};
@@ -1933,9 +1944,11 @@ function sendMsg(){
     shown=(txt?txt+'\n\n':'')+'\u{1F4CE} '+names;
   }
   addBubble('user',shown);
-  recordTurn('user',shown);
+  var saved=recordTurn('user',shown);
   tedHud.setState('thinking');
-  if(inApp()) window.pywebview.api.ask(txt||'What is this?');
+  if(inApp()) saved.then(function(chatId){
+    window.pywebview.api.ask(txt||'What is this?',chatId);
+  });
 }
 $('send').onclick=sendMsg;
 $('input').addEventListener('keydown',function(e){
