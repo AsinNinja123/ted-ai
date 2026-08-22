@@ -165,5 +165,46 @@ actions.subprocess.run = original_action_run
 actions.get_running_apps = original_running
 actions.time.sleep = original_sleep
 
+
+print("\n— typo-tolerant app resolution —")
+check("case and spacing variants resolve to ChatGPT",
+      actions.resolve_app_alias("chatGPT") in {"chatgpt", "chat gpt"}
+      and actions.resolve_app_alias("chat gpt") in {"chatgpt", "chat gpt"})
+check("a transposed app name still resolves conservatively",
+      actions.APPS[actions.resolve_app_alias("chatGTP")] == "ChatGPT")
+check("a misspelled running app resolves to its real process name",
+      actions.match_running_app("spotfy", ["Finder", "Spotify", "Notes"])
+      == "Spotify")
+check("an unrelated vague name is not guessed",
+      actions.match_running_app("something", ["Finder", "Spotify", "Notes"])
+      is None)
+
+
+print("\n— verified system volume —")
+original_action_run = actions.subprocess.run
+try:
+    actions.subprocess.run = lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="30\n", stderr="")
+    check("volume success uses the value macOS read back",
+          actions.system_volume("set", 30) == "System volume set to 30%.")
+    check("current volume is read from macOS",
+          actions.system_volume("get") == "System volume is at 30%.")
+
+    actions.subprocess.run = lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout="50\n", stderr="")
+    mismatch = actions.system_volume("set", 30)
+    check("an unchanged volume can never be reported as success",
+          "asked macOS for 30%" in mismatch
+          and "reports 50%" in mismatch
+          and th.looks_like_failure(mismatch))
+
+    actions.subprocess.run = lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr="Not authorized")
+    refused = actions.system_volume("set", 30)
+    check("AppleScript failure is surfaced instead of becoming a success claim",
+          "couldn't verify" in refused.lower() and th.looks_like_failure(refused))
+finally:
+    actions.subprocess.run = original_action_run
+
 print(f"\n{'=' * 50}\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)

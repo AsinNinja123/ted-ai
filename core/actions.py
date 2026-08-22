@@ -157,6 +157,56 @@ APPS = {
     "neo4j desktop": "Neo4j Desktop 2",
 }
 
+
+def _normalized_app_name(value):
+    """Comparison form for app names that ignores case, spaces, and punctuation."""
+    return _re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def resolve_app_alias(name, cutoff=0.78):
+    """Resolve a typed/misheard app name to an ``APPS`` key, conservatively.
+
+    Scores aliases by their normalized spelling and collapses aliases that point
+    at the same bundle before judging ambiguity.  That makes ``chat gpt``,
+    ``chatGPT`` and transpositions such as ``chatGTP`` equivalent without
+    letting a vague word select whichever app happens to score first.
+    """
+    raw = str(name or "").strip().lower()
+    raw = _re.sub(r"^(?:the|my)\s+", "", raw)
+    if raw in APPS:
+        return raw
+    wanted = _normalized_app_name(raw)
+    if not wanted:
+        return None
+
+    exact = [(key, bundle) for key, bundle in APPS.items()
+             if _normalized_app_name(key) == wanted
+             or _normalized_app_name(bundle) == wanted]
+    if exact:
+        return exact[0][0]
+
+    # Multiple aliases often name one bundle (gpt/chatgpt/chat gpt). Compare
+    # bundles, not aliases, so those synonyms do not look like ambiguity.
+    by_bundle = {}
+    for key, bundle in APPS.items():
+        score = max(
+            difflib.SequenceMatcher(None, wanted, _normalized_app_name(key)).ratio(),
+            difflib.SequenceMatcher(None, wanted, _normalized_app_name(bundle)).ratio(),
+        )
+        previous = by_bundle.get(bundle)
+        if previous is None or score > previous[0]:
+            by_bundle[bundle] = (score, key)
+    ranked = sorted(
+        ((score, bundle, key) for bundle, (score, key) in by_bundle.items()),
+        reverse=True,
+    )
+    if not ranked or ranked[0][0] < cutoff:
+        return None
+    # Refuse close calls where two different apps are nearly equally plausible.
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.06:
+        return None
+    return ranked[0][2]
+
 # Web services that have no macOS app — "open YouTube" opens the URL in Chrome
 # instead of failing with "I don't have YouTube in my app list."
 WEB_APPS = {
@@ -263,8 +313,9 @@ def open_app(app_name):
     """Launch a macOS app by spoken name. Falls back to WEB_APPS for web-only services.
     VERIFIES the launch actually succeeded (`open -a` exits non-zero when the app
     can't be found) so Ted never claims to have opened something that didn't open."""
-    key = app_name.lower().strip()
-    if key in APPS:
+    raw_key = str(app_name or "").lower().strip()
+    key = resolve_app_alias(raw_key)
+    if key is not None:
         bundle = APPS[key]
         try:
             r = subprocess.run(["open", "-a", bundle], capture_output=True, timeout=8)
@@ -281,13 +332,13 @@ def open_app(app_name):
                 return f"Opened {bundle}."
             time.sleep(0.2)
         return f"macOS accepted the request, but I couldn't verify that {bundle} opened."
-    if key in WEB_APPS:
+    if raw_key in WEB_APPS:
         try:
-            r = subprocess.run(["open", WEB_APPS[key]], capture_output=True, timeout=8)
+            r = subprocess.run(["open", WEB_APPS[raw_key]], capture_output=True, timeout=8)
         except Exception:
-            return f"I couldn't open {key.title()}."
-        return (f"I sent {key.title()} to your default browser, but can't verify the page."
-                if r.returncode == 0 else f"I couldn't open {key.title()} in your browser.")
+            return f"I couldn't open {raw_key.title()}."
+        return (f"I sent {raw_key.title()} to your default browser, but can't verify the page."
+                if r.returncode == 0 else f"I couldn't open {raw_key.title()} in your browser.")
     # Last-ditch: let macOS try to resolve the name itself. `open -a` exits non-zero
     # when the app doesn't exist, so check before confirming we launched anything —
     # otherwise a misheard word makes Ted claim it opened an app that isn't there.
@@ -336,17 +387,25 @@ def match_running_app(name, running=None):
     Returns None when nothing plausible is running."""
     if running is None:
         running = get_running_apps()
-    n = name.lower().strip()
+    n = str(name or "").lower().strip()
+    n = _re.sub(r"^(?:the|my)\s+", "", n)
     if not n or not running:
         return None
     lower_map = {a.lower(): a for a in running}
     if n in lower_map:
         return lower_map[n]
-    bundle = APPS.get(n)
+    normalized_map = {_normalized_app_name(app): app for app in running}
+    normalized = _normalized_app_name(n)
+    if normalized in normalized_map:
+        return normalized_map[normalized]
+    alias = resolve_app_alias(n)
+    bundle = APPS.get(alias) if alias else None
     if bundle and bundle.lower() in lower_map:
         return lower_map[bundle.lower()]
     for lo, orig in lower_map.items():
-        if n in lo or lo in n:
+        lo_normalized = _normalized_app_name(lo)
+        if (len(normalized) >= 4 and
+                (normalized in lo_normalized or lo_normalized in normalized)):
             return orig
     # Word overlap: "studio code" → "Visual Studio Code"
     n_words = set(n.split())
@@ -355,18 +414,18 @@ def match_running_app(name, running=None):
         score = len(set(lo.split()) & n_words)
         if score > best_score:
             best, best_score = orig, score
-    if best:
+    if best and best_score >= 2:
         return best
-    # Fuzzy against running app names: "spotifi" → "Spotify"
-    close = difflib.get_close_matches(n, list(lower_map), n=1, cutoff=0.8)
-    if close:
-        return lower_map[close[0]]
-    # Fuzzy against APPS aliases: "crome" → "chrome" → Google Chrome (if running)
-    close = difflib.get_close_matches(n, list(APPS), n=1, cutoff=0.8)
-    if close:
-        bundle = APPS[close[0]]
-        if bundle.lower() in lower_map:
-            return lower_map[bundle.lower()]
+    # Fuzzy against normalized running names catches transpositions and missing
+    # spaces while preserving the same ambiguity margin as resolve_app_alias.
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, normalized, key).ratio(), orig)
+         for key, orig in normalized_map.items()),
+        reverse=True,
+    )
+    if scored and scored[0][0] >= 0.78:
+        if len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.06:
+            return scored[0][1]
     return None
 
 
@@ -419,6 +478,76 @@ def get_running_apps():
     except Exception:
         pass
     return []
+
+
+def system_volume(action="get", level=None):
+    """Read or change macOS output volume and report only verified state.
+
+    AppleScript returning zero is not enough: an accepted command can still
+    leave the device unchanged. Each mutation returns the state from the same
+    script, and Ted only uses success wording when that read-back agrees.
+    """
+    action = str(action or "get").lower().strip()
+    if action not in {"get", "set", "up", "down", "mute", "unmute"}:
+        return f"I couldn't control system volume: unknown action '{action}'."
+
+    requested = None
+    if action == "set":
+        try:
+            requested = max(0, min(100, int(level)))
+        except (TypeError, ValueError):
+            return "I couldn't set system volume because no valid level was provided."
+        script = (f"set volume output volume {requested}\n"
+                  "output volume of (get volume settings)")
+    elif action == "up":
+        script = ("set volume output volume "
+                  "(output volume of (get volume settings) + 15)\n"
+                  "output volume of (get volume settings)")
+    elif action == "down":
+        script = ("set volume output volume "
+                  "(output volume of (get volume settings) - 15)\n"
+                  "output volume of (get volume settings)")
+    elif action == "mute":
+        script = ("set volume with output muted\n"
+                  "output muted of (get volume settings)")
+    elif action == "unmute":
+        script = ("set volume without output muted\n"
+                  "output muted of (get volume settings)")
+    else:
+        script = "output volume of (get volume settings)"
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+    except Exception as exc:
+        return f"I couldn't verify system volume ({type(exc).__name__})."
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        suffix = f" ({detail[-1][:120]})" if detail else ""
+        return f"I couldn't verify system volume{suffix}."
+
+    raw = (result.stdout or "").strip().lower()
+    if action in {"mute", "unmute"}:
+        if raw not in {"true", "false"}:
+            return "I couldn't verify whether system audio is muted."
+        muted = raw == "true"
+        expected = action == "mute"
+        if muted != expected:
+            state = "muted" if muted else "not muted"
+            return (f"I asked macOS to {action}, but it reports audio is {state}; "
+                    "I couldn't verify the change.")
+        return "System audio is muted." if muted else "System audio is unmuted."
+
+    match = _re.search(r"-?\d+", raw)
+    if not match:
+        return "I couldn't verify the current system volume."
+    actual = max(0, min(100, int(match.group())))
+    if action == "set" and actual != requested:
+        return (f"I asked macOS for {requested}%, but it reports {actual}%; "
+                "I couldn't verify the change.")
+    if action == "get":
+        return f"System volume is at {actual}%."
+    return f"System volume set to {actual}%."
 
 
 def open_website(url):

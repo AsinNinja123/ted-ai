@@ -914,7 +914,9 @@ TOOL_SCHEMAS = [
             "description": (
                 "Control the macOS system output volume (not Spotify — use spotify_control for music). "
                 "Use for 'set system volume to N', 'mute/unmute the computer', "
-                "'system volume up/down'."
+                "'system volume up/down', and current-volume questions such as "
+                "'what is my volume right now'. The handler reads macOS state back "
+                "before reporting success."
             ),
             "parameters": {
                 "type": "object",

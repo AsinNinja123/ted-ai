@@ -70,7 +70,8 @@ import urllib.parse
 import urllib.request
 
 from core import features
-from core.actions import APPS, WEB_APPS, open_app, spotify_command
+from core.actions import (APPS, WEB_APPS, open_app, resolve_app_alias,
+                          spotify_command)
 
 try:
     from config import WEATHER_LOCATION
@@ -198,6 +199,9 @@ def tool_find_app_key(name):
     all_keys = {**APPS, **WEB_APPS}
     if n in all_keys:
         return n
+    app_key = resolve_app_alias(n)
+    if app_key is not None:
+        return app_key
     for key in all_keys:
         if key in n or n in key:
             return key

@@ -89,11 +89,10 @@ the assistant.
 
 from __future__ import annotations
 
-import difflib
 import re
 from dataclasses import dataclass
 
-from core.actions import APPS
+from core.actions import APPS, match_running_app, resolve_app_alias
 from core.tools import TOOL_SCHEMAS
 
 
@@ -352,6 +351,43 @@ def cleanup_request(text):
     return bool(_CLEANUP_PREFIX_RE.match(" ".join(str(text or "").strip().split())))
 
 
+_KEEP_CLAUSE_RE = re.compile(
+    r"\b(?:leave|keep|spare|save|except(?:\s+for)?|without\s+(?:closing|quitting)|"
+    r"don['’]?t\s+(?:close|quit)|do\s+not\s+(?:close|quit)|but\s+not)\b\s*(.+)$",
+    re.I,
+)
+
+
+def _explicit_kept_apps(text, running):
+    """Resolve app names directly from an explicit cleanup keep-clause.
+
+    This is intentionally narrower than understanding the whole request. The
+    cleanup prefix already chose the capability; this only prevents a small
+    model from silently dropping one of several named exclusions. Every named
+    piece must resolve, otherwise the caller fails closed and asks the brain.
+    """
+    match = _KEEP_CLAUSE_RE.search(" ".join(str(text or "").strip().split()))
+    if not match:
+        return None
+    tail = re.sub(r"[.!?]+$", "", match.group(1)).strip()
+    pieces = [piece.strip() for piece in re.split(r"\s+(?:and|or)\s+|[,;&]", tail, flags=re.I)
+              if piece.strip()]
+    if not pieces:
+        return None
+    kept = []
+    for piece in pieces:
+        cleaned = re.sub(
+            r"\b(?:open|opened|running|up|please|the|my|app|apps|application|applications)\b",
+            " ", piece, flags=re.I)
+        cleaned = " ".join(cleaned.split())
+        app = match_running_app(cleaned, running)
+        if app is None:
+            return None
+        if app not in kept:
+            kept.append(app)
+    return kept or None
+
+
 def plan_document(text):
     """Parse an explicit create-and-write request into a compact workflow spec."""
     raw = " ".join(str(text or "").strip().split())
@@ -442,8 +478,16 @@ def likely_action_request(text):
         "", t, flags=re.I)
     if _ACTION_WORDS.match(t):
         return True
-    return any(verb.match(t) and target.search(t)
-               for verb, target in _TARGETED_ACTIONS)
+    if any(verb.match(t) and target.search(t)
+           for verb, target in _TARGETED_ACTIONS):
+        return True
+    # A read-then-write request begins with a harmless lookup ("check the
+    # weather") but still contains an action that must complete. Classify each
+    # explicit stage instead of judging only the first verb. This is what makes
+    # a provider failure after the lookup retry rather than leak a raw 500.
+    stages = [part.strip(" ,") for part in _SEQUENCE_SEP.split(t)
+              if part.strip(" ,")]
+    return len(stages) > 1 and any(likely_action_request(stage) for stage in stages)
 
 
 _SEQUENCE_SEP = re.compile(
@@ -492,7 +536,7 @@ def expected_action_calls(text):
             total += count
             continue
         # A non-app stage (copy then read, search then write, etc.) represents at
-        # least one tool action. The model still decides which tool it is.
+        # least one completed tool call. The model still decides which tool it is.
         total += 1
     return max(1, total)
 
@@ -755,6 +799,12 @@ def extract_kept_apps(text, running, ask=None):
     this is testable without Ollama, exactly as classify_brain_with_model does.
     """
     candidates = [str(app) for app in (running or []) if str(app).strip()]
+    # Explicit named exclusions are safer and faster to resolve directly. The
+    # small router previously returned only Spotify for "leave ChatGPT and
+    # Spotify", producing a confirmation that contradicted the request.
+    explicit = _explicit_kept_apps(text, candidates)
+    if explicit is not None:
+        return explicit
     if ask is None:
         from core.providers import route_hint
         ask = route_hint
@@ -802,6 +852,49 @@ class ReflexPlan:
     calls: tuple[tuple[str, dict], ...]
 
 
+def plan_system_volume(text, recent_actions=()):
+    """Plan an unambiguous system-volume read/change without a model call.
+
+    A short follow-up such as "set it to 50" is accepted only when the most
+    recent verified action was system_volume. That preserves natural context
+    without turning every context-free "set it" into a device command.
+    """
+    raw = " ".join(str(text or "").strip().rstrip(".!?").split())
+    lower = raw.lower()
+    recent_volume = bool(recent_actions and
+                         (recent_actions[-1] or {}).get("tool") == "system_volume")
+
+    set_match = re.fullmatch(
+        r"(?:(?:please\s+)?(?:set|change|turn)\s+)?"
+        r"(?:(?:the|my)\s+)?(?:system|computer|mac)?\s*volume\s+(?:to\s+)?"
+        r"(\d{1,3})\s*%?",
+        lower,
+    )
+    if set_match:
+        return ReflexPlan((("system_volume", {
+            "action": "set", "level": max(0, min(100, int(set_match.group(1))))
+        }),))
+    followup = re.fullmatch(r"(?:please\s+)?(?:set|change|turn)\s+it\s+to\s+(\d{1,3})\s*%?",
+                            lower)
+    if followup and recent_volume:
+        return ReflexPlan((("system_volume", {
+            "action": "set", "level": max(0, min(100, int(followup.group(1))))
+        }),))
+    if re.fullmatch(
+            r"(?:what(?:'s| is)|check|tell me|show me)?\s*"
+            r"(?:(?:the|my)\s+)?(?:system|computer|mac)?\s*volume"
+            r"(?:\s+(?:level|at|at right now|right now|currently))?",
+            lower):
+        return ReflexPlan((("system_volume", {"action": "get"}),))
+    if re.fullmatch(r"(?:turn\s+)?(?:the\s+)?(?:system|computer|mac)\s+volume\s+"
+                    r"(?:up|louder|higher)", lower):
+        return ReflexPlan((("system_volume", {"action": "up"}),))
+    if re.fullmatch(r"(?:turn\s+)?(?:the\s+)?(?:system|computer|mac)\s+volume\s+"
+                    r"(?:down|lower|quieter)", lower):
+        return ReflexPlan((("system_volume", {"action": "down"}),))
+    return None
+
+
 _POLITE_PREFIX = re.compile(
     r"^(?:(?:hey|okay|ok|alright|alight|um|uh|well|so)\s+ted[,.]?\s*|"
     r"(?:hey|okay|ok|alright|alight|um|uh|well|so)[,.]?\s*|"
@@ -816,10 +909,7 @@ _DEPENDENCY_WORDS = re.compile(r"\b(?:then|after|before|if|unless|while)\b", re.
 
 def _resolve_known_app(raw):
     target = re.sub(r"^(?:the|my)\s+", "", raw.strip().lower())
-    if target in APPS:
-        return target
-    fuzzy = difflib.get_close_matches(target, list(APPS), n=1, cutoff=0.86)
-    return fuzzy[0] if fuzzy else None
+    return resolve_app_alias(target)
 
 
 # [BOOK §7.4] ─── THE ZERO-TOKEN LANE ────────────────────────────────────────

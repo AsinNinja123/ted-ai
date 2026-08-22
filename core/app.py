@@ -112,6 +112,7 @@ from core import (attachments, bouncer, codebase, events, features, lingo, llm, 
                   messages, music, notebook, routing, routines, system_state,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
+                          system_volume as control_system_volume,
                           search_contacts, send_imessage_to_address)
 from core.agents import Delegation, MacAgent, Plan
 from core.hud_bridge import (js, set_state as _hud_set_state, add_message,
@@ -1065,7 +1066,8 @@ class TedApi:
             set_state(w, "idle")
             return False
 
-        reflex = routing.plan_reflex(routing_text)
+        reflex = (routing.plan_system_volume(routing_text, self._recent_actions)
+                  or routing.plan_reflex(routing_text))
         if reflex is not None:
             # Logged like any other turn. A reflex hit costs zero tokens and no
             # model call, which is the whole point of the lane — but if it is
@@ -1899,28 +1901,19 @@ class TedApi:
         )
         if vol_set_m:
             level = max(0, min(100, int(vol_set_m.group(1))))
-            _subp.run(["osascript", "-e", f"set volume output volume {level}"], capture_output=True)
-            return f"System volume set to {level}."
+            return control_system_volume("set", level)
 
         if re.search(r'\b(?:system|computer) volume (?:up|louder|higher)\b', text, re.I):
-            _subp.run(["osascript", "-e",
-                       "set volume output volume (output volume of (get volume settings) + 15)"],
-                      capture_output=True)
-            return "Volume up."
+            return control_system_volume("up")
 
         if re.search(r'\b(?:system|computer) volume (?:down|lower|quieter)\b', text, re.I):
-            _subp.run(["osascript", "-e",
-                       "set volume output volume (output volume of (get volume settings) - 15)"],
-                      capture_output=True)
-            return "Volume down."
+            return control_system_volume("down")
 
         if re.search(r'\bmute (?:the )?(?:computer|system|audio|sound)\b', text, re.I):
-            _subp.run(["osascript", "-e", "set volume with output muted"], capture_output=True)
-            return "System muted."
+            return control_system_volume("mute")
 
         if re.search(r'\bunmute (?:the )?(?:computer|system|audio|sound)\b', text, re.I):
-            _subp.run(["osascript", "-e", "set volume without output muted"], capture_output=True)
-            return "Unmuted."
+            return control_system_volume("unmute")
 
         # ── Brightness ──
         if re.search(
@@ -2796,37 +2789,9 @@ class TedApi:
 
             # ── System controls ──────────────────────────────────────────────
             if name == "system_volume":
-                import subprocess as _sp
                 action = args.get("action", "get")
                 level  = args.get("level")
-                if action == "set" and level is not None:
-                    lv = max(0, min(100, int(level)))
-                    _sp.run(["osascript", "-e", f"set volume output volume {lv}"],
-                            capture_output=True)
-                    return f"System volume set to {lv}."
-                elif action == "up":
-                    _sp.run(["osascript", "-e",
-                             "set volume output volume (output volume of (get volume settings) + 15)"],
-                            capture_output=True)
-                    return "Volume up."
-                elif action == "down":
-                    _sp.run(["osascript", "-e",
-                             "set volume output volume (output volume of (get volume settings) - 15)"],
-                            capture_output=True)
-                    return "Volume down."
-                elif action == "mute":
-                    _sp.run(["osascript", "-e", "set volume with output muted"],
-                            capture_output=True)
-                    return "System muted."
-                elif action == "unmute":
-                    _sp.run(["osascript", "-e", "set volume without output muted"],
-                            capture_output=True)
-                    return "Unmuted."
-                else:
-                    r = _sp.run(["osascript", "-e",
-                                 "output volume of (get volume settings)"],
-                                capture_output=True, text=True)
-                    return f"System volume is at {r.stdout.strip()}."
+                return control_system_volume(action, level)
 
             if name == "system_brightness":
                 import subprocess as _sp

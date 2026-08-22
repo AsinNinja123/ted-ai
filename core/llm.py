@@ -212,7 +212,10 @@ _ACTION_VERBS = (r"closed|opened|quit|launched|sent|texted|emailed|played|paused
 # warning that fires on ordinary conversation is one you learn to ignore.
 _ACTION_CLAIM_RE = re.compile(
     r"(?:^|(?<=[.!?]\s)|(?<=[.!?]\s\s))\s*(?:" + _ACTION_VERBS + r")\b"
-    r"|\bi(?:'ve| have)?\s+(?:just\s+)?(?:" + _ACTION_VERBS + r")\b",
+    r"|\bi(?:'ve| have)?\s+(?:just\s+)?(?:" + _ACTION_VERBS + r")\b"
+    # "set" is present tense and past tense, so a bare verb match would flag
+    # instructions. Pin only the terse completion wording models actually use.
+    r"|^\s*(?:system\s+)?volume\s+(?:is\s+)?set\s+to\s+\d{1,3}\s*%?[.!]?\s*$",
     re.I,
 )
 # Reads as past tense but is not a claim that something got done.

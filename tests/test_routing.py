@@ -43,6 +43,11 @@ check("fillers and ChatGPT spelling still reach the multi-app reflex",
           ("open_app", {"name": "claude"}),
           ("open_app", {"name": "chat gpt"}),
       ))
+plan = routing.plan_reflex("close chatGTP")
+check("a safe app reflex tolerates a transposed app name",
+      plan and len(plan.calls) == 1
+      and plan.calls[0][0] == "close_app"
+      and routing.APPS[plan.calls[0][1]["name"]] == "ChatGPT")
 plan = routing.plan_reflex("open YouTube and play any video")
 check("YouTube playback is one complete outcome instead of a home-page open",
       plan and plan.calls == (("play_youtube", {"query": ""}),))
@@ -291,6 +296,17 @@ check("a partial name still resolves",
 check("several spared apps come back in order",
       routing.extract_kept_apps("x", APPS, ask=say("Brave Browser, Claude"))
       == ["Brave Browser", "Claude"])
+check("explicit multi-app exclusions do not depend on a small model preserving both",
+      routing.extract_kept_apps(
+          "clean up but leave chatGPT and brave open", APPS,
+          ask=lambda *_a, **_k: (_ for _ in ()).throw(
+              AssertionError("explicit names should not call the router")))
+      == ["ChatGPT", "Brave Browser"])
+check("misspelled cleanup exclusions resolve to the real running app",
+      routing.extract_kept_apps(
+          "clean up but leave chatGTP and brave open", APPS,
+          ask=lambda *_a, **_k: "NONE")
+      == ["ChatGPT", "Brave Browser"])
 check("NONE means a cleanup that spares nothing",
       routing.extract_kept_apps("clean up", APPS, ask=say("NONE")) == [])
 check("NO means this was never a cleanup",
@@ -304,6 +320,25 @@ check("a router that raises cannot take the turn down",
       routing.extract_kept_apps(
           "x", APPS,
           ask=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ollama down"))) is None)
+
+print("\n— verified volume reflex and dependent actions —")
+volume = routing.plan_system_volume("what is my volume at right now")
+check("current-volume questions always read the Mac instead of trusting chat history",
+      volume and volume.calls == (("system_volume", {"action": "get"}),))
+volume = routing.plan_system_volume("set volume to 37%")
+check("explicit volume changes bypass model tool selection",
+      volume and volume.calls == (("system_volume", {"action": "set", "level": 37}),))
+recent = [{"tool": "system_volume", "args": {"action": "get"},
+           "result": "System volume is at 50%."}]
+followup = routing.plan_system_volume("set it to 42", recent)
+check("a volume follow-up resolves its pronoun from verified action context",
+      followup and followup.calls == (("system_volume", {"action": "set", "level": 42}),))
+check("the same vague follow-up is not guessed without volume context",
+      routing.plan_system_volume("set it to 42", []) is None)
+chain = "Check the weather, then add the forecast to a note."
+check("read-then-write chains are treated as actions that must finish",
+      routing.likely_action_request(chain)
+      and routing.expected_action_calls(chain) == 2)
 
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

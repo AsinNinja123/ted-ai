@@ -138,6 +138,8 @@ def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=N
             "clipboard_write": ({"text": {"type": "string"}}, ["text"]),
             "clipboard_read": ({}, []),
             "web_search": ({"query": {"type": "string"}}, ["query"]),
+            "notes_add": ({"title": {"type": "string"},
+                           "body": {"type": "string"}}, ["title", "body"]),
         }
         schemas = [{
             "type": "function",
@@ -489,6 +491,27 @@ check("stream recovery preserves completed stages and continues the missing one"
       out == "Copied it. TED TOOL TEST"
       and PARTIAL_RECOVERY_CALLS == ["clipboard_write", "clipboard_read"])
 
+# The real failure was a weather lookup followed by Ollama HTTP 500 before the
+# note write. Because the sentence begins with "check", app routing used to
+# mark it non-action and this recovery path never armed.
+WEATHER_NOTE_CALLS = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="get_weather", args="{}")]),
+    Boom([]),
+    FakeStream([tool_chunk(0, id="c2", name="notes_add",
+                           args='{"title":"Forecast","body":"Clear, 67F; high 79, low 62"}')]),
+)
+out, _ = run("Check the weather, then add the forecast to a note.", runtime(
+    lambda n, a: (WEATHER_NOTE_CALLS.append((n, a)),
+                  "Clear and 67F." if n == "get_weather"
+                  else "Added the verified forecast to Notes.")[1],
+    action_tools={"notes_add"}),
+    require_tool=True, min_action_calls=2)
+check("a provider failure between a lookup and write retries the missing stage",
+      out == "Added the verified forecast to Notes."
+      and [name for name, _args in WEATHER_NOTE_CALLS]
+      == ["get_weather", "notes_add"])
+
 print("\n— never end a turn silent —")
 
 # Regression: "what's on my screen" ran the vision tool, the model then wrote
@@ -590,6 +613,8 @@ print("\n— a claimed action with no tool call is corrected, not shipped —")
 check("a past-tense action claim is recognised",
       llm.claims_completed_action("Closed VS Code and Notes."))
 check("...as is a first-person one", llm.claims_completed_action("I've sent it."))
+check("a state-setting claim with no tool is recognised",
+      llm.claims_completed_action("System volume set to 50."))
 check("an inability is not a claim",
       not llm.claims_completed_action("I can't close apps, so I couldn't."))
 check("an intention is not a claim",
