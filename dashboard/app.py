@@ -147,8 +147,8 @@ def ted_map():
 def api_version():
     """Lets the HUD (and hud.py) verify the server on this port speaks the
     chat API — an older dashboard process holding the port 404s this."""
-    return jsonify({"version": 5, "chats": True, "map": True,
-                    "diagnostics": True, "notebook": True})
+    return jsonify({"version": 6, "chats": True, "map": True,
+                    "diagnostics": True, "notebook": True, "school": True})
 
 
 _weather_cache = {"ts": 0.0, "data": None}
@@ -824,6 +824,83 @@ def api_notebook_delete_page(name):
         return jsonify({"page": page, "removed": count})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+# ---------------------------------------------------------------------------
+# School — manual planner UI, plus the same exact rows Ted can read.
+# Only these dashboard endpoints write. Ted's tool calls format_for_ted(), which
+# deliberately has no path back to any mutation function.
+# ---------------------------------------------------------------------------
+
+@app.get("/school")
+def school_page():
+    return send_file(os.path.join(_HERE, "school.html"))
+
+
+@app.get("/api/school")
+def api_school():
+    from core import school
+    return jsonify(school.dashboard_data())
+
+
+@app.post("/api/school/classes")
+def api_school_class_create():
+    from core import school
+    try:
+        return jsonify({"id": school.create_class(request.get_json(force=True) or {})})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/school/classes/<int:class_id>")
+def api_school_class_update(class_id):
+    from core import school
+    try:
+        school.update_class(class_id, request.get_json(force=True) or {})
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/school/classes/<int:class_id>")
+def api_school_class_delete(class_id):
+    from core import school
+    try:
+        return jsonify(school.delete_class(class_id))
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.post("/api/school/tasks")
+def api_school_task_create():
+    from core import school
+    try:
+        return jsonify({"id": school.create_task(request.get_json(force=True) or {})})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.put("/api/school/tasks/<int:task_id>")
+def api_school_task_update(task_id):
+    from core import school
+    try:
+        school.update_task(task_id, request.get_json(force=True) or {})
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@app.delete("/api/school/tasks/<int:task_id>")
+def api_school_task_delete(task_id):
+    from core import school
+    try:
+        return jsonify({"removed": school.delete_task(task_id)})
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
 

@@ -240,14 +240,13 @@ check("there is a Diagnostics button in the sidebar, next to Memory",
 check("…wired to a toggle", "tedHud.toggleDiagnostics()" in hud)
 check("…that loads the dashboard page, not the memory one",
       "127.0.0.1:5175/diagnostics" in hud)
-# Three full-screen overlays now (memory, diagnostics, notebook), so each one
-# has to close BOTH others rather than just the one that existed when this was
-# written. Checking the hides individually keeps the test from breaking again
-# the next time a fourth is added in a different order.
-check("opening one overlay closes the others — all three are full-screen",
-      "tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.showDiagnostics()" in hud
-      and "tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.showMemory()" in hud
-      and "tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.showNotebook()" in hud)
+# Four full-screen overlays now (memory, diagnostics, notebook, school), so
+# opening any one must close the other three.
+check("opening one overlay closes the others — all four are full-screen",
+      "tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.hideSchool(); tedHud.showDiagnostics()" in hud
+      and "tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.hideSchool(); tedHud.showMemory()" in hud
+      and "tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.hideSchool(); tedHud.showNotebook()" in hud
+      and "tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.showSchool()" in hud)
 check("closing it stops the 2s polling loop",
       "about:blank" in hud)
 check("the attachment button has its own visible border and background",

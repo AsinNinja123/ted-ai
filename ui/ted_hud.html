@@ -223,9 +223,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#notebtn{cursor:pointer;padding:6px 0;
+#membtn,#diagbtn,#notebtn,#schoolbtn{cursor:pointer;padding:6px 0;
   color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#notebtn:hover{color:var(--text)}
+#membtn:hover,#diagbtn:hover,#notebtn:hover,#schoolbtn:hover{color:var(--text)}
 .hd{display:flex;align-items:center;gap:4px;font-size:10px;letter-spacing:.08em}
 .hd i{width:6px;height:6px;border-radius:50%;background:var(--dim);display:inline-block}
 .hd i.on{background:var(--ok)}
@@ -581,6 +581,14 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #notepanel .overlay-close{border-color:#51463d;background:#352e29;color:#e8dcc0}
 #noteframe{flex:1;border:none;width:100%;background:#2b2521}
 
+/* School is a separate working surface, not another memory table. */
+#schoolpanel{position:fixed;inset:0;z-index:40;background:#0d0f14;display:none;flex-direction:column}
+#schoolpanel.open{display:flex}
+#schoolpanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:#858da0;
+  border-bottom:1px solid #292f3c;display:flex;justify-content:space-between;align-items:center}
+#schoolpanel .overlay-close{border-color:#343b49;background:#171b24;color:#edf0f7}
+#schoolframe{flex:1;border:none;width:100%;background:#0d0f14}
+
 #diagpanel{position:fixed;inset:0;z-index:40;background:#171614;display:none;flex-direction:column}
 #diagpanel.open{display:flex}
 #diagpanel header{padding:12px 18px;font-size:10px;letter-spacing:.3em;color:var(--dim);
@@ -605,6 +613,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="membtn" title="Ted's memory">&#9783; Memory</div>
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
       <div id="notebtn" title="Ted's notebook — pages he reads, writes and edits">&#128211; Notebook</div>
+      <div id="schoolbtn" title="Manual classes, assignments, tests, and deadlines">&#127891; School</div>
     </div>
   </div>
 </div>
@@ -728,6 +737,11 @@ falls back to the local model; the other two are pinned and never fall back.">
 <div id="notepanel">
   <header>TED'S NOTEBOOK <button class="overlay-close" aria-label="Close notebook" onclick="tedHud.hideNotebook()">×</button></header>
   <iframe id="noteframe"></iframe>
+</div>
+
+<div id="schoolpanel">
+  <header>SCHOOL <button class="overlay-close" aria-label="Close school" onclick="tedHud.hideSchool()">×</button></header>
+  <iframe id="schoolframe"></iframe>
 </div>
 
 <div id="diagpanel">
@@ -1862,7 +1876,7 @@ var tedHud={
   hideMemory:function(){ $('mempanel').classList.remove('open'); },
   toggleMemory:function(){
     if($('mempanel').classList.contains('open')) tedHud.hideMemory();
-    else { tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.showMemory(); }
+    else { tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.hideSchool(); tedHud.showMemory(); }
   },
 
   /* notebook overlay. Reloaded on every open, not only the first: Ted writes
@@ -1880,7 +1894,21 @@ var tedHud={
   },
   toggleNotebook:function(){
     if($('notepanel').classList.contains('open')) tedHud.hideNotebook();
-    else { tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.showNotebook(); }
+    else { tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.hideSchool(); tedHud.showNotebook(); }
+  },
+
+  /* School planner. The page owns all edits; Ted's model only has school_read. */
+  showSchool:function(){
+    $('schoolframe').src='http://127.0.0.1:5175/school?t='+Date.now();
+    $('schoolpanel').classList.add('open');
+  },
+  hideSchool:function(){
+    $('schoolpanel').classList.remove('open');
+    var f=$('schoolframe'); if(f) f.src='about:blank';
+  },
+  toggleSchool:function(){
+    if($('schoolpanel').classList.contains('open')) tedHud.hideSchool();
+    else { tedHud.hideMemory(); tedHud.hideDiagnostics(); tedHud.hideNotebook(); tedHud.showSchool(); }
   },
 
   /* diagnostics overlay */
@@ -1899,7 +1927,7 @@ var tedHud={
   },
   toggleDiagnostics:function(){
     if($('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();
-    else { tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.showDiagnostics(); }
+    else { tedHud.hideMemory(); tedHud.hideNotebook(); tedHud.hideSchool(); tedHud.showDiagnostics(); }
   },
 
   /* Fallback door for runtime events. Normally the HUD receives these over
@@ -2015,6 +2043,7 @@ $('chatqx').onclick=function(){ $('chatq').value=''; setSearch(''); $('chatq').f
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
+$('schoolbtn').onclick=function(){ tedHud.toggleSchool(); };
 /* ── attachments ──────────────────────────────────────────────────────────
    Three ways in, because Charlie will try all three: the paperclip (native
    picker, which is the only route that yields a real filesystem path), a file
@@ -2189,6 +2218,8 @@ connectEventStream();
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&$('mempanel').classList.contains('open')) tedHud.hideMemory();
   if(e.key==='Escape'&&$('diagpanel').classList.contains('open')) tedHud.hideDiagnostics();
+  if(e.key==='Escape'&&$('notepanel').classList.contains('open')) tedHud.hideNotebook();
+  if(e.key==='Escape'&&$('schoolpanel').classList.contains('open')) tedHud.hideSchool();
 });
 
 /* ── boot ─────────────────────────────────────────────────── */

@@ -203,6 +203,9 @@ _FAMILIES = (
      ("get_emails", "read_email", "email_action", "send_email")),
     (r"\b(?:calendar|event|meeting|appointment|schedule)\b",
      ("calendar_get", "calendar_add")),
+    (r"\b(?:school|schoolwork|homework|assignment|assignments|test|tests|quiz|"
+     r"quizzes|project|projects|reading|readings|class|classes|course|courses|"
+     r"due today|due tomorrow|overdue)\b", ("school_read",)),
     (r"\b(?:note|notes|write down|jot down)\b", ("notes_add", "notes_get")),
     (r"\b(?:clipboard|copy|paste)\b", ("clipboard_read", "clipboard_write")),
     (r"\b(?:volume|brightness|screen|display|type|keyboard|cursor|click|tap|"

@@ -1213,6 +1213,38 @@ TOOL_SCHEMAS = [
         }
     },
 
+    # ── Charlie's school dashboard ───────────────────────────────────────────
+    # Read-only on purpose. Charlie edits the authoritative rows in the School
+    # dashboard; Ted can answer from them exactly but cannot create, change, or
+    # finish schoolwork until that capability is deliberately added later.
+    {
+        "type": "function",
+        "function": {
+            "name": "school_read",
+            "description": (
+                "Read Charlie's manual School dashboard exactly: classes, assignments, "
+                "tests, quizzes, projects, readings, due dates, priorities, statuses, "
+                "estimates, notes, and source links. Use whenever he asks what schoolwork "
+                "he has, what is due, what to do today, or what is in a class. This tool "
+                "is READ-ONLY; never claim to add, edit, complete, or delete schoolwork."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "view": {
+                        "type": "string",
+                        "enum": ["all", "today", "upcoming", "overdue", "completed"],
+                        "description": "Which exact dashboard slice to read. Defaults to all."
+                    },
+                    "class_name": {
+                        "type": "string",
+                        "description": "Optional exact class name or course code."
+                    }
+                }
+            }
+        }
+    },
+
     # ── Ted's notebook ────────────────────────────────────────────────────────
     # Ted's OWN notebook, not Apple Notes. Named pages of numbered entries that
     # he can read, add to, edit and delete exactly — no similarity search, no

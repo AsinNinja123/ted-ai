@@ -303,6 +303,11 @@ def ensure_schema(conn):
         lingo.ensure_schema(conn)
     except Exception as e:
         print(f"[dashboard] lingo schema skipped: {e}")
+    try:
+        from core import school
+        school.ensure_schema(conn)
+    except Exception as e:
+        print(f"[dashboard] school schema skipped: {e}")
 
     for table in TABLES:
         try:

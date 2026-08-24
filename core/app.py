@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
 from core import (attachments, bouncer, codebase, events, features, lingo, llm, memory,
-                  messages, music, notebook, routing, routines, system_state,
+                  messages, music, notebook, routing, routines, school, system_state,
                   telemetry, tool_handlers as th, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           system_volume as control_system_volume,
@@ -2770,6 +2770,18 @@ class TedApi:
                         return f"Found notes: {titles}."
                     return f"No notes found matching '{query}'."
                 return "Notes module unavailable."
+
+            # ── School dashboard (read-only) ─────────────────────────────────
+            if name == "school_read":
+                try:
+                    return school.format_for_ted(
+                        view=args.get("view", "all"),
+                        class_name=args.get("class_name", ""),
+                    )
+                except ValueError as e:
+                    return f"I couldn't read that school view — {e}."
+                except Exception as e:
+                    return f"The School dashboard could not be read: {e}"
 
             # ── Ted's notebook ───────────────────────────────────────────────
             # Ted's own pages, distinct from Apple Notes above. Every branch

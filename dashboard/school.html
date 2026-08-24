@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ted School</title>
+<style>
+:root{
+  --bg:#0d0f14;--side:#11141b;--panel:#171b24;--panel2:#1d222d;
+  --line:#292f3c;--text:#edf0f7;--muted:#8e97aa;--soft:#b8c0d1;
+  --accent:#8b9cff;--accent2:#6376ed;--warn:#f4c84b;--danger:#ef6a72;
+  --green:#56d49b;--shadow:0 18px 50px rgba(0,0,0,.28)
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden}
+button,input,select,textarea{font:inherit}
+button{color:inherit}
+
+#app{height:100%;display:grid;grid-template-columns:244px minmax(0,1fr)}
+aside{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.brand{padding:26px 22px 18px}.brand .eyebrow{font-size:10px;letter-spacing:.28em;color:var(--muted);text-transform:uppercase}
+.brand h1{font-size:25px;margin:7px 0 4px;letter-spacing:-.03em}.brand p{font-size:12px;color:var(--muted);margin:0;line-height:1.45}
+.nav-scroll{padding:0 12px 24px;overflow-y:auto;flex:1}
+.nav-label{padding:17px 10px 7px;color:#677084;font-size:9px;letter-spacing:.2em;text-transform:uppercase;font-weight:700}
+.nav{width:100%;display:flex;align-items:center;gap:10px;border:0;background:transparent;border-radius:9px;padding:9px 10px;cursor:pointer;text-align:left;font-size:13px;color:#aeb6c7;margin:1px 0}
+.nav:hover{background:#191e28;color:#fff}.nav.active{background:#202635;color:#fff}.nav .ico{width:20px;text-align:center;color:#7f8aa1}.nav .count{margin-left:auto;color:#788298;font-size:11px}
+.class-dot{width:9px;height:9px;border-radius:50%;box-shadow:0 0 0 3px color-mix(in srgb,var(--dot) 20%,transparent);background:var(--dot);flex:none}
+.future-nav{opacity:.76}.caution{margin-left:auto;color:var(--warn);font-size:12px}.manual-note{margin:10px 12px 18px;border:1px solid #5a4c1e;background:#211d11;color:#d8c471;border-radius:11px;padding:11px 12px;font-size:11px;line-height:1.45}
+.manual-note b{color:#ffe07b;font-weight:650}
+
+main{overflow-y:auto;min-width:0}.main-inner{max-width:1280px;margin:0 auto;padding:30px 34px 60px}
+.topbar{display:flex;gap:18px;align-items:flex-start;justify-content:space-between;margin-bottom:25px}
+.heading .kicker{color:var(--accent);font-size:10px;letter-spacing:.25em;text-transform:uppercase;font-weight:700}.heading h2{font-size:31px;letter-spacing:-.04em;margin:7px 0 5px}.heading p{margin:0;color:var(--muted);font-size:13px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}.btn{border:1px solid var(--line);background:var(--panel2);border-radius:9px;padding:9px 13px;font-size:12px;font-weight:600;cursor:pointer}.btn:hover{border-color:#485268;background:#252b38}.btn.primary{border-color:var(--accent2);background:var(--accent2);color:white}.btn.primary:hover{background:#7182f4}.btn.danger{color:#ff989f}.btn.ghost{background:transparent}.btn.small{padding:6px 9px;font-size:11px}
+
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:24px}.stat{border:1px solid var(--line);border-radius:14px;padding:17px;background:linear-gradient(145deg,#191e28,#141821);min-width:0}.stat .label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.13em}.stat strong{display:block;font-size:28px;margin-top:8px;letter-spacing:-.04em}.stat.today strong{color:#aeb9ff}.stat.overdue strong{color:#ff8b92}.stat.priority strong{color:#ffd96f}
+
+.section{margin:25px 0}.section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;gap:12px}.section-head h3{font-size:12px;text-transform:uppercase;letter-spacing:.16em;margin:0;color:#c2c9d8}.section-head span{font-size:11px;color:var(--muted)}
+.class-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:12px}.class-card{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--class);border-radius:13px;padding:16px;cursor:pointer;transition:transform .13s,border-color .13s}.class-card:hover{transform:translateY(-2px);border-color:#414a5d}.class-card .row{display:flex;justify-content:space-between;gap:10px}.class-card h4{font-size:16px;margin:0 0 4px}.class-card .code{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}.class-card .open{font-size:22px;font-weight:700;color:var(--class)}.class-card .meta{border-top:1px solid var(--line);padding-top:11px;margin-top:13px;color:var(--muted);font-size:11px;line-height:1.5;min-height:28px}.card-actions{display:flex;gap:6px;margin-top:11px}
+
+.toolbar{display:flex;gap:9px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.search{position:relative;flex:1;min-width:190px}.search input{width:100%;border:1px solid var(--line);background:#11151d;color:var(--text);border-radius:9px;padding:9px 12px 9px 32px;outline:none;font-size:12px}.search:before{content:'⌕';position:absolute;left:11px;top:5px;color:#687286;font-size:20px}.search input:focus,.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent)}
+.filter{border:1px solid var(--line);background:#11151d;color:var(--soft);border-radius:9px;padding:8px 10px;font-size:12px;outline:none}
+
+.task-list{display:flex;flex-direction:column;gap:7px}.task{display:grid;grid-template-columns:32px minmax(220px,1fr) minmax(130px,.35fr) minmax(125px,.35fr) 64px;align-items:center;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--class,#596273);border-radius:11px;min-height:68px;padding:9px 11px;gap:10px}.task:hover{border-color:#3d4659;border-left-color:var(--class,#6c7688)}.check{width:20px;height:20px;border:2px solid #596376;border-radius:6px;background:transparent;cursor:pointer;display:grid;place-items:center;color:#10140f;font-size:13px}.check:hover{border-color:var(--green)}.task.closed{opacity:.56}.task.closed .check{border-color:var(--green);background:var(--green)}.task.closed .check:after{content:'✓'}.task.closed .task-title{text-decoration:line-through}.task-main{min-width:0}.task-title{font-size:14px;font-weight:620;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.task-sub{display:flex;gap:7px;align-items:center;margin-top:5px;color:var(--muted);font-size:10px;flex-wrap:wrap}.pill{border:1px solid #343b49;background:#1c212b;border-radius:99px;padding:2px 6px;text-transform:capitalize}.pill.high{border-color:#62432b;color:#f3bf75;background:#251c14}.task-class{font-size:12px;color:#c0c7d4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.due{font-size:11px;color:#aeb6c6}.due.overdue{color:#ff8b92}.due.today{color:#c4ccff}.task-edit{background:transparent;border:0;color:#838da2;padding:7px;cursor:pointer;border-radius:7px}.task-edit:hover{color:#fff;background:#252b36}
+.empty{border:1px dashed #343b48;border-radius:14px;padding:42px 20px;text-align:center;background:#11151c}.empty .symbol{font-size:29px;color:#59657c}.empty h3{font-size:16px;margin:10px 0 5px}.empty p{font-size:12px;color:var(--muted);margin:0 0 15px}
+
+.future-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.future{border:1px solid #50451e;background:linear-gradient(145deg,#211d12,#171713);border-radius:13px;padding:17px}.future .flag{color:var(--warn);font-size:18px}.future h4{font-size:14px;margin:10px 0 6px}.future p{color:#a99c70;font-size:11px;line-height:1.5;margin:0}.future .later{display:inline-block;margin-top:12px;border:1px solid #5e5020;color:#d4b94e;border-radius:99px;padding:3px 7px;font-size:9px;text-transform:uppercase;letter-spacing:.12em}
+
+#modal{position:fixed;inset:0;background:rgba(4,6,9,.77);backdrop-filter:blur(5px);z-index:20;display:none;align-items:center;justify-content:center;padding:20px}.dialog{width:min(650px,100%);max-height:92vh;overflow-y:auto;background:#171b24;border:1px solid #343b49;border-radius:16px;box-shadow:var(--shadow)}.dialog-head{padding:19px 21px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}.dialog-head h3{margin:0;font-size:17px}.close{background:transparent;border:0;color:#7f899d;font-size:23px;cursor:pointer}.form{padding:20px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.field{display:flex;flex-direction:column;gap:6px}.field.wide{grid-column:1/-1}.field label{font-size:10px;text-transform:uppercase;letter-spacing:.11em;color:#8d96a8}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#10141b;color:var(--text);padding:10px;outline:none;font-size:12px}.field textarea{min-height:85px;resize:vertical;line-height:1.5}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:20px;border-top:1px solid var(--line);padding-top:16px}.right{display:flex;gap:8px;margin-left:auto}.form-error{font-size:11px;color:#ff9299;margin-top:10px;min-height:15px}
+.mode-banner{display:flex;align-items:center;gap:10px;border:1px solid #514621;background:#1d1a12;border-radius:10px;padding:10px 12px;margin-bottom:19px;color:#c9b967;font-size:11px}.mode-banner b{color:#ffe077}
+
+@media(max-width:850px){#app{grid-template-columns:190px minmax(0,1fr)}.main-inner{padding:24px 20px 50px}.stats{grid-template-columns:repeat(2,1fr)}.task{grid-template-columns:30px 1fr 92px 48px}.task-class{display:none}}
+@media(max-width:620px){body{overflow:auto}#app{display:block;height:auto}aside{position:relative;border-right:0;border-bottom:1px solid var(--line);max-height:none}.nav-scroll{display:grid;grid-template-columns:repeat(2,1fr);gap:2px}.nav-label,.manual-note{grid-column:1/-1}.main-inner{padding:20px 14px 45px}.topbar{display:block}.actions{justify-content:flex-start;margin-top:15px}.task{grid-template-columns:30px minmax(0,1fr) 44px}.due{display:none}.form-grid{grid-template-columns:1fr}.field.wide{grid-column:auto}}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <div class="eyebrow">Ted · School</div>
+      <h1>Semester HQ</h1>
+      <p>Your classes, deadlines, and schoolwork in one place.</p>
+    </div>
+    <div class="nav-scroll">
+      <div class="nav-label">Plan</div>
+      <button class="nav active" data-view="overview"><span class="ico">⌂</span>Overview</button>
+      <button class="nav" data-view="today"><span class="ico">◉</span>Today<span class="count" id="n-today">0</span></button>
+      <button class="nav" data-view="upcoming"><span class="ico">↗</span>Next 7 days</button>
+      <button class="nav" data-view="overdue"><span class="ico">!</span>Overdue<span class="count" id="n-overdue">0</span></button>
+      <button class="nav" data-view="all"><span class="ico">☷</span>All schoolwork<span class="count" id="n-open">0</span></button>
+      <button class="nav" data-view="completed"><span class="ico">✓</span>Finished</button>
+      <div class="nav-label">Classes</div>
+      <div id="class-nav"></div>
+      <button class="nav" id="nav-add-class"><span class="ico">＋</span>Add a class</button>
+      <div class="nav-label">Connections for later</div>
+      <button class="nav future-nav" data-view="future"><span class="ico">✉</span>Email intake<span class="caution">⚠</span></button>
+      <button class="nav future-nav" data-view="future"><span class="ico">▤</span>Syllabus / LMS<span class="caution">⚠</span></button>
+      <button class="nav future-nav" data-view="future"><span class="ico">◷</span>Reminders<span class="caution">⚠</span></button>
+    </div>
+    <div class="manual-note"><b>⚠ Manual mode</b><br>You add and edit everything here. Ted can read it, but cannot change it.</div>
+  </aside>
+
+  <main><div class="main-inner" id="content"></div></main>
+</div>
+
+<div id="modal" role="dialog" aria-modal="true">
+  <div class="dialog">
+    <div class="dialog-head"><h3 id="modal-title"></h3><button class="close" id="modal-close" aria-label="Close">×</button></div>
+    <form class="form" id="modal-form"></form>
+  </div>
+</div>
+
+<script>
+const API='/api/school';
+const state={data:null,view:'overview',classId:null,query:'',status:'open'};
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML};
+async function api(url,opts){const r=await fetch(url,opts);let b={};try{b=await r.json()}catch(e){}if(!r.ok)throw new Error(b.error||'Something went wrong');return b}
+function options(values,current,labels){return values.map(v=>`<option value="${esc(v)}"${v===current?' selected':''}>${esc(labels&&labels[v]||v.replace('_',' '))}</option>`).join('')}
+function cls(id){return state.data.classes.find(c=>c.id===Number(id))}
+function task(id){return state.data.tasks.find(t=>t.id===Number(id))}
+function isClosed(t){return t.status==='done'||t.status==='submitted'}
+function dueDate(t){return t.due_at?new Date(t.due_at):null}
+function startToday(){const d=new Date();d.setHours(0,0,0,0);return d}
+function taskBucket(t){if(isClosed(t))return'completed';const d=dueDate(t);if(!d)return'open';const now=new Date(),start=startToday(),tomorrow=new Date(start);tomorrow.setDate(start.getDate()+1);const week=new Date(tomorrow);week.setDate(tomorrow.getDate()+7);if(d<now)return'overdue';if(d<tomorrow)return'today';if(d<week)return'upcoming';return'open'}
+function fmtDue(t){if(!t.due_at)return'No due date';const d=dueDate(t),today=startToday(),tomorrow=new Date(today);tomorrow.setDate(today.getDate()+1);const day=d.toLocaleDateString([],{month:'short',day:'numeric'}),time=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});if(d>=today&&d<tomorrow)return`Today · ${time}`;return`${day} · ${time}`}
+function viewTitle(){if(state.classId){const c=cls(state.classId);return c?c.name:'Class'}return({overview:'Semester overview',today:'Due today',upcoming:'Next 7 days',overdue:'Overdue work',all:'All schoolwork',completed:'Finished work',future:'Connections for later'})[state.view]||'Schoolwork'}
+function visibleTasks(){let rows=state.data.tasks.slice();if(state.classId)rows=rows.filter(t=>t.class_id===state.classId);if(state.view!=='overview'&&state.view!=='all'&&state.view!=='future')rows=rows.filter(t=>taskBucket(t)===state.view);if((state.view==='all'||state.classId)&&state.status==='open')rows=rows.filter(t=>!isClosed(t));if(state.status==='done')rows=rows.filter(isClosed);if(state.query){const q=state.query.toLowerCase();rows=rows.filter(t=>(t.title+' '+t.notes+' '+(t.class_name||'')).toLowerCase().includes(q))}return rows}
+
+async function load(){state.data=await api(API);renderNav();render()}
+function renderNav(){
+  $('n-today').textContent=state.data.counts.today;$('n-overdue').textContent=state.data.counts.overdue;$('n-open').textContent=state.data.counts.open;
+  $('class-nav').innerHTML=state.data.classes.map(c=>`<button class="nav class-link" data-class="${c.id}"><span class="class-dot" style="--dot:${esc(c.color)}"></span><span style="overflow:hidden;text-overflow:ellipsis">${esc(c.name)}</span><span class="count">${c.open_tasks}</span></button>`).join('');
+  document.querySelectorAll('.nav[data-view]').forEach(b=>{b.classList.toggle('active',!state.classId&&b.dataset.view===state.view);b.onclick=()=>{state.classId=null;state.view=b.dataset.view;state.query='';render()}});
+  document.querySelectorAll('.class-link').forEach(b=>{b.classList.toggle('active',state.classId===Number(b.dataset.class));b.onclick=()=>{state.classId=Number(b.dataset.class);state.view='class';state.query='';render()}});
+  $('nav-add-class').onclick=()=>openClass();
+}
+function header(sub){return `<div class="topbar"><div class="heading"><div class="kicker">Northwest Christian College</div><h2>${esc(viewTitle())}</h2><p>${esc(sub)}</p></div><div class="actions"><button class="btn" onclick="openClass()">＋ New class</button><button class="btn primary" onclick="openTask()">＋ Add schoolwork</button></div></div>`}
+function stats(){const c=state.data.counts;return `<div class="stats"><div class="stat"><div class="label">Open work</div><strong>${c.open}</strong></div><div class="stat today"><div class="label">Due today</div><strong>${c.today}</strong></div><div class="stat overdue"><div class="label">Overdue</div><strong>${c.overdue}</strong></div><div class="stat priority"><div class="label">High priority</div><strong>${c.high}</strong></div></div>`}
+function classCards(){if(!state.data.classes.length)return empty('No classes yet','Add each class once, then every assignment can live in the right section','Add your first class','openClass()');return `<div class="class-grid">${state.data.classes.map(c=>`<article class="class-card" style="--class:${esc(c.color)}" onclick="openClassView(${c.id})"><div class="row"><div><div class="code">${esc(c.code||c.term||'Class')}</div><h4>${esc(c.name)}</h4></div><div class="open">${c.open_tasks}</div></div><div class="meta">${esc([c.instructor,c.meeting_times,c.location].filter(Boolean).join(' · ')||'Add instructor, schedule, or location')}</div><div class="card-actions"><button class="btn small ghost" onclick="event.stopPropagation();openClass(${c.id})">Edit class</button><button class="btn small ghost" onclick="event.stopPropagation();openTask(null,${c.id})">Add work</button></div></article>`).join('')}</div>`}
+function empty(title,copy,button,action){return `<div class="empty"><div class="symbol">◇</div><h3>${esc(title)}</h3><p>${esc(copy)}</p>${button?`<button class="btn primary" onclick="${action}">${esc(button)}</button>`:''}</div>`}
+function toolbar(){return `<div class="toolbar"><div class="search"><input id="search" value="${esc(state.query)}" placeholder="Search titles, notes, or classes…"></div><select class="filter" id="status-filter"><option value="open"${state.status==='open'?' selected':''}>Open only</option><option value="all"${state.status==='all'?' selected':''}>Any status</option><option value="done"${state.status==='done'?' selected':''}>Finished only</option></select></div>`}
+function taskList(rows){if(!rows.length)return empty('Nothing here','Add schoolwork manually, or try another view.','Add schoolwork','openTask()');return `<div class="task-list">${rows.map(t=>{const bucket=taskBucket(t);return `<article class="task ${isClosed(t)?'closed':''}" style="--class:${esc(t.class_color||'#596273')}"><button class="check" title="${isClosed(t)?'Mark open':'Mark done'}" onclick="toggleDone(${t.id})"></button><div class="task-main"><div class="task-title" title="${esc(t.title)}">${esc(t.title)}</div><div class="task-sub"><span class="pill">${esc(t.kind)}</span><span class="pill ${t.priority}">${esc(t.priority)}</span>${t.estimated_minutes?`<span>~${t.estimated_minutes} min</span>`:''}${t.source_url?`<a href="${esc(t.source_url)}" target="_blank" rel="noopener" style="color:#92a3ff">source ↗</a>`:''}</div></div><div class="task-class">${esc(t.class_name||'General / Other')}</div><div class="due ${bucket==='overdue'?'overdue':bucket==='today'?'today':''}">${esc(fmtDue(t))}</div><button class="task-edit" onclick="openTask(${t.id})" title="Edit">•••</button></article>`}).join('')}</div>`}
+function wireToolbar(){const q=$('search'),s=$('status-filter');if(q)q.oninput=()=>{state.query=q.value;renderTasksOnly()};if(s)s.onchange=()=>{state.status=s.value;render()}}
+function renderTasksOnly(){const host=$('task-host');if(host)host.innerHTML=taskList(visibleTasks())}
+
+function renderOverview(){const active=state.data.tasks.filter(t=>!isClosed(t)).slice(0,8);$('content').innerHTML=header('A manual, dependable home for everything school-related.')+`<div class="mode-banner"><span>⚠</span><div><b>Manual-first:</b> you control every class and deadline. Ted’s read-only school tool sees these exact records.</div></div>`+stats()+`<section class="section"><div class="section-head"><h3>Your classes</h3><span>${state.data.classes.length} total</span></div>${classCards()}</section><section class="section"><div class="section-head"><h3>Next up</h3><span>${active.length?'Earliest open items':'Clear for now'}</span></div>${taskList(active)}</section>`}
+function renderList(){const c=state.classId&&cls(state.classId);const sub=c?[c.code,c.instructor,c.meeting_times,c.location].filter(Boolean).join(' · ')||'Everything for this class':'Filter, finish, and edit your manually entered schoolwork.';$('content').innerHTML=header(sub)+(c?`<div class="actions" style="justify-content:flex-start;margin:-10px 0 20px"><button class="btn small" onclick="openClass(${c.id})">Edit class details</button><button class="btn small danger" onclick="removeClass(${c.id})">Delete class</button></div>`:'')+toolbar()+`<div id="task-host">${taskList(visibleTasks())}</div>`;wireToolbar()}
+function renderFuture(){$('content').innerHTML=header('These are intentionally not connected yet. The yellow markers keep them visible.')+`<div class="future-grid"><div class="future"><div class="flag">⚠</div><h4>Email assignment intake</h4><p>Later, Ted can scan school email and place possible deadlines into a review inbox before anything becomes a task.</p><span class="later">Not connected</span></div><div class="future"><div class="flag">⚠</div><h4>Syllabus and LMS import</h4><p>PDF syllabi and your school portal can eventually feed class schedules and assignments into this same database.</p><span class="later">Not connected</span></div><div class="future"><div class="flag">⚠</div><h4>Calendar and reminders</h4><p>Deadlines can later create calendar events and proactive reminders. For now, dates only live on this dashboard.</p><span class="later">Not connected</span></div><div class="future"><div class="flag">⚠</div><h4>Review inbox</h4><p>When automatic collection arrives, uncertain items will wait for your approval instead of silently becoming deadlines.</p><span class="later">Not built yet</span></div></div>`}
+function render(){renderNav();if(state.view==='overview')renderOverview();else if(state.view==='future')renderFuture();else renderList()}
+function openClassView(id){state.classId=id;state.view='class';render()}
+
+function showModal(title,body){$('modal-title').textContent=title;$('modal-form').innerHTML=body;$('modal').style.display='flex'}
+function closeModal(){$('modal').style.display='none';$('modal-form').innerHTML=''}
+$('modal-close').onclick=closeModal;$('modal').onclick=e=>{if(e.target===$('modal'))closeModal()};document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+function formValue(form,name){return form.elements[name]?form.elements[name].value:''}
+
+function openClass(id){const c=id?cls(id):null;showModal(c?'Edit class':'Add a class',`<div class="form-grid"><div class="field wide"><label>Class name *</label><input name="name" maxlength="100" required value="${esc(c&&c.name||'')}" placeholder="Introduction to Psychology"></div><div class="field"><label>Course code</label><input name="code" maxlength="200" value="${esc(c&&c.code||'')}" placeholder="PSY 101"></div><div class="field"><label>Term</label><input name="term" maxlength="200" value="${esc(c&&c.term||'Fall 2026')}" placeholder="Fall 2026"></div><div class="field"><label>Instructor</label><input name="instructor" maxlength="200" value="${esc(c&&c.instructor||'')}"></div><div class="field"><label>Location</label><input name="location" maxlength="200" value="${esc(c&&c.location||'')}"></div><div class="field wide"><label>Meeting schedule</label><input name="meeting_times" maxlength="200" value="${esc(c&&c.meeting_times||'')}" placeholder="Mon / Wed / Fri · 10:00 AM"></div><div class="field"><label>Class color</label><input name="color" type="color" value="${esc(c&&c.color||'#7c8cff')}"></div></div><div class="form-error" id="form-error"></div><div class="form-footer">${c?`<button type="button" class="btn danger" onclick="removeClass(${c.id})">Delete class</button>`:'<span></span>'}<div class="right"><button type="button" class="btn" onclick="closeModal()">Cancel</button><button class="btn primary">${c?'Save changes':'Create class'}</button></div></div>`);$('modal-form').onsubmit=async e=>{e.preventDefault();const f=e.target,p={name:formValue(f,'name'),code:formValue(f,'code'),term:formValue(f,'term'),instructor:formValue(f,'instructor'),location:formValue(f,'location'),meeting_times:formValue(f,'meeting_times'),color:formValue(f,'color')};try{await api(API+'/classes'+(c?'/'+c.id:''),{method:c?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});closeModal();await load()}catch(err){$('form-error').textContent=err.message}}}
+
+function openTask(id,presetClass){const t=id?task(id):null;const selected=t?t.class_id:(presetClass||state.classId||'');const classOpts=`<option value="">General / Other</option>`+state.data.classes.map(c=>`<option value="${c.id}"${Number(selected)===c.id?' selected':''}>${esc(c.name)}${c.code?' · '+esc(c.code):''}</option>`).join('');showModal(t?'Edit schoolwork':'Add schoolwork',`<div class="form-grid"><div class="field wide"><label>Title *</label><input name="title" required maxlength="220" value="${esc(t&&t.title||'')}" placeholder="Chapter 2 questions"></div><div class="field"><label>Class / section</label><select name="class_id">${classOpts}</select></div><div class="field"><label>Type</label><select name="kind">${options(state.data.task_kinds,t&&t.kind||'assignment')}</select></div><div class="field"><label>Due date and time</label><input name="due_at" type="datetime-local" value="${esc(t&&t.due_at||'')}"></div><div class="field"><label>Estimated minutes</label><input name="estimated_minutes" type="number" min="1" value="${esc(t&&t.estimated_minutes||'')}" placeholder="45"></div><div class="field"><label>Priority</label><select name="priority">${options(state.data.priorities,t&&t.priority||'normal')}</select></div><div class="field"><label>Status</label><select name="status">${options(state.data.task_statuses,t&&t.status||'todo',{todo:'To do',in_progress:'In progress',submitted:'Submitted',done:'Done'})}</select></div><div class="field wide"><label>Notes</label><textarea name="notes" maxlength="8000" placeholder="Directions, materials, or anything you need to remember…">${esc(t&&t.notes||'')}</textarea></div><div class="field"><label>Source label</label><input name="source_label" maxlength="200" value="${esc(t&&t.source_label||'')}" placeholder="Canvas assignment page"></div><div class="field"><label>Source link</label><input name="source_url" maxlength="2000" value="${esc(t&&t.source_url||'')}" placeholder="https://…"></div></div><div class="form-error" id="form-error"></div><div class="form-footer">${t?`<button type="button" class="btn danger" onclick="removeTask(${t.id})">Delete</button>`:'<span></span>'}<div class="right"><button type="button" class="btn" onclick="closeModal()">Cancel</button><button class="btn primary">${t?'Save changes':'Add schoolwork'}</button></div></div>`);$('modal-form').onsubmit=async e=>{e.preventDefault();const f=e.target,p={title:formValue(f,'title'),class_id:formValue(f,'class_id'),kind:formValue(f,'kind'),due_at:formValue(f,'due_at'),estimated_minutes:formValue(f,'estimated_minutes'),priority:formValue(f,'priority'),status:formValue(f,'status'),notes:formValue(f,'notes'),source_label:formValue(f,'source_label'),source_url:formValue(f,'source_url')};try{await api(API+'/tasks'+(t?'/'+t.id:''),{method:t?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});closeModal();await load()}catch(err){$('form-error').textContent=err.message}}}
+async function toggleDone(id){const t=task(id);await api(API+'/tasks/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:isClosed(t)?'todo':'done'})});await load()}
+async function removeTask(id){const t=task(id);if(!confirm(`Delete “${t.title}”?`))return;await api(API+'/tasks/'+id,{method:'DELETE'});closeModal();await load()}
+async function removeClass(id){const c=cls(id);if(!confirm(`Delete ${c.name}? Its schoolwork will move to General / Other, not be deleted.`))return;await api(API+'/classes/'+id,{method:'DELETE'});state.classId=null;state.view='overview';closeModal();await load()}
+
+load().catch(err=>{$('content').innerHTML=empty('School dashboard unavailable',err.message,'','')});
+</script>
+</body>
+</html>
