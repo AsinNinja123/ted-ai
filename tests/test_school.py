@@ -98,7 +98,7 @@ with tempfile.TemporaryDirectory() as tmp:
     client = app.test_client()
     page = client.get("/school")
     snap = client.get("/api/school")
-    check("School is a real dashboard route", page.status_code == 200 and b"Semester HQ" in page.data)
+    check("School is a real dashboard route", page.status_code == 200 and b"School planner" in page.data)
     check("the API returns the same classes and work", snap.status_code == 200
           and len(snap.get_json()["tasks"]) == 3)
     made = client.post("/api/school/tasks", json={"title": "Buy lab notebook", "kind": "other"})
@@ -133,9 +133,22 @@ check("Ted's sidebar opens and closes the School surface",
       and "127.0.0.1:5175/school" in hud and "hideSchool:function" in hud)
 school_html = read("dashboard/school.html")
 check("future connections are visibly cautioned",
-      "⚠" in school_html and "Not connected" in school_html and "Not built yet" in school_html)
+      "⚠" in school_html and "Not connected" in school_html
+      and "Future connections" in school_html)
 check("the dashboard supports manual class and task CRUD",
       all(token in school_html for token in ("openClass", "removeClass", "openTask", "removeTask", "toggleDone")))
+check("the redesign keeps overview tabs and classes in rows",
+      'class="top-tabs"' in school_html and 'class="class-rows"' in school_html)
+check("the school sidebar is collapsible and remembers its state",
+      'id="sidebar-toggle"' in school_html and "ted_school_sidebar" in school_html)
+check("due dates use separate calendar and time pickers",
+      'name="due_date" type="date"' in school_html
+      and 'name="due_time" type="time"' in school_html
+      and 'type="datetime-local"' not in school_html)
+check("schoolwork classification is a visible choice, not typed text",
+      'type="radio" name="kind"' in school_html and 'class="type-grid"' in school_html)
+check("finished work is secondary rather than a main top tab",
+      'class="side-bottom"' in school_html and "['completed','Finished" not in school_html)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

@@ -28,13 +28,13 @@
 | Routing | local app reflex + one streamed loop + cleanup lane (llama router); legacy path behind TED_LEGACY_LADDER=1 |
 | Agents | MacAgent (13 tools) — see Code Book ch. 36 |
 | Memory | 57 facts, ~1500 chat turns, 11 session memories |
-| Tests | 1176 checks across 35 suites |
+| Tests | 1181 checks across 35 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**
 
 - **The calendar daemon has never run.** ted_daemon.py is built and tested but no data/ted_daemon.log exists, so it has not started on this machine. Proactive class reminders do nothing until it does. See docs/DAEMON_HANDOFF.md.
-- **Empty tables.** bouncer_rules, bouncer_state, goals, habit_logs, news_items, news_topics, routines — built and never used, or left over from a deleted feature.
+- **Empty tables.** bouncer_rules, bouncer_state, goals, habit_logs, news_items, news_topics, routines, school_tasks — built and never used, or left over from a deleted feature.
 - **Data nothing reads.** patterns has 142 rows and nothing in the code reads it. Either use it or drop it.
 - **There are logged errors.** ted_errors.log is not empty. Only real failures are written there, so it is worth reading before assuming things are fine.
 
