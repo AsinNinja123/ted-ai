@@ -362,7 +362,15 @@ def set_feedback(row_id, rating, reason="", note=""):
              datetime.now().isoformat(timespec="seconds"),
              0 if rating == -1 else 1, row_id))
         conn.commit()
-    return cur.rowcount == 1
+    saved = cur.rowcount == 1
+    if saved and rating == -1:
+        # Repetition can propose a lasting lesson; Charlie still approves it.
+        try:
+            from core import relationship
+            relationship.propose_from_feedback(reason, row_id)
+        except Exception as exc:
+            print(f"[feedback] relationship proposal skipped: {exc}")
+    return saved
 
 
 def pending_feedback(chat_id, limit=3):

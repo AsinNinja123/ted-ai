@@ -495,6 +495,16 @@ def save_fact(subject, relationship, obj, importance=2):
     if cur is not None and cur.rowcount:
         memory_event("added", _fact_phrase(subject, rel, obj), "facts",
                      cur.lastrowid, importance=importance)
+        if rel.startswith("PREFERS") or rel in {"USUALLY_USES"}:
+            try:
+                from core import relationship as relationship_memory
+                relationship_memory.save(
+                    "preference", f"{rel}:{_norm_obj(obj)[:50]}",
+                    f"{subject} {rel.lower().replace('_', ' ')} {obj}",
+                    explicit=True, confidence=1.0,
+                    evidence=[{"fact_rowid": cur.lastrowid}], source="explicit_fact")
+            except Exception as exc:
+                print(f"[memory] relationship mirror skipped: {exc}")
 
 
 def forget_fact(subject, relationship=None, obj=None):

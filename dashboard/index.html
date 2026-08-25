@@ -150,7 +150,7 @@
 const TAB_LABELS = {
   facts: "Facts", session_summaries: "Sessions", exchanges: "Exchanges",
   goals: "Goals", routines: "Routines", lingo: "Lingo", chats: "Chats",
-  history: "History",
+  relationship: "Relationship", tasks: "Tasks", history: "History",
 };
 const PAGE = 50;
 let META = {}, currentRows = {}, routineRows = {}, lingoRows = {},
@@ -220,6 +220,8 @@ async function render() {
   await refreshSummary();
   if (state.tab === "routines") return renderRoutines();
   if (state.tab === "lingo") return renderLingo();
+  if (state.tab === "relationship") return renderRelationship();
+  if (state.tab === "tasks") return renderTasks();
   if (state.tab === "chats") return renderChats();
   if (state.tab === "history") return renderHistory();
   return renderTable(state.tab);
@@ -519,6 +521,62 @@ async function toggleLingo(id, enabled) {
 async function deleteLingo(id) {
   if (!confirm("Delete this lingo term? Ted will stop expanding it immediately.")) return;
   await api(`/api/lingo/${id}`, { method: "DELETE" }); render();
+}
+
+// ---------------- approved relationship memory + review queue ----------------
+async function renderRelationship() {
+  const rows = await api("/api/relationship");
+  const proposed = rows.filter(r => r.status === "proposed");
+  const active = rows.filter(r => r.status === "active");
+  const card = r => `<div class="routine-card">
+    <div class="routine-head"><h3>${esc(r.value)}</h3>
+      <span class="phrase-chip">${esc(r.kind)}</span></div>
+    <div class="muted">${r.explicit ? "Explicit" : `Inferred · ${Math.round(r.confidence*100)}% confidence`}
+      ${r.source ? ` · ${esc(r.source)}` : ""}</div>
+    ${r.status === "proposed" ? `<div class="routine-head" style="margin-top:10px">
+      <span class="muted">Review before Ted uses this every turn.</span>
+      <span><button class="btn primary" onclick="reviewRelationship(${r.id},'approve')">Approve</button>
+      <button class="btn danger" onclick="reviewRelationship(${r.id},'reject')">Reject</button></span></div>` : ""}
+  </div>`;
+  document.getElementById("main").innerHTML = `
+    <div class="routine-help">Ted only injects approved or explicitly stated items. Repeated feedback appears here as a proposal instead of silently changing his personality.</div>
+    <div class="toolbar"><button class="btn primary" onclick="openRelationshipEditor()">+ Add explicit memory</button><span class="muted">Use this for communication or workflow preferences Ted should always consider.</span></div>
+    <h2>Needs review (${proposed.length})</h2><div class="routine-grid">${proposed.map(card).join("") || '<div class="empty">No proposed lessons.</div>'}</div>
+    <h2>Active (${active.length})</h2><div class="routine-grid">${active.map(card).join("") || '<div class="empty">No relationship memories yet.</div>'}</div>`;
+}
+
+function openRelationshipEditor() {
+  document.getElementById("modalTitle").textContent = "Add relationship memory";
+  document.getElementById("modalFields").innerHTML = `
+    <label>Kind</label><select id="relationshipKind"><option value="preference">Preference</option><option value="interaction_lesson">Interaction lesson</option><option value="commitment">Commitment</option><option value="identity">Identity</option></select>
+    <label>Short key *</label><input id="relationshipKey" placeholder="routine_answer_length">
+    <label>What Ted should know *</label><textarea id="relationshipValue" placeholder="Charlie prefers routine answers in one or two sentences."></textarea>`;
+  document.getElementById("modalError").textContent = "";
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("modalSave").onclick = saveRelationship;
+}
+
+async function saveRelationship() {
+  try {
+    await api("/api/relationship", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({kind:document.getElementById("relationshipKind").value,key:document.getElementById("relationshipKey").value,value:document.getElementById("relationshipValue").value})});
+    closeModal(); render();
+  } catch(e) { document.getElementById("modalError").textContent = e.message; }
+}
+
+async function reviewRelationship(id, decision) {
+  await api(`/api/relationship/${id}/review`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({decision})});
+  render();
+}
+
+async function renderTasks() {
+  const rows = await api("/api/tasks?limit=100");
+  const main = document.getElementById("main");
+  if (!rows.length) { main.innerHTML = '<div class="empty">No durable tasks yet.</div>'; return; }
+  main.innerHTML = `<div class="routine-help">These records let “go ahead,” “use the other one,” and interrupted requests resume against a concrete goal.</div><div class="routine-grid">${rows.map(r => `<div class="routine-card">
+    <div class="routine-head"><h3>${esc(r.goal)}</h3><span class="phrase-chip">${esc(r.status)}</span></div>
+    <div class="muted">Task #${r.id} · updated ${fmtDate(r.updated)} · ${esc(r.confirmation_policy)}</div>
+    ${(r.constraints||[]).length ? `<div style="margin-top:8px">Constraints: ${esc(r.constraints.join('; '))}</div>` : ""}
+  </div>`).join("")}</div>`;
 }
 
 // ---------------- data tabs ----------------

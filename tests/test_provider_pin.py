@@ -36,7 +36,7 @@ def check(desc, cond):
 
 print("\n— the setting —")
 check("defaults to auto with no file at all", providers.get_provider_mode() == "auto")
-for mode in ("cloud", "local", "auto"):
+for mode in ("luna", "cloud", "local", "auto"):
     providers.set_provider_mode(mode)
     check(f"'{mode}' is accepted and read back", providers.get_provider_mode() == mode)
 
@@ -73,6 +73,7 @@ def fake_ollama(**kwargs):
 
 real_ollama = providers._ollama_create
 real_groq = providers._groq
+real_openai = providers._openai
 providers._ollama_create = fake_ollama
 
 
@@ -86,6 +87,7 @@ class ExplodingGroq:
 
 
 providers._groq = ExplodingGroq
+providers._openai = ExplodingGroq
 
 providers.set_provider_mode("local")
 result = providers.chat_create(messages=[{"role": "user", "content": "hi"}])
@@ -93,6 +95,33 @@ check("local mode answers from the local brain", result == "local-answer")
 check("and never touches the cloud", calls == ["ollama"])
 check("active_provider reports the local brain",
       providers.active_provider() == "ollama")
+
+print("\n— Luna is independently pinnable —")
+
+
+class FakeLuna:
+    class chat:
+        class completions:
+            @staticmethod
+            def create(**kwargs):
+                calls.append(("luna", kwargs))
+                return "luna-answer"
+
+
+providers._openai = FakeLuna
+providers.set_provider_mode("luna")
+result = providers.chat_create(messages=[{"role": "user", "content": "hi"}],
+                               max_tokens=80)
+check("Luna pin answers from Luna", result == "luna-answer")
+check("Luna receives its configured model and translated token limit",
+      calls[-1][1].get("model") == providers.PRIMARY_CHAT_MODEL
+      and calls[-1][1].get("max_completion_tokens") == 80
+      and "max_tokens" not in calls[-1][1])
+check("active_provider reports OpenAI", providers.active_provider() == "openai")
+providers.set_provider_mode("auto")
+result = providers.chat_create(messages=[{"role": "user", "content": "foreground"}])
+check("auto prefers Luna for foreground turns when configured",
+      result == "luna-answer" and providers.active_provider() == "openai")
 
 # Background work is sent local under auto to protect the cloud allowance,
 # but an explicit cloud pin must mean cloud even for helpers.
@@ -104,6 +133,7 @@ check("auto keeps background helpers off the cloud allowance", calls == ["ollama
 
 providers._ollama_create = real_ollama
 providers._groq = real_groq
+providers._openai = real_openai
 providers.set_provider_mode("auto")
 
 print("\n— pulled is not loaded —")

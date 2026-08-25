@@ -647,6 +647,8 @@ llm.providers.active_provider = lambda: "none"
 check("a fresh session is not reported as a Groq outage", llm.groq_ok())
 llm.providers.active_provider = lambda: "groq"
 check("a served cloud turn reports healthy", llm.groq_ok())
+llm.providers.active_provider = lambda: "openai"
+check("a Luna turn also reports the hosted brain healthy", llm.groq_ok())
 llm.providers.active_provider = lambda: "ollama"
 check("a real fall back to the local brain reports Groq down", not llm.groq_ok())
 llm.providers.active_provider = _orig_active

@@ -4,8 +4,10 @@
 # config.py is gitignored so your keys never get committed.
 
 # ── LLM ──────────────────────────────────────────────────────────────────────
+OPENAI_API_KEY = ""        # optional; when set, GPT-5.6 Luna is tried first
+PRIMARY_CHAT_MODEL = "gpt-5.6-luna"
 GROQ_API_KEY = ""          # optional free hosted brain; local Ollama works without it
-CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"
+CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"  # Groq fallback
 LOCAL_CHAT_MODEL = "qwen3.5:9b-q4_K_M"
 LOCAL_TOOL_MODEL = "qwen3.5:35b-a3b"
 # One-word "does this need the cloud?" verdicts only, never an answer to you.

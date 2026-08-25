@@ -609,10 +609,12 @@ def api_provider_get():
         "mode": providers.get_provider_mode(),
         "active": providers.active_provider(),
         "active_model": providers.active_model(),
+        "primary_model": providers.PRIMARY_CHAT_MODEL,
         "cloud_model": providers.CLOUD_CHAT_MODEL,
         "local_model": providers.LOCAL_CHAT_MODEL,
         "local_tool_model": providers.LOCAL_TOOL_MODEL,
         "cloud_configured": providers.groq_client() is not None,
+        "luna_configured": providers.openai_client() is not None,
         "local_ready": providers.local_model_ready(),
         # Pulled is not loaded. The HUD needs the difference to decide whether
         # a slow turn deserves "loading the local model" or just patience.
@@ -732,6 +734,48 @@ def api_lingo_delete(term_id):
         return jsonify({"ok": True})
     except KeyError as e:
         return jsonify({"error": str(e)}), 404
+
+
+@app.get("/api/relationship")
+def api_relationship_list():
+    from core import relationship
+    return jsonify(relationship.list_memories(
+        status=request.args.get("status") or None,
+        kind=request.args.get("kind") or None,
+    ))
+
+
+@app.post("/api/relationship")
+def api_relationship_create():
+    from core import relationship
+    body = request.get_json(force=True) or {}
+    try:
+        return jsonify(relationship.save(
+            body.get("kind"), body.get("key"), body.get("value"),
+            explicit=True, confidence=1.0,
+            evidence=body.get("evidence") or (), source="dashboard",
+        ))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/relationship/<int:memory_id>/review")
+def api_relationship_review(memory_id):
+    from core import relationship
+    try:
+        ok = relationship.review(
+            memory_id, (request.get_json(force=True) or {}).get("decision"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not ok:
+        return jsonify({"error": "proposed memory not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.get("/api/tasks")
+def api_tasks_list():
+    from core import task_state
+    return jsonify(task_state.list_recent(request.args.get("limit", 30)))
 
 
 # ---------------------------------------------------------------------------

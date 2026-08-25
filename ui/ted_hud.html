@@ -635,9 +635,10 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
            the cloud at all. It was only visible in the diagnostics panel,
            which is the one place you are not looking while typing. -->
       <select id="brainpick" title="Which brain answers. Auto uses the cloud and
-falls back to the local model; the other two are pinned and never fall back.">
+falls back through Groq and the local model; pinned choices never fall back.">
         <option value="auto">Auto</option>
-        <option value="cloud">Cloud</option>
+        <option value="luna">Luna</option>
+        <option value="cloud">Groq</option>
         <option value="local">Local</option>
       </select>
       <span id="budget" title="Tokens used this minute against your account's limit">
@@ -1005,7 +1006,7 @@ function fillMeta(metaEl, tries){
     .then(function(r){ return r.json(); })
     .then(function(rows){
       var t=rows&&rows[0]; if(!t) throw 0;
-      var who=t.provider==='groq'?'cloud':(t.provider||'—');
+      var who=t.provider==='openai'?'Luna':t.provider==='groq'?'Groq':(t.provider||'—');
       var tok=t.total_tokens?(t.total_tokens.toLocaleString()
               +(t.tokens_estimated?'~':'')+' tok'):'';
       var bits=[metaEl.textContent];
@@ -1134,7 +1135,7 @@ function connectEventStream(){
 
 function setBrain(t){
   var d=$('brain'); if(!d) return;
-  var cls = t.provider==='groq' ? 'cloud'
+  var cls = (t.provider==='openai'||t.provider==='groq') ? 'cloud'
           : t.provider==='ollama' ? 'local'
           : t.provider==='reflex' ? 'reflex' : 'dead';
   d.className='dot '+cls;
@@ -1162,18 +1163,20 @@ function labelProvider(info){
   var sel=$('brainpick'); if(!sel) return;
   /* Real model names, read from the server rather than typed in here — a
      hardcoded label goes stale the day config.py changes. */
-  sel.options[1].textContent='Cloud ('+(info.cloud_model||'cloud')+')';
-  sel.options[2].textContent='Local ('+(info.local_tool_model||info.local_model||'local')+')';
+  sel.options[1].textContent='Luna ('+(info.primary_model||'gpt-5.6-luna')+')';
+  sel.options[2].textContent='Groq ('+(info.cloud_model||'cloud')+')';
+  sel.options[3].textContent='Local ('+(info.local_tool_model||info.local_model||'local')+')';
   sel.value=info.mode||'auto';
   sel.classList.toggle('pinned',(info.mode||'auto')!=='auto');
   var bits=[];
-  if(info.mode==='auto') bits.push('Auto: cloud first, local if the cloud fails.');
-  else bits.push('Pinned to the '+(info.mode==='cloud'?'cloud':'local')+
+  if(info.mode==='auto') bits.push('Auto: Luna, then Groq, then local.');
+  else bits.push('Pinned to the '+(info.mode==='luna'?'Luna':info.mode==='cloud'?'Groq':'local')+
                  ' brain — it will NOT fall back.');
   if(info.active) bits.push('Last answered by: '+
-    (info.active==='groq'?'the cloud':info.active==='ollama'?'the local model':info.active)+
+    (info.active==='openai'?'Luna':info.active==='groq'?'Groq':info.active==='ollama'?'the local model':info.active)+
     (info.active_model?' ('+info.active_model+')':''));
   if(!info.cloud_configured) bits.push('No cloud key configured.');
+  if(!info.luna_configured) bits.push('No OpenAI key configured.');
   if(!info.local_ready) bits.push('Local model is not pulled — selecting Local will fail.');
   sel.title=bits.join('\n');
 }
@@ -1197,6 +1200,8 @@ function setProvider(mode){
          letting the next message be the thing that finds out. */
       if(mode==='local'&&providerInfo.local_ready===false)
         tedHud.showIssue('Pinned to the local brain, but its model is not pulled yet.');
+      else if(mode==='luna'&&providerInfo.luna_configured===false)
+        tedHud.showIssue('Pinned to Luna, but no OpenAI API key is configured.');
       else if(mode==='cloud'&&providerInfo.cloud_configured===false)
         tedHud.showIssue('Pinned to the cloud, but no API key is configured.');
       else if(mode==='local'&&providerInfo.local_warm===false)

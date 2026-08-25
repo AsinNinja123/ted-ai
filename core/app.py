@@ -108,9 +108,10 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
-from core import (attachments, bouncer, codebase, events, features, lingo, llm, memory,
-                  messages, music, notebook, routing, routines, school, system_state,
-                  telemetry, tool_handlers as th, voice)
+from core import (attachments, bouncer, codebase, conversation_examples, events,
+                  features, lingo, llm, memory, messages, music, notebook, outcomes,
+                  relationship, routing, routines, school, system_state, task_state,
+                  telemetry, tool_handlers as th, understanding, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           system_volume as control_system_volume,
                           search_contacts, send_imessage_to_address)
@@ -679,6 +680,8 @@ class TedApi:
         Returns True if the user barged in by voice during the reply.
         """
         w = self.window
+        _persisted_task = task_state.active_for(self._active_chat_id)
+        self._active_task_id = _persisted_task["id"] if _persisted_task else None
         self._touch_attention()   # any processed input keeps the conversation open
 
         # Roll the referent window forward before anything reads it, so that
@@ -756,14 +759,18 @@ class TedApi:
             # A cancel while Ted is asking a compose/disambiguation question
             # must also clear that pending state. Previously "nevermind" went
             # silent here and the old question remained armed until expiry.
-            if (self._pending_msg is not None or self._pending_compose is not None
-                    or self._pending_tool_confirmation is not None
-                    or self._pending_lingo is not None):
+            _had_pending = (self._pending_msg is not None
+                            or self._pending_compose is not None
+                            or self._pending_tool_confirmation is not None
+                            or self._pending_lingo is not None)
+            if _had_pending:
                 self._pending_msg = None
                 self._pending_compose = None
                 self._pending_disambig_compose = None
                 self._pending_tool_confirmation = None
                 self._pending_lingo = None
+            _cancelled_task = task_state.cancel_active(self._active_chat_id)
+            if _had_pending or _cancelled_task:
                 reply = "Got it, canceling."
                 self.last_reply = reply
                 add_message(w, "ted", reply)
@@ -854,8 +861,10 @@ class TedApi:
         if self._pending_tool_confirmation is not None:
             pending = self._pending_tool_confirmation
             self._pending_tool_confirmation = None
+            _confirmation_cancelled = False
             if time.time() > pending["expires"]:
                 result = "That confirmation expired, so I didn't do it."
+                _confirmation_cancelled = True
             elif _normalize_cmd(text) in {
                     "yes", "yeah", "yep", "confirm", "do it", "send it", "go ahead"}:
                 result = self._dispatch_and_record(
@@ -876,6 +885,9 @@ class TedApi:
                 result = self._dispatch_tool("clean_up", _args)
             else:
                 result = "Canceled — nothing was sent or changed."
+                _confirmation_cancelled = True
+            if _confirmation_cancelled:
+                task_state.cancel_active(self._active_chat_id)
             if echo_user:
                 add_message(w, "user", text)
             self.last_reply = result
@@ -1007,6 +1019,19 @@ class TedApi:
 
         routing_text, matched_lingo = lingo.expand(text, record_usage=True)
         _lingo_context = lingo.context_line(matched_lingo)
+        _active_task = task_state.active_for(self._active_chat_id)
+        _interpretation = understanding.resolve(
+            text, routing_text,
+            action_likely=routing.likely_action_request(routing_text),
+            active_task=_active_task,
+            recent_actions=self._recent_actions,
+        )
+        if _interpretation.mode == "action":
+            self._active_task_id = task_state.begin_or_continue(
+                self._active_chat_id, _interpretation)
+            _active_task = task_state.active_for(self._active_chat_id)
+        task_state.save_interpretation(
+            self._active_chat_id, _interpretation, self._active_task_id)
 
         # ── email auth setup (handled here so we can speak mid-flow) ──
         if re.search(
@@ -1064,6 +1089,10 @@ class TedApi:
             _rturn.model = llm.providers.active_model()
             _rturn.note_tool("create_document")
             _failed = th.looks_like_failure(result)
+            task_state.record_action(
+                self._active_task_id, "create_document",
+                outcomes.normalize("create_document", document_plan, result,
+                                   is_failure=th.looks_like_failure, acted=True))
             _rturn.finish(reply=result, error=result if _failed else "")
             self.last_reply = result
             add_message(w, "ted", result)
@@ -1160,6 +1189,12 @@ class TedApi:
 
         asst_result = self._assistant_command(text) if _use_deterministic_command(text) else None
         if asst_result is not None:
+            if _interpretation.mode == "action":
+                task_state.record_action(
+                    self._active_task_id, "deterministic_command",
+                    outcomes.normalize("deterministic_command", {"request": routing_text},
+                                       asst_result, is_failure=th.looks_like_failure,
+                                       acted=True))
             engine.reset_barge_in()
             self.last_reply = asst_result
             add_message(w, "ted", asst_result)
@@ -1208,8 +1243,15 @@ class TedApi:
         _selected_schemas = []
         _recent_context = routing.operational_context(self._recent_actions)
         _live_context = system_state.format_for_prompt(self._live_state)
+        _relationship_context = relationship.working_context()
+        _task_context = task_state.format_for_prompt(_active_task)
+        _behavior_example = conversation_examples.select(
+            text, _interpretation, frustrated=self.user_frustrated)
         _op_context = "\n".join(
-            part for part in (_lingo_context, _live_context, _recent_context) if part)
+            part for part in (
+                _lingo_context, _interpretation.for_prompt(), _task_context,
+                _relationship_context, _behavior_example, _live_context, _recent_context,
+            ) if part)
         if not LEGACY_LADDER:
             _selected_schemas = routing.select_tool_schemas(routing_text, _op_context)
 
@@ -2352,6 +2394,12 @@ class TedApi:
                  and (confirmed or not th.needs_confirmation(name, args)))
         if acted:
             self._record_action(name, args, result)
+            task_state.record_action(
+                getattr(self, "_active_task_id", None), name,
+                outcomes.normalize(name, args, result,
+                                   is_failure=th.looks_like_failure, acted=True))
+        elif name in th.ACTION_TOOLS:
+            task_state.mark_waiting(getattr(self, "_active_task_id", None))
         return result
 
     def _execute_reflex(self, plan):
@@ -2369,6 +2417,10 @@ class TedApi:
                 results = list(pool.map(_run, calls))
         for (name, args), result in zip(calls, results):
             self._record_action(name, args, result)
+            task_state.record_action(
+                getattr(self, "_active_task_id", None), name,
+                outcomes.normalize(name, args, result,
+                                   is_failure=th.looks_like_failure, acted=True))
         return results
 
     def _execute_routine(self, routine):
@@ -3666,6 +3718,11 @@ class TedApi:
                         row_id=self._session_row_id,
                     )
                     print(f"[memory] {reason}: remembered — {mem['text'][:90]}")
+
+                # Raw transcripts become session memories above. This second,
+                # conservative pass looks only for durable interaction lessons
+                # and leaves inferences proposed until Charlie reviews them.
+                relationship.reflect_session(self.active_conversation)
 
                 if end_session:
                     self._session_row_id     = None

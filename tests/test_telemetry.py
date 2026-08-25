@@ -160,6 +160,8 @@ calls = {"ollama": 0}
 _real_ollama = providers._ollama_create
 providers._ollama_create = lambda **kw: calls.__setitem__("ollama", calls["ollama"] + 1)
 _real_groq = providers._groq
+_real_openai = providers._openai
+providers._openai = None
 
 
 class _Boom:
@@ -185,6 +187,7 @@ check("local-pinned never touches the cloud", calls["ollama"] == 1)
 
 providers._ollama_create = _real_ollama
 providers._groq = _real_groq
+providers._openai = _real_openai
 providers.set_provider_mode("auto")
 check("mode restored to auto for the next run",
       providers.get_provider_mode() == "auto")

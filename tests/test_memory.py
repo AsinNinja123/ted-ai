@@ -10,10 +10,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import memory
+from core import memory, relationship
 
 # Point the module at a scratch database BEFORE first use
 memory.DB_PATH = os.path.join(tempfile.mkdtemp(), "test_memory.db")
+relationship.DB_PATH = memory.DB_PATH
 
 PASS = FAIL = 0
 def check(desc, cond):

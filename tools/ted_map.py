@@ -134,9 +134,11 @@ def collect_models() -> dict:
     use_groq_stt = assigned(cfg, "USE_GROQ_STT")
 
     return {
-        "cloud": pick("CLOUD_CHAT_MODEL", "Cloud brain",
-                      "Tried first. Does all the thinking: chat, tools, "
+        "cloud": pick("PRIMARY_CHAT_MODEL", "Primary cloud brain",
+                      "Tried first when its OpenAI key is configured. Does chat, tools, "
                       "remembering facts, describing screenshots."),
+        "cloud_fallback": pick("CLOUD_CHAT_MODEL", "Groq fallback",
+                      "Tried when the paid primary is missing or unavailable."),
         "local": pick("LOCAL_CHAT_MODEL", "Fast local brain",
                       "Runs conversation and background memory work on your Mac "
                       "when the cloud is missing, down, or rate limited."),
@@ -617,13 +619,15 @@ def render(d: dict) -> str:
 
     # ── the one-paragraph version ────────────────────────────────────────────
     cloud = m["cloud"]["value"]
+    cloud_fallback = m["cloud_fallback"]["value"]
     local = m["local"]["value"]
     local_tool = m["local_tool"]["value"]
     n_tools = len(t["all"])
     facts = next((x["rows"] for x in mem.get("tables", []) if x["table"] == "facts"), 0)
     turns = next((x["rows"] for x in mem.get("tables", []) if x["table"] == "chat_turns"), 0)
     add(f"<div class=lede>Ted is a chat window on your Mac that thinks with "
-        f"<b>{esc(cloud)}</b>, falls back to <b>{esc(local)}</b> for chat and "
+        f"<b>{esc(cloud)}</b>, then <b>{esc(cloud_fallback)}</b>, then "
+        f"<b>{esc(local)}</b> for chat and "
         f"<b>{esc(local_tool)}</b> for actions on your own machine, remembers "
         f"<b>{facts} things about you</b> "
         f"across <b>{turns} messages</b>, and can take <b>{n_tools} kinds of action</b> "
@@ -631,9 +635,9 @@ def render(d: dict) -> str:
 
     # ── brains ───────────────────────────────────────────────────────────────
     add("<h2>What it thinks with</h2>")
-    add("<p class=sub>Five different jobs. The first three are reasoning models — "
+    add("<p class=sub>Six different jobs. The first four are reasoning models — "
         "the other two are hearing and speaking.</p><div class=grid>")
-    for key in ("cloud", "local", "local_tool", "stt", "tts"):
+    for key in ("cloud", "cloud_fallback", "local", "local_tool", "stt", "tts"):
         e = m[key]
         add("<div class=card>")
         add(f"<div class=k>{esc(e['label'])}</div>")
@@ -812,8 +816,8 @@ def render_markdown(d: dict, stable: bool = False) -> str:
     local_models = f"`{m['local']['value']}` for chat"
     if m["local_tool"]["value"] != m["local"]["value"]:
         local_models += f" / `{m['local_tool']['value']}` for tools"
-    L.append(f"| Thinks with | `{m['cloud']['value']}` (cloud), falling back to "
-             f"{local_models} on local Ollama |")
+    L.append(f"| Thinks with | `{m['cloud']['value']}` (OpenAI), then "
+             f"`{m['cloud_fallback']['value']}` (Groq), then {local_models} on local Ollama |")
     L.append(f"| Hears / speaks | `{m['stt']['value']}` / `{m['tts']['value']}` (local) |")
     L.append(f"| Tools | {len(d['tools']['all'])} |")
     route = ("local app reflex + one streamed loop" if d["routing"].get("reflex")

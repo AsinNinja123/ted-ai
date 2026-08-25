@@ -13,7 +13,7 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-cp config.example.py config.py     # add a free Groq key for the fast hosted brain
+cp config.example.py config.py     # add OpenAI and/or Groq keys for hosted brains
 ollama pull qwen3.5:9b-q4_K_M      # fast offline conversation + memory helpers
 ollama pull qwen3.5:35b-a3b        # stronger offline tool/screenshot fallback
 python hud.py
@@ -63,8 +63,9 @@ The first launch after building asks for **microphone permission** — allow it.
   fallback; set `USE_GROQ_STT = False` to stay local all the time.
 - **TTS:** Kokoro (local, voice `am_michael`) by default; set `USE_ELEVENLABS = True`
   with a key for ElevenLabs cloud TTS.
-- **Reasoning brain:** Groq `qwen/qwen3.6-27b` on its free tier. Ted uses Qwen's
-  reasoning and tool calling for chat, actions, facts, summaries, and vision.
+- **Reasoning brain:** OpenAI `gpt-5.6-luna` when `OPENAI_API_KEY` is configured,
+  then Groq `qwen/qwen3.6-27b`, then local Ollama. Luna and Groq can each be
+  pinned in the brain picker for clean comparisons.
 - **Offline/down fallback:** local Ollama `qwen3.5:9b-q4_K_M` for conversation and
   background memory work, with `qwen3.5:35b-a3b` reserved for reasoning, tools,
   and vision. A missing key, outage, rate limit, or lost internet switches
@@ -79,6 +80,17 @@ The first launch after building asks for **microphone permission** — allow it.
   retrieves relevant context, and explicit recall gets the full personal-memory set.
   The last verified actions are kept as compact structured state for references
   such as "close the two apps I just opened."
+- **Meaning and task continuity:** every non-reflex turn gets an inspectable local
+  interpretation containing its goal, resolved references, constraints, confidence,
+  clarification policy, and intended context sources. Action requests create durable
+  task state, so “go ahead,” corrections, and interruptions can resume one goal.
+- **Relationship learning:** explicit communication preferences are kept separately
+  from biography. Repeated feedback and session reflections become reviewable
+  proposals; inferred lessons never enter Ted's working context until approved in
+  the dashboard's Relationship tab.
+- **Unified outcomes:** legacy string tools and structured MacAgent results are
+  normalized into success, observed state, expected state, goal match, and recovery
+  fields before a durable task is considered completed.
 - **Difficulty-aware latency:** short single-clause turns use Qwen's low-latency
   reasoning mode; longer, chained, explanatory, and analytical requests keep full
   reasoning. Both paths expose the same tools and use the model as the intent router.

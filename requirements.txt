@@ -6,6 +6,7 @@
 
 # LLM
 groq==1.4.0
+openai>=1.109.0,<2
 httpx                     # local Ollama provider transport
 
 # Web search — ddgs is the current package; hud.py imports it first and falls

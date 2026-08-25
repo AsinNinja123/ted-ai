@@ -11,6 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import providers
 
+# A real key may be present on Charlie's Mac. Unit tests must never spend it.
+providers._openai = None
+
 PASS = FAIL = 0
 
 

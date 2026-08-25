@@ -296,7 +296,7 @@ def stable_window(items, min_keep, chunk=8):
     start = ((n - min_keep) // chunk) * chunk
     return items[start:]
 
-# Tracks Groq reachability for the HUD health dot (flipped inside ask_streaming).
+# Legacy name: this now tracks whether a hosted brain served the turn.
 _GROQ_OK = True
 
 def groq_ok():
@@ -1452,7 +1452,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         print(f"[timing] request accepted after {_req_ms}ms "
               f"({providers.active_provider()})")
 
-    _GROQ_OK = providers.active_provider() == "groq"
+    _GROQ_OK = providers.active_provider() in ("openai", "groq")
     full_reply = ""
     # Results from the most recent round that produced any. If the loop ends
     # without the model writing a sentence, these are said instead of nothing.
@@ -1898,7 +1898,7 @@ def _log_turn(turn, reply, usage, total_calls, rounds):
         # Provider state changes on every model round. The final round is the
         # truthful outcome for the turn (including cloud -> local -> none), so
         # do not leave telemetry pinned to whichever brain accepted round one.
-        if active in ("groq", "ollama"):
+        if active in ("openai", "groq", "ollama"):
             turn.provider = active
             turn.model = _providers.active_model()
         elif active == "none" and turn.error:

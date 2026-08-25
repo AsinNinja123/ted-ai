@@ -1,10 +1,9 @@
 """Model-provider routing for Ted.
 
-Normal turns use Groq's free hosted model for speed.  If the key is absent,
-Groq is unreachable, the model is down, or the free-tier limit is exhausted,
-the same request is retried against a local Ollama model.  The rest of Ted sees
-one OpenAI/Groq-shaped response interface, so chat, tools, JSON extraction, and
-vision all share the same fallback behavior.
+Normal turns use OpenAI's GPT-5.6 Luna when configured, then Groq's hosted
+model, then local Ollama. The rest of Ted sees one OpenAI/Groq-shaped response
+interface, so chat, tools, JSON extraction, and vision share the same fallback
+behavior.
 """
 
 
@@ -108,11 +107,25 @@ from types import SimpleNamespace
 
 import httpx
 from groq import Groq
+try:
+    from openai import OpenAI
+except ImportError:  # Existing installs keep working until requirements are refreshed.
+    OpenAI = None
 
 try:
     from config import GROQ_API_KEY
 except Exception:
     GROQ_API_KEY = ""
+
+try:
+    from config import OPENAI_API_KEY
+except Exception:
+    OPENAI_API_KEY = ""
+
+try:
+    from config import PRIMARY_CHAT_MODEL
+except Exception:
+    PRIMARY_CHAT_MODEL = "gpt-5.6-luna"
 
 try:
     from config import CLOUD_CHAT_MODEL
@@ -150,6 +163,8 @@ except Exception:
 # Below, a rate limit falls through to the local brain, and failing that
 # surfaces as an error the user can read within a second or two.
 _groq = Groq(api_key=GROQ_API_KEY, max_retries=0) if GROQ_API_KEY else None
+_openai = (OpenAI(api_key=OPENAI_API_KEY, max_retries=0)
+           if OPENAI_API_KEY and OpenAI is not None else None)
 
 # One-element list so the flag can be flipped from inside chat_create without a
 # global declaration, and so tests can reset it.
@@ -348,7 +363,7 @@ _last_model = ""
 # a separate process (`python -m dashboard`) as well as in Ted's own thread.
 _MODE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "data", "runtime.json")
-_VALID_MODES = ("auto", "cloud", "local")
+_VALID_MODES = ("auto", "luna", "cloud", "local")
 _mode_cache = {"mtime": -1.0, "value": "auto"}
 
 
@@ -357,7 +372,7 @@ _mode_cache = {"mtime": -1.0, "value": "auto"}
 # It is stored in data/runtime.json so it survives a restart. "auto" means the
 # ordinary cloud-then-local behaviour; the other two are FORCED, not preferred.
 def get_provider_mode() -> str:
-    """Return ``auto``, ``cloud``, or ``local``. Cheap enough for every call."""
+    """Return the automatic ladder or a pinned provider mode."""
     try:
         mtime = os.path.getmtime(_MODE_PATH)
     except OSError:
@@ -459,6 +474,39 @@ def local_model_warm() -> bool:
 def groq_client():
     """Expose the Groq client for Whisper STT without creating a second one."""
     return _groq
+
+
+def openai_client():
+    """Expose whether the optional Luna connection is configured."""
+    return _openai
+
+
+def _luna_create(**kwargs):
+    """Send Ted's OpenAI-shaped request to GPT-5.6 Luna.
+
+    Ted's existing loop uses the older ``max_tokens`` spelling and includes a
+    Groq-only reasoning-format option. Translate those at this provider edge so
+    the rest of the application remains provider-neutral.
+    """
+    if _openai is None:
+        if OPENAI_API_KEY and OpenAI is None:
+            raise RuntimeError("OpenAI API key is set, but the openai package is not installed")
+        raise RuntimeError("Luna is not configured; add OPENAI_API_KEY to config.py")
+    params = dict(kwargs)
+    params["model"] = PRIMARY_CHAT_MODEL
+    params.pop("reasoning_format", None)
+    extra_body = dict(params.pop("extra_body", None) or {})
+    extra_body.pop("stream_options", None)
+    if extra_body:
+        params["extra_body"] = extra_body
+    if "max_tokens" in params:
+        params["max_completion_tokens"] = params.pop("max_tokens")
+    if params.get("stream"):
+        params.setdefault("stream_options", {"include_usage": True})
+    # Ted uses "default" for Groq. OpenAI expects an explicit supported level.
+    if params.get("reasoning_effort") == "default":
+        params["reasoning_effort"] = "low"
+    return _openai.chat.completions.create(**params)
 
 
 def _ollama_messages(messages):
@@ -833,7 +881,7 @@ def route_hint(system, text, num_predict=4):
 # and that can take minutes, during which Ted looks frozen. set_fallback_notice
 # exists so the window can say what is happening instead of going quiet.
 def chat_create(**kwargs):
-    """Run a chat request on free Groq, falling back to local Ollama.
+    """Run a chat request through Luna, Groq, then local Ollama.
 
     The caller never needs to decide whether an error is a rate limit, outage,
     missing key, or lost internet connection: every cloud failure is eligible
@@ -842,6 +890,7 @@ def chat_create(**kwargs):
     """
     global _active_provider, _last_cloud_error, _last_model, _last_fallback
     cloud_error = None
+    luna_error = None
     workload = kwargs.pop("_ted_workload", "foreground")
     local_model = _local_model_for(kwargs)
     mode = get_provider_mode()
@@ -879,6 +928,34 @@ def chat_create(**kwargs):
         _active_provider, _last_model = "ollama", local_model
         _last_fallback = ""
         return result
+
+    # Luna is the paid primary when configured. ``luna`` pins it for clean A/B
+    # testing; ``cloud`` retains the existing Groq-only pin and therefore does
+    # not silently measure a different provider.
+    if mode in ("auto", "luna") and _openai is not None:
+        try:
+            result = _luna_create(**kwargs)
+            _active_provider, _last_model = "openai", PRIMARY_CHAT_MODEL
+            _last_cloud_error = ""
+            _last_fallback = ""
+            _note_usage(result)
+            return result
+        except Exception as exc:
+            luna_error = exc
+            _last_cloud_error = f"Luna: {exc}"
+            _last_fallback = ("rate_limit" if "429" in str(exc)
+                              or "rate limit" in str(exc).lower()
+                              else "unavailable")
+            print(f"[provider] Luna unavailable ({str(exc)[:100]})"
+                  + ("" if mode == "luna" else " — trying Groq"))
+    elif mode == "luna":
+        luna_error = RuntimeError(
+            "Luna is not configured; add OPENAI_API_KEY to config.py")
+
+    if mode == "luna":
+        _active_provider, _last_model = "none", ""
+        raise luna_error
+
     if cooling_down:
         _last_fallback = "rate_limit"
         _last_cloud_error = (
@@ -958,11 +1035,12 @@ def chat_create(**kwargs):
         # quietly answering as a different model.
         _active_provider, _last_model = "none", ""
         raise cloud_error if cloud_error is not None else RuntimeError(
-            "Cloud brain pinned but no Groq API key is configured.")
+            "Groq brain pinned but no Groq API key is configured.")
 
     # Announce BEFORE the local call, not after it. After it is too late to be
     # the thing that stops a slow rescue turn from reading as a frozen app.
-    if workload != "background" and (cooling_down or cloud_error is not None):
+    if workload != "background" and (cooling_down or cloud_error is not None
+                                      or luna_error is not None):
         _announce_fallback(_last_fallback, _last_cloud_error)
 
     try:
@@ -971,8 +1049,9 @@ def chat_create(**kwargs):
         return result
     except Exception as local_error:
         _active_provider, _last_model = "none", ""
-        if cloud_error is not None:
+        if cloud_error is not None or luna_error is not None:
             raise RuntimeError(
-                f"Both brains failed; Groq: {cloud_error}; Ollama: {local_error}"
+                f"All brains failed; Luna: {luna_error}; Groq: {cloud_error}; "
+                f"Ollama: {local_error}"
             ) from local_error
         raise

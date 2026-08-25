@@ -304,6 +304,12 @@ def ensure_schema(conn):
     except Exception as e:
         print(f"[dashboard] lingo schema skipped: {e}")
     try:
+        from core import relationship, task_state
+        relationship.ensure_schema(conn)
+        task_state.ensure_schema(conn)
+    except Exception as e:
+        print(f"[dashboard] relationship/task schema skipped: {e}")
+    try:
         from core import school
         school.ensure_schema(conn)
     except Exception as e:
@@ -415,6 +421,8 @@ def summary():
     counts = {t: count(t) for t in TABLES}
     counts["routines"] = count("routines")
     counts["lingo"] = count("lingo")
+    counts["relationship"] = count("relationship_memory")
+    counts["tasks"] = count("active_tasks")
     counts["chats"] = count("chat_sessions")
     counts["history"] = count("memory_audit")
     return {"db_path": DB_PATH, "counts": counts}
