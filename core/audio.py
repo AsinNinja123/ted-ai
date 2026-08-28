@@ -210,6 +210,10 @@ class AudioEngine:
         self._vad = _webrtcvad.Vad(2) if _webrtcvad is not None else None
         self._first_frame = threading.Event()   # signals that the mic has delivered at least one frame
         self._mic_muted = False                 # True while the mic is physically off
+        # AEC mode proves itself by delivering a mic frame. When the engine
+        # starts with the mic OFF there are no frames to prove it with, so the
+        # proof is deferred to the first unmute — see _verify_aec_mic().
+        self._mic_verified = False
         self._closing = False                   # True once close() runs — stops the restart watchdog
         # fallback sounddevice handles (None in aec mode)
         self._sd = None
@@ -218,8 +222,19 @@ class AudioEngine:
 
     # ---- Startup ----
 
-    def start(self):
-        """Launch the audio engine. Tries AEC first, falls back to sounddevice. Returns mode string."""
+    def start(self, mic=True):
+        """Launch the audio engine. Tries AEC first, falls back to sounddevice. Returns mode string.
+
+        mic=False starts PLAYBACK ONLY and never installs a mic tap, so macOS
+        never lights the orange recording indicator. Ted boots chat-first and
+        muted; opening the mic at import time claimed the device for a feature
+        that was switched off, and the indicator is what Charlie sees.
+
+        The mic is installed later by unmute_mic(), which is also where the AEC
+        device check now happens — it needs a real frame and there are none
+        while the tap is off.
+        """
+        self._mic_muted = not mic
         if os.path.exists(BINARY) and os.access(BINARY, os.X_OK):
             try:
                 import subprocess
@@ -233,7 +248,15 @@ class AudioEngine:
                 self.mode = "aec"
                 threading.Thread(target=self._reader_aec, daemon=True).start()
                 threading.Thread(target=self._log_stderr, daemon=True).start()
-                if self.proc.poll() is None and self._first_frame.wait(2.5):
+                if not mic:
+                    # Take the tap out before the binary can settle into
+                    # listening. The write sits in the pipe until the binary
+                    # reads it, so this lands as early as it possibly can.
+                    self._send_mic_command(b"M")
+                    if self.proc.poll() is None:
+                        return "aec"
+                elif self.proc.poll() is None and self._first_frame.wait(2.5):
+                    self._mic_verified = True
                     return "aec"
                 # Binary started but never sent a mic frame — likely a CoreAudio device conflict.
                 print("[audio] native engine isn't delivering audio (likely macOS "
@@ -250,7 +273,7 @@ class AudioEngine:
                       file=sys.stderr)
 
         self.mode = "fallback"
-        self._start_fallback()
+        self._start_fallback(open_input=mic)
         return "fallback"
 
     @property
@@ -258,13 +281,18 @@ class AudioEngine:
         """True when running in AEC (Swift binary) mode."""
         return self.mode == "aec"
 
-    def _start_fallback(self):
+    def _start_fallback(self, open_input=True):
         """Open persistent mic and output streams via sounddevice. Streams stay open for the
         lifetime of the session — opening per-turn was crashing PortAudio. (Mute/unmute
-        closes and reopens only the INPUT stream, which is infrequent enough to be safe.)"""
+        closes and reopens only the INPUT stream, which is infrequent enough to be safe.)
+
+        open_input=False opens the OUTPUT stream only. Ted can still speak; the
+        mic device is never claimed, so there is no recording indicator."""
         import sounddevice as sd
         self._sd = sd
-        self._open_fallback_input()
+        if open_input:
+            self._open_fallback_input()
+            self._mic_verified = True
         self._out_stream = sd.OutputStream(
             samplerate=self._output_sr, channels=1, dtype="int16", blocksize=FRAME)
         self._out_stream.start()
@@ -620,18 +648,37 @@ class AudioEngine:
                 self._barge_hits.clear()        # don't carry partial evidence past the reply
                 self._barge_pitch.clear()
 
+    def _send_mic_command(self, byte):
+        """Write one control byte to the Swift engine. Never raises."""
+        if not (self.proc and self.proc.poll() is None):
+            return False
+        try:
+            self.proc.stdin.write(byte)
+            self.proc.stdin.flush()
+            return True
+        except Exception:
+            return False
+
+    def mic_is_open(self):
+        """True when this process is holding the microphone open right now.
+
+        Ground truth for the HUD and for anyone asking why the recording
+        indicator is lit — it reports the tap, not the user's intent.
+        """
+        if self._mic_muted:
+            return False
+        if self.mode == "aec":
+            return bool(self.proc and self.proc.poll() is None)
+        return self._in_stream is not None
+
     def mute_mic(self):
         """Turn the mic PHYSICALLY off. AEC mode: send 'M' to the Swift binary,
         which removes the mic tap so macOS releases the orange indicator.
         Fallback mode: close the sounddevice input stream, releasing the device.
         Playback (TTS) is unaffected in both modes."""
         self._mic_muted = True
-        if self.mode == "aec" and self.proc and self.proc.poll() is None:
-            try:
-                self.proc.stdin.write(b"M")
-                self.proc.stdin.flush()
-            except Exception:
-                pass
+        if self.mode == "aec":
+            self._send_mic_command(b"M")
         elif self.mode == "fallback":
             stream, self._in_stream = self._in_stream, None
             if stream is not None:
@@ -643,19 +690,51 @@ class AudioEngine:
 
     def unmute_mic(self):
         """Turn the mic back on. AEC mode: send 'U' to the Swift binary to
-        reinstall the mic tap. Fallback mode: reopen the input stream."""
+        reinstall the mic tap. Fallback mode: reopen the input stream.
+
+        This is the first moment the mic is claimed in a chat-first session, so
+        it is also where the AEC device check happens now.
+        """
         self._mic_muted = False
-        if self.mode == "aec" and self.proc and self.proc.poll() is None:
-            try:
-                self.proc.stdin.write(b"U")
-                self.proc.stdin.flush()
-            except Exception:
-                pass
+        if self.mode == "aec":
+            if not self._send_mic_command(b"U"):
+                return
+            self._verify_aec_mic()
         elif self.mode == "fallback" and self._in_stream is None:
             try:
                 self._open_fallback_input()
+                self._mic_verified = True
             except Exception as e:
                 print(f"[audio] mic reopen failed: {e}", file=sys.stderr)
+
+    def _verify_aec_mic(self):
+        """Prove the native engine can actually deliver mic audio, once.
+
+        start() used to do this by waiting for a first frame, and fell back to
+        sounddevice when none arrived — a real macOS failure where echo
+        cancellation cannot use a given mic+speaker pair. Starting with the mic
+        off removed the frames that check depended on, so the check moved here,
+        to the first unmute. It runs once per session and never raises.
+        """
+        if self._mic_verified:
+            return
+        self._first_frame.clear()
+        if self._first_frame.wait(2.5):
+            self._mic_verified = True
+            return
+        print("[audio] native engine isn't delivering audio (likely macOS "
+              "echo-cancellation can't use your mic+speaker combo) — "
+              "falling back to sounddevice.", file=sys.stderr)
+        try:
+            proc, self.proc = self.proc, None
+            if proc is not None:
+                proc.terminate()
+            time.sleep(0.6)          # let CoreAudio release the device
+            self.mode = "fallback"
+            self._start_fallback(open_input=True)
+        except Exception as e:
+            self.mode = "fallback"
+            print(f"[audio] sounddevice fallback also failed: {e}", file=sys.stderr)
 
     def reset_barge_in(self):
         """Clear the barge-in flag and detection window before starting a new playback."""

@@ -105,8 +105,9 @@ def scripted(*streams):
 
 # Neutralise everything ask_streaming does around the model call.
 llm.detect_action = lambda text: None
-llm.get_memory = lambda q: ""
+llm.get_memory = lambda q, **kwargs: ""
 llm.get_facts_about = lambda who: ""
+llm.get_relevant_facts = lambda who, query, **kwargs: ""
 llm.format_memories_for_prompt = lambda: ""
 llm.save_memory = lambda *a, **k: None
 _real_extract_facts = llm.extract_and_save_facts  # kept for the fact-log tests below
@@ -226,10 +227,10 @@ llm.error_log.error = _orig_error
 llm.chat_create = _orig_extract_create
 
 llm.chat_create = scripted(FakeStream([text_chunk("Not much, "), text_chunk("you?")]))
-out, conv = run("how are you", runtime(lambda n, a: "unused"))
+out, conv = run("how are you", None)
 check("reply is the streamed text", out == "Not much, you?")
 check("conversation costs exactly one model call", llm.chat_create.calls == 1)
-check("tool schemas rode along on that call", "tools" in llm.chat_create.kwargs[0])
+check("routine conversation sends no tool schemas", "tools" not in llm.chat_create.kwargs[0])
 check("short single-clause turns use low-latency reasoning",
       llm.chat_create.kwargs[0]["reasoning_effort"] == "none")
 check("exchange stored", conv[-2:] == [{"role": "user", "content": "how are you"},
@@ -270,8 +271,10 @@ llm._providers.active_provider = _orig_active_provider
 llm._providers.active_model = _orig_active_model
 
 memory_reads = []
-llm.get_memory = lambda q: (memory_reads.append("memory"), "")[1]
+llm.get_memory = lambda q, **kwargs: (memory_reads.append("memory"), "")[1]
 llm.get_facts_about = lambda who: (memory_reads.append("facts"), "")[1]
+llm.get_relevant_facts = (
+    lambda who, query, **kwargs: (memory_reads.append("relevant_facts"), "")[1])
 llm.format_memories_for_prompt = lambda: (memory_reads.append("sessions"), "")[1]
 llm.chat_create = scripted(FakeStream([
     tool_chunk(0, id="c1", name="open_app", args='{"name":"Notes"}')
@@ -285,12 +288,13 @@ out, _ = run("open Notes somehow", runtime(
 # episodic sources — FTS5 exchanges, session summaries, the knowledge base —
 # are scoped out of an operational turn.
 check("operational turns skip episodic memory but keep facts",
-      memory_reads == ["facts"])
+      memory_reads == ["relevant_facts"])
 check("the first call never forces tool choice",
       llm.chat_create.kwargs[0]["tool_choice"] == "auto")
 check("compact operational turn still executes normally", out == "Notes opened.")
-llm.get_memory = lambda q: ""
+llm.get_memory = lambda q, **kwargs: ""
 llm.get_facts_about = lambda who: ""
+llm.get_relevant_facts = lambda who, query, **kwargs: ""
 llm.format_memories_for_prompt = lambda: ""
 
 llm.chat_create = scripted(FakeStream([text_chunk("Hi.")]))
@@ -301,6 +305,28 @@ llm.chat_create = scripted(FakeStream([text_chunk("Fine.")]))
 out, _ = run("hey", None)
 check("no runtime → plain conversation still works", out == "Fine.")
 check("…and sends no tools", "tools" not in llm.chat_create.kwargs[0])
+
+routine_reads = []
+llm.get_memory = lambda *a, **k: (routine_reads.append("memory"), "")[1]
+llm.get_facts_about = lambda *a, **k: (routine_reads.append("facts"), "")[1]
+llm.get_relevant_facts = lambda *a, **k: (routine_reads.append("relevant_facts"), "")[1]
+llm.format_memories_for_prompt = lambda *a, **k: (routine_reads.append("sessions"), "")[1]
+llm.chat_create = scripted(FakeStream([text_chunk("Good. How are you?")]))
+real_persona_conversation = [{"role": "system", "content": llm.SYSTEM_PROMPT}]
+out, _ = run("how are you", None, conversation=real_persona_conversation,
+             context_scope="light")
+routine_call = llm.chat_create.kwargs[0]
+routine_chars = sum(len(str(m.get("content", "") or ""))
+                    for m in routine_call["messages"])
+check("a greeting performs no memory or fact retrieval", routine_reads == [])
+check("a real-persona greeting stays below 700 estimated input tokens",
+      round(routine_chars / 4) < 700)
+check("a greeting's completion allowance is tightly bounded",
+      routine_call["max_tokens"] == 180)
+llm.get_memory = lambda *a, **k: ""
+llm.get_facts_about = lambda *a, **k: ""
+llm.get_relevant_facts = lambda *a, **k: ""
+llm.format_memories_for_prompt = lambda *a, **k: ""
 
 llm.chat_create = scripted(FakeStream([text_chunk("A plan.")]))
 out, _ = run("analyze this problem and then plan the safest solution",
@@ -378,6 +404,18 @@ list(llm._stream_turn(FakeStream([usage_chunk(100, 10)]), {}, usage=usage))
 list(llm._stream_turn(FakeStream([usage_chunk(250, 20)]), {}, usage=usage))
 check("token usage accumulates across model rounds",
       usage == {"prompt": 350, "completion": 30, "exact": True})
+
+bounded_runtime = llm.ToolRuntime(
+    [routing.FIND_TOOLS_SCHEMA], lambda _name, _args: "unused")
+many = routing.discover_tool_schemas("open message email notes app", limit=20)
+first_added = bounded_runtime.consume_discovery(many, max_total=8)
+check("tool discovery is one-use and removes its own schema",
+      first_added and bounded_runtime.discovery_used
+      and "find_tools" not in bounded_runtime.schema_by_name)
+check("tool discovery cannot grow beyond eight active contracts",
+      len(bounded_runtime.schemas) <= 8)
+check("a repeated discovery attempt adds nothing",
+      bounded_runtime.consume_discovery(many, max_total=8) == [])
 
 calls = []
 llm.chat_create = scripted(FakeStream([

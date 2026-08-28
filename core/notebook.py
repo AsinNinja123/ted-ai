@@ -23,9 +23,8 @@ Design principles this follows (see the handoff, §12):
     including the entry number, so Ted quotes the result instead of narrating
     an intention.
   * Ted must know what is in it, not guess — `index_line()` is injected into
-    every turn, so page names are in front of the model before it is asked
-    anything. Contents still require a read; the index is the map, not the
-    territory.
+    notebook-related turns, so page names are in front of the model when they
+    matter. Contents still require a read; the index is the map, not the territory.
 """
 
 
@@ -397,7 +396,7 @@ def search(query, limit=12):
 # Contents cost a notebook_read tool call, always. Index = the map, read = the
 # territory. Neither alone would have been enough.
 def index_line(max_pages=14):
-    """One line naming every page, for injection into every turn's context.
+    """One line naming every page, for notebook-related turn context.
 
     This is the whole answer to "he should know what's in it, not guess": the
     model never has to wonder whether a notebook page exists, because the list

@@ -110,7 +110,7 @@ from datetime import date, datetime as _dt_cls
 
 from core import (attachments, bouncer, codebase, conversation_examples, events,
                   features, lingo, llm, memory, messages, music, notebook, outcomes,
-                  relationship, routing, routines, school, system_state, task_state,
+                  relationship, routing, routines, system_state, task_state,
                   telemetry, tool_handlers as th, understanding, voice)
 from core.actions import (close_app, open_app, get_running_apps,
                           system_volume as control_system_volume,
@@ -1241,26 +1241,52 @@ class TedApi:
 
         _runtime = None
         _selected_schemas = []
-        _recent_context = routing.operational_context(self._recent_actions)
-        _live_context = system_state.format_for_prompt(self._live_state)
-        _relationship_context = relationship.working_context()
-        _task_context = task_state.format_for_prompt(_active_task)
-        _behavior_example = conversation_examples.select(
-            text, _interpretation, frustrated=self.user_frustrated)
+        _action_likely = routing.likely_action_request(routing_text)
+        _needs_operational = bool(
+            _action_likely or _interpretation.references
+            or _interpretation.missing_information)
+        _recent_context = (routing.operational_context(self._recent_actions)
+                           if _needs_operational else "")
+        if not LEGACY_LADDER:
+            # Only recent verified actions may influence pronoun-based tool
+            # selection. Passing the whole generated context here used words in
+            # behavior examples, relationship memory, and the live app tree to
+            # accidentally load dozens of unrelated schemas for "delete that".
+            _selected_schemas = routing.select_tool_schemas(
+                routing_text, _recent_context)
+        _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
+        _live_context = (system_state.format_for_prompt(self._live_state)
+                         if _needs_operational and _selected_schemas else "")
+        _relationship_context = (
+            relationship.working_context(limit=3, query=routing_text, max_chars=600)
+            if _context_scope in ("none", "relevant", "full") else "")
+        _task_context = (task_state.format_for_prompt(_active_task)
+                         if _active_task and _needs_operational else "")
+        _behavior_example = (
+            conversation_examples.select(
+                text, _interpretation, frustrated=self.user_frustrated)
+            if conversation_examples.needed(
+                text, _interpretation, frustrated=self.user_frustrated) else "")
+        _interpretation_context = (
+            _interpretation.for_prompt()
+            if (_needs_operational or _interpretation.constraints) else "")
         _op_context = "\n".join(
             part for part in (
-                _lingo_context, _interpretation.for_prompt(), _task_context,
+                _lingo_context, _interpretation_context, _task_context,
                 _relationship_context, _behavior_example, _live_context, _recent_context,
             ) if part)
-        if not LEGACY_LADDER:
-            _selected_schemas = routing.select_tool_schemas(routing_text, _op_context)
-
+        if not LEGACY_LADDER and _selected_schemas:
             def _selected_dispatch(name, args):
                 if name == "find_tools":
+                    if _runtime.discovery_used:
+                        return ("Tool discovery was already used for this turn. "
+                                "Use the loaded capability or explain the limitation.")
                     existing = set(_runtime.schema_by_name)
+                    capacity = max(0, 8 - (len(existing) - ("find_tools" in existing)))
                     found = routing.discover_tool_schemas(
-                        args.get("query", ""), exclude=existing)
-                    added = _runtime.add_schemas(found)
+                        args.get("query", ""), exclude=existing,
+                        limit=min(4, capacity))
+                    added = _runtime.consume_discovery(found, max_total=8)
                     if added:
                         return ("Loaded capabilities: " + ", ".join(added)
                                 + ". Now use the appropriate tool.")
@@ -1274,8 +1300,11 @@ class TedApi:
                 action_tools=th.ACTION_TOOLS,
                 on_failure=_note_action_result,
                 is_failure=th.looks_like_failure,
+                # Router-miss recovery. The menu above is small on purpose; this
+                # is what stops a tool the router omitted from costing two extra
+                # round trips at ~4,400 tokens each.
+                catalog=routing.catalog(),
             )
-        _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
         # Attachments belong to exactly one turn. Taken rather than read, so a
         # file cannot silently ride along on the next message — and cleared
         # before the call, so a failure mid-turn does not strand it either.
@@ -1295,7 +1324,7 @@ class TedApi:
                                 tool_runtime=_runtime,
                                 context_scope=_context_scope,
                                 operational_context=_op_context,
-                                require_tool=routing.likely_action_request(routing_text),
+                                require_tool=_action_likely,
                                 min_action_calls=routing.expected_action_calls(routing_text),
                                 attachments=_attached,
                                 **_telemetry_chat,
@@ -1544,6 +1573,13 @@ class TedApi:
         # was loud then, quiet speech gets rejected before transcription)
         if re.search(r"\brecalibrat|\bcalibrate (?:the |your )?(?:mic|microphone|ears)\b",
                      text, re.I):
+            # Calibration reads real ambient frames. With the mic released
+            # there are none, so this would sit for the timeout and then report
+            # a threshold it never measured — a confident wrong number, which
+            # is the failure mode this project keeps having to design out.
+            if not engine.mic_is_open():
+                return ("The mic is off, so there's nothing to calibrate "
+                        "against. Turn voice on and ask me again.")
             speak(self.window, "Recalibrating — stay quiet for a second.", self)
             try:
                 thr = engine.calibrate()
@@ -2823,18 +2859,6 @@ class TedApi:
                     return f"No notes found matching '{query}'."
                 return "Notes module unavailable."
 
-            # ── School dashboard (read-only) ─────────────────────────────────
-            if name == "school_read":
-                try:
-                    return school.format_for_ted(
-                        view=args.get("view", "all"),
-                        class_name=args.get("class_name", ""),
-                    )
-                except ValueError as e:
-                    return f"I couldn't read that school view — {e}."
-                except Exception as e:
-                    return f"The School dashboard could not be read: {e}"
-
             # ── Ted's notebook ───────────────────────────────────────────────
             # Ted's own pages, distinct from Apple Notes above. Every branch
             # reports exactly what landed — page name, entry number, the text —
@@ -3934,12 +3958,17 @@ class TedApi:
             self.transcribe_only = False
 
     def _apply_mic(self, on):
-        """Start or stop capture, and keep the OS indicator honest about it."""
+        """Start or stop capture, and keep the OS indicator honest about it.
+
+        This is the ONLY place the microphone is claimed. Ted boots with no mic
+        tap at all (core/voice.py), so nothing lights the macOS recording
+        indicator until the voice or transcribe button is pressed.
+        """
         if on:
-            engine.unmute_mic()             # reinstalls mic tap → back to listening
+            voice.prepare_mic()             # claims the mic, calibrates once
             voice.spotify_volume(30)        # lower so Ted doesn't pick up the music
         else:
-            engine.mute_mic()               # removes mic tap → orange dot off
+            voice.release_mic()             # removes mic tap → orange dot off
             voice.spotify_volume(100)       # full volume — not listening, enjoy the music
 
     def _push_mic_state(self):

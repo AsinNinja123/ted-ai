@@ -51,6 +51,13 @@ memory.save_fact("Charlie", "LIKES", "jazz")   # duplicate is a no-op
 check("fact recall", "likes jazz" in memory.get_facts_about("Charlie"))
 check("…and the canonical form is what is stored",
       ("LIKES", "jazz") in memory.list_facts("Charlie"))
+memory.save_fact("Charlie", "PREFERS", "open YouTube in Brave", importance=3)
+check("relevant fact retrieval selects a matching preference",
+      "YouTube" in memory.get_relevant_facts("Charlie", "open YouTube"))
+check("relevant fact retrieval omits unrelated facts",
+      "jazz" not in memory.get_relevant_facts("Charlie", "open YouTube"))
+check("routine greetings retrieve no unrelated facts",
+      memory.get_relevant_facts("Charlie", "how are you") == "")
 
 print("\n— facts: normalization, supersede, dedupe —")
 memory.save_fact("Charlie", "lives in", "Spirit Lake")      # lowercase + spaces

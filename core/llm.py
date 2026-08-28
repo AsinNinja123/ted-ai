@@ -118,7 +118,7 @@ from core.hud_bridge import show_issue
 from core.logs import error_log
 from core import providers
 from core.memory import (save_memory, get_memory, save_fact, get_facts_about,
-                         format_memories_for_prompt)
+                         get_relevant_facts, format_memories_for_prompt)
 
 try:
     from config import OWNER_NAME
@@ -197,10 +197,10 @@ def completion_budget_for(text, effort="none", voice=False):
     it had produced anything.
     """
     if voice:
-        return 180
+        return 120
     if _LONG_REPLY_RE.search(text or ""):
-        return 900
-    return 700 if effort == "default" else 420
+        return 800
+    return 360 if effort == "default" else 180
 
 
 _ACTION_VERBS = (r"closed|opened|quit|launched|sent|texted|emailed|played|paused|"
@@ -362,8 +362,8 @@ SYSTEM_PROMPT = (
     "decline that part in one sentence and move on.\n"
 
     "You keep a notebook: named pages you own and can read, write, edit and "
-    "delete with the notebook_ tools. Its page names are listed in your context "
-    "every turn, so you always know which pages exist. What is ON a page you read "
+    "delete with the notebook_ tools. Its page names are listed when a notebook "
+    "request makes them relevant. What is ON a page you read "
     "with notebook_read — never from memory, never guessed, never paraphrased "
     "from an earlier turn. Anything he tells you to write down goes in as he said "
     "it.\n"
@@ -729,10 +729,11 @@ class ToolRuntime:
     on_failure    — called with a failed action's message, for the HUD
     """
     __slots__ = ("schemas", "dispatch", "action_tools", "on_failure",
-                 "is_failure", "schema_by_name")
+                 "is_failure", "schema_by_name", "discovery_used",
+                 "catalog", "max_admissions", "admitted")
 
     def __init__(self, schemas, dispatch, action_tools=(), on_failure=None,
-                 is_failure=None):
+                 is_failure=None, catalog=None, max_admissions=3):
         # Keep one mutable list. The find_tools meta-tool can append schemas
         # between reasoning rounds and the next provider call sees the expansion.
         self.schemas = list(schemas)
@@ -744,6 +745,44 @@ class ToolRuntime:
             (s.get("function") or {}).get("name"): s for s in schemas
             if (s.get("function") or {}).get("name")
         }
+        self.discovery_used = False
+        # The whole catalogue, for router-miss recovery. Empty means the caller
+        # opted out and an unrecognized name stays an error, which is what the
+        # older tests and the legacy ladder expect.
+        self.catalog = dict(catalog or {})
+        self.max_admissions = max(0, int(max_admissions))
+        self.admitted = []
+
+    def admit(self, name):
+        """Take in a real tool the router did not put on the menu.
+
+        The model naming `web_search` when `web_search` exists is a MISS BY THIS
+        PROGRAM, not a hallucination by the model. The old path told it
+        "TOOL_ARGUMENT_ERROR ... correct the arguments and call the tool again",
+        which is false twice over — the arguments were fine and calling again
+        cannot work — so the model either repeated the call or spent a round on
+        find_tools and a third round on the real call. Three round trips, each
+        re-sending the whole prompt, for a tool that was sitting right there.
+
+        Admitting it here costs nothing in the request that already went out and
+        one schema in the next one. Bounded, because a genuinely confused model
+        must not be able to pull the whole catalogue in one turn.
+
+        Safety is unchanged: everything in the catalogue is already an approved
+        capability (code_write is not in it), and confirmation gating happens in
+        the dispatcher, below this.
+        """
+        schema = self.catalog.get(name)
+        if schema is None or name in self.schema_by_name:
+            return self.schema_by_name.get(name)
+        if len(self.admitted) >= self.max_admissions:
+            return None
+        self.schemas.append(schema)
+        self.schema_by_name[name] = schema
+        self.admitted.append(name)
+        print(f"[tools] admitted {name} — router miss, ran it instead of "
+              f"spending a round on find_tools")
+        return schema
 
     def add_schemas(self, schemas):
         """Add newly discovered tools without duplicating the request menu."""
@@ -756,6 +795,23 @@ class ToolRuntime:
             self.schema_by_name[name] = schema
             added.append(name)
         return added
+
+    def consume_discovery(self, schemas, max_total=8):
+        """Use the discovery escape hatch once and keep the menu bounded.
+
+        The list is mutated in place because the provider kwargs retain a
+        reference to it between tool rounds.
+        """
+        if self.discovery_used:
+            return []
+        self.discovery_used = True
+        self.schemas[:] = [
+            schema for schema in self.schemas
+            if (schema.get("function") or {}).get("name") != "find_tools"
+        ]
+        self.schema_by_name.pop("find_tools", None)
+        capacity = max(0, int(max_total) - len(self.schemas))
+        return self.add_schemas(list(schemas)[:capacity])
 
 
 # Tool-selection instructions. These live in the STATIC system message
@@ -1025,28 +1081,35 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # --- selective memory retrieval (run concurrently when this turn earns it) ---
     #     so doing them in parallel instead of back-to-back cuts pre-reply latency) ---
     _ctx = {"mem": "", "facts": "", "know": "", "sessions": "", "notebook": ""}
-    def _load_mem():   _ctx["mem"]   = get_memory(user_input)
-    def _load_facts(): _ctx["facts"] = get_facts_about(OWNER_NAME)
+    _tool_names = {
+        (schema.get("function") or {}).get("name", "")
+        for schema in (tool_runtime.schemas if tool_runtime else ())
+    }
+    def _load_mem():   _ctx["mem"]   = get_memory(user_input, limit=2)
+    def _load_facts():
+        if context_scope == "full":
+            _ctx["facts"] = get_facts_about(OWNER_NAME)
+        else:
+            _ctx["facts"] = get_relevant_facts(
+                OWNER_NAME, user_input, limit=5,
+                include_standing=context_scope == "none")
     def _load_notebook():
-        # Page NAMES on every turn, contents never. This is what makes the
-        # notebook something Ted knows rather than something he might remember:
-        # he can no more invent a page than deny one that exists. It is one
-        # local SQLite read of a table with a handful of rows, it returns ""
-        # when the notebook is empty, and it is scoped like facts (every turn,
-        # including action turns) because "add this to my fixes page" IS an
-        # action turn and is exactly when knowing the page list matters.
+        # Page NAMES on notebook turns, contents never. This lets Ted resolve a
+        # requested page without billing unrelated greetings for the index.
+        # Contents remain a deliberate notebook_read tool call.
         _ctx["notebook"] = notebook.index_line()
     def _load_sessions(): _ctx["sessions"] = format_memories_for_prompt()
     def _load_know():
         if features.HAS_KNOWLEDGE:
-            _ctx["know"] = features.knowledge.search(user_input, k=3)
-    # Facts load on EVERY turn, including operational ones. They are one local
-    # SQLite read, capped at 1200 characters downstream, and they are exactly
-    # what makes an action honor a standing preference — "open YouTube in Brave
-    # from now on" is stored as a fact, and the turn that needs it is an action
-    # turn. Scoping them out re-broke that (see the handoff, §7.4). Episodic
-    # retrieval is the expensive part and stays scoped.
-    loaders = [_load_facts, _load_notebook]
+            _ctx["know"] = features.knowledge.search(user_input, k=2)
+    # Greetings and acknowledgements earn no database context. Relevant chat
+    # and actions get query-matched facts; only explicit recall gets the full
+    # profile. Notebook page names ride only with notebook tools.
+    loaders = []
+    if context_scope in ("none", "relevant", "full"):
+        loaders.append(_load_facts)
+    if any(name.startswith("notebook_") for name in _tool_names):
+        loaders.append(_load_notebook)
     if context_scope in ("relevant", "full"):
         loaders.extend((_load_mem, _load_know))
     if context_scope == "full":
@@ -1131,13 +1194,9 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
               "clarifying question instead of making another unsupported assumption."
         )
     if operational_context:
-        # Live computer hierarchy can include browser tabs and terminal
-        # branches. 900 characters cut it off after the app names, defeating
-        # the whole point of collecting child state; 2400 stays bounded while
-        # preserving a normal desktop-sized snapshot.
-        context_parts.append(_cap(operational_context, 2400) + ".")
+        context_parts.append(_cap(operational_context, 1200) + ".")
     if known_facts:
-        context_parts.append(f"Known facts about {OWNER_NAME}: {_cap(known_facts, 1200)}.")
+        context_parts.append(f"Relevant facts about {OWNER_NAME}: {_cap(known_facts, 600)}.")
     if notebook_index:
         # Names and sizes only. Reading a page is a tool call, deliberately: an
         # index Ted can see stops him guessing which pages exist, and a read he
@@ -1145,28 +1204,21 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
         context_parts.append(_cap(notebook_index, 600)
                              + " Use notebook_read before answering from any of them.")
     if past_memory:
-        context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 1200)}.")
+        context_parts.append(f"Relevant past exchanges: {_cap(past_memory, 700)}.")
     if knowledge_ctx:
-        context_parts.append(f"Personal knowledge base: {_cap(knowledge_ctx, 1500)}.")
+        context_parts.append(f"Personal knowledge base: {_cap(knowledge_ctx, 700)}.")
 
     # Memories of previous sessions — this is what lets Ted say "last time you
     # were stuck on X". Only injected when there are any; most days there won't be.
     if past_sessions:
         context_parts.append(
-            f"Things you remember from earlier conversations: {_cap(past_sessions, 1200)}.")
+            f"Things you remember from earlier conversations: {_cap(past_sessions, 800)}.")
         context_parts.append(
             "Those are your own memories of past conversations. Refer back to them the way a "
             "friend would — only when it actually fits what's being said, at most once, and "
             "without listing them. Never recite a memory that isn't relevant, and never say "
             "you have no memory of something when one of these covers it."
         )
-
-    # Memory continuity nudge
-    context_parts.append(
-        "If something from earlier in this conversation is relevant to the current message, "
-        "reference it naturally — 'like you mentioned', 'you said earlier' — "
-        "but only when it genuinely fits."
-    )
 
     # Tone adjustment when frustration has been detected
     if frustrated:
@@ -1200,10 +1252,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
             # stays because Charlie flips modes mid-conversation and stale
             # claims genuinely confused the model; everything else was the
             # persona repeated in a second place.
-            "CURRENT MODE: CHAT — text in a window, mic off. Trust this line "
-            "over anything said about modes earlier. Answer fully when the "
-            "question deserves it, short paragraphs, code always in a fenced "
-            "block with its language."
+            "CURRENT MODE: CHAT. Prefer a direct one- or two-sentence answer; "
+            "use more only when Charlie explicitly asks or the work requires it."
         )
 
     # This instruction is deliberately last and therefore closest to the user
@@ -1242,8 +1292,9 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # exchanges — "play a different one" had already lost the thread and
     # replayed the first song. 8 is two more exchanges and, now that the
     # persona is ~660 tokens lighter, affordable.
-    history_limit = (MAX_HISTORY if context_scope == "full"
-                     else 10 if context_scope == "relevant" else 8)
+    history_limit = (14 if context_scope == "full"
+                     else 8 if context_scope == "relevant"
+                     else 4 if context_scope == "light" else 6)
     recent = stable_window(conversation[1:], history_limit)
     # Tool guidance is concatenated onto the persona rather than sent as its own
     # message: for a given shape it is byte-identical every turn, so it stays in
@@ -1731,6 +1782,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     parse_error = "arguments were not valid JSON"
                 schema = tool_runtime.schema_by_name.get(c["name"])
                 if schema is None:
+                    # The router hands over a small menu, so a name it left out
+                    # is usually a real capability, not an invented one. Take it
+                    # in and run it now (§7.3) rather than burning two rounds.
+                    schema = tool_runtime.admit(c["name"])
+                if schema is None:
                     parse_error = f"unknown tool '{c['name']}'"
                 elif parse_error is None:
                     parse_error = validate_tool_arguments(schema, args, user_input)
@@ -1766,8 +1822,19 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     continue
                 if validation_error:
                     all_actions = False
-                    repair = (f"TOOL_ARGUMENT_ERROR for {c['name']}: {validation_error}. "
-                              "Correct the arguments and call the tool again; nothing ran.")
+                    if validation_error.startswith("unknown tool"):
+                        # Ted genuinely has no such capability. Saying
+                        # "correct the arguments and call again" sent the model
+                        # round the same wall up to four times in one turn.
+                        repair = (
+                            f"TOOL_UNAVAILABLE: {c['name']} does not exist and "
+                            "cannot be loaded. Do not call it again. Either use a "
+                            "tool you can see, or tell Charlie plainly that you "
+                            "cannot do this — do not claim you did it.")
+                    else:
+                        repair = (
+                            f"TOOL_ARGUMENT_ERROR for {c['name']}: {validation_error}. "
+                            "Correct the arguments and call the tool again; nothing ran.")
                     print(f"[tools] rejected {c['name']}: {validation_error}")
                     msgs.append({"role": "tool",
                                  "tool_call_id": c["id"] or f"call_{n}",

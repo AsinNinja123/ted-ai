@@ -91,6 +91,10 @@ The first launch after building asks for **microphone permission** — allow it.
 - **Unified outcomes:** legacy string tools and structured MacAgent results are
   normalized into success, observed state, expected state, goal match, and recovery
   fields before a durable task is considered completed.
+- **Bounded prompt budgets:** routine conversation carries no tool schemas or
+  database memory. Facts, relationship memories, notebook names, operational state,
+  and tool contracts are selected only when the turn needs them. Tool discovery is
+  one-use and no active menu can exceed eight contracts.
 - **Difficulty-aware latency:** short single-clause turns use Qwen's low-latency
   reasoning mode; longer, chained, explanatory, and analytical requests keep full
   reasoning. Both paths expose the same tools and use the model as the intent router.

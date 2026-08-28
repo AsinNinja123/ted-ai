@@ -309,11 +309,6 @@ def ensure_schema(conn):
         task_state.ensure_schema(conn)
     except Exception as e:
         print(f"[dashboard] relationship/task schema skipped: {e}")
-    try:
-        from core import school
-        school.ensure_schema(conn)
-    except Exception as e:
-        print(f"[dashboard] school schema skipped: {e}")
 
     for table in TABLES:
         try:

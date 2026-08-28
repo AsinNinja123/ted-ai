@@ -1,0 +1,945 @@
+================================================================================
+  TED REFERENCE GUIDE — Everything Ted Can Do and How to Talk to Him
+================================================================================
+Last updated: June 2026
+This file is plain text, just for you. It does nothing. Edit freely.
+================================================================================
+
+
+OVERVIEW
+--------
+Ted is your AI assistant. He lives in a macOS window (hud.py) and listens
+continuously. You talk, he hears, he responds out loud. You can also type in
+the HUD text box and press Enter.
+
+Ted has two modes:
+  - TED mode     — personal assistant, knows your history, general knowledge
+  - STORE mode   — Tim Chester, your fireworks store operations manager
+
+Each mode has its own memory and personality. Switching never mixes them.
+
+
+--------------------------------------------------------------------------------
+THE TWO PERSONALITIES
+--------------------------------------------------------------------------------
+
+TED (personal mode)
+  - Thinks Jarvis from Iron Man. Direct, dry wit, confident.
+  - 1-2 sentences by default. Won't pad or recap.
+  - Never opens with "Sure", "Absolutely", "Of course", etc.
+  - Will push back if something seems off.
+  - Has access to your conversation history, personal facts (via Neo4j),
+    web search for live info, and can relay hard questions to Claude.
+
+TIM CHESTER (store mode)
+  - Seasoned store manager. Practical, straight-talking, businesslike.
+  - Knows inventory, staff schedules, sales, margins.
+  - Uses phrases like "inventory doesn't lie", "the schedule is the schedule".
+  - Will self-correct occasionally ("actually, scratch that —").
+  - Ends replies sometimes with "...you follow?", "...does that track?"
+  - Won't touch personal topics — redirects to Ted for those.
+  - Store data only. No access to Ted's personal memory.
+
+
+--------------------------------------------------------------------------------
+HOW TO SWITCH MODES
+--------------------------------------------------------------------------------
+
+Use the toggle button in the HUD window to switch between Ted and Tim/Store.
+- Switching before noon in store mode triggers Tim's full operational briefing.
+- Switching after noon: Tim says "Welcome back, Charlie — how can I help?"
+- Switching back to Ted: Ted says "I'm here."
+
+You cannot switch by voice — use the UI button.
+
+
+--------------------------------------------------------------------------------
+WAKE PHRASES (optional prefix, Ted mode)
+--------------------------------------------------------------------------------
+
+You don't have to say a wake phrase — Ted listens always. But if you want
+to get his attention before speaking, these work:
+
+  "Hey Ted, ..."
+  "Hi Ted, ..."
+  "Yo Ted, ..."
+  "Hey Tim, ..."           (also works, same trigger)
+  "Hey Tim Chester, ..."
+
+When detected:
+  - If just the wake phrase with nothing after it, Ted says one of:
+    "Yes." / "Go ahead." / "Sir." / "Here."
+  - If there's a question/command after it, he plays a soft chime and
+    processes it immediately.
+
+
+--------------------------------------------------------------------------------
+STOP / INTERRUPT COMMANDS (cut Ted off mid-sentence)
+--------------------------------------------------------------------------------
+
+These never reach the AI — they trigger immediately.
+
+  "stop"
+  "stop talking"
+  "stop speaking"
+  "stop it"
+  "be quiet"
+  "quiet"
+  "silence"
+  "hush"
+  "shush"
+  "shut up"
+  "enough" / "that's enough"
+  "pause"
+  "hold on" / "hang on" / "wait"
+  "one moment"
+  "zip it"
+
+Ted: cuts off speech immediately, goes back to listening. Says nothing.
+
+
+--------------------------------------------------------------------------------
+CANCEL COMMANDS (acknowledge and forget)
+--------------------------------------------------------------------------------
+
+  "never mind" / "nevermind"
+  "forget it" / "forget that" / "forget about it"
+  "cancel" / "cancel that"
+  "ignore that" / "ignore it"
+  "drop it"
+  "scratch that"
+  "leave it"
+  "skip it"
+
+Ted: says "Got it." and goes back to listening. Nothing is processed.
+
+
+--------------------------------------------------------------------------------
+REPEAT THE LAST THING TED SAID
+--------------------------------------------------------------------------------
+
+  "repeat"
+  "repeat that"
+  "say that again"
+  "say it again"
+  "come again"
+  "one more time"
+  "what did you say"
+  "say again"
+  "pardon"
+
+Ted: plays back exactly what he last said.
+
+
+--------------------------------------------------------------------------------
+SPEAKING SPEED ADJUSTMENT (live, runtime)
+--------------------------------------------------------------------------------
+
+Slow down:
+  "slow down"
+  "speak slower"
+  "talk slower"
+  "slower"
+  "too fast"
+  "you're too fast"
+  "not so fast"
+
+Speed up:
+  "speed up"
+  "talk faster"
+  "speak faster"
+  "faster"
+  "too slow"
+  "you're too slow"
+  "hurry up"
+
+Ted: adjusts speed in steps of 0.1 (range 0.8 to 1.5). Confirms at the
+new rate: "Sure, I'll slow down." / "Sure, I'll speed up."
+
+
+--------------------------------------------------------------------------------
+BARGE-IN (talking over Ted)
+--------------------------------------------------------------------------------
+
+You can interrupt Ted mid-sentence just by speaking. He stops, listens,
+and responds to what you said. Works best with headphones or the native
+AEC (echo cancellation) audio mode.
+
+
+--------------------------------------------------------------------------------
+WHISPER MODE (automatic)
+--------------------------------------------------------------------------------
+
+If you speak quietly, Ted detects it and drops his output volume to 50%
+to match your level. No command needed — it's automatic.
+
+
+--------------------------------------------------------------------------------
+MORNING BRIEFING / DAILY RUNDOWN (Ted mode)
+--------------------------------------------------------------------------------
+
+Any of these trigger Ted's morning rundown:
+
+  "morning briefing"
+  "my briefing"
+  "brief me"
+  "what's my day"
+  "what's my day look like"
+  "what do I need to know"
+  "catch me up"
+  "fill me in"
+  "the rundown" / "give me the rundown"
+  "what's going on today"
+  "how are we looking"
+  "good morning"
+  "morning"
+
+Also works: "briefing" (shortcut in shortcuts.json)
+
+Ted's briefing covers:
+  1. Today's date
+  2. Current weather (if STORE_LOCATION is set in config.py)
+  3. Your pending reminders
+  4. Any low-stock items (if inventory is set up)
+  5. A random motivational closer: "Let's make it a good one." / "You've
+     got this." / "Should be a solid day." / "Ready when you are."
+
+
+--------------------------------------------------------------------------------
+TIM'S STORE BRIEFING (store mode)
+--------------------------------------------------------------------------------
+
+  "store briefing"
+  "open briefing"
+  "what's the situation" / "situation"
+  "morning briefing Tim"
+  "daily briefing"
+  "what's the rundown"
+
+Also works: switching to store mode before noon auto-triggers this.
+
+Tim's briefing covers:
+  1. Day of week intro ("Here's what you're walking into on Monday.")
+  2. Today's staff schedule
+  3. Any low-stock inventory items
+  4. Closes with "That's the situation."
+
+
+--------------------------------------------------------------------------------
+TIM'S END-OF-DAY SUMMARY (store mode only)
+--------------------------------------------------------------------------------
+
+  "end of day"
+  "wrap it up"
+  "calling it"
+  "calling it a day"
+  "end of shift"
+  "closing time"
+  "that's it for today"
+  "that's a wrap"
+
+Tim responds with:
+  - How many topics you covered today
+  - Any still-unresolved inventory issues
+  - Total units logged/sold today
+  - "Good evening."
+
+
+--------------------------------------------------------------------------------
+REMINDERS
+--------------------------------------------------------------------------------
+
+Setting a reminder by time:
+  "remind me to call back at 5pm"
+  "remind me to take my meds at 9am"
+  "remind me tomorrow morning to send the email"
+  "set a reminder for the meeting on Friday at 2"
+  "add a reminder to pick up lunch at noon"
+
+Setting a reminder by duration:
+  "remind me to check the oven in 20 minutes"
+  "remind me to follow up in an hour"
+  "remind me in two hours to call the supplier"
+
+Supported time words: "tonight", "tomorrow", "morning", "afternoon",
+"evening", "noon", "midnight", day names (Monday–Sunday),
+"day after tomorrow".
+
+Ted responds: "Got it — I'll remind you at 5:00 PM to call back."
+When the time comes, Ted fires the reminder out loud automatically.
+
+If you say a bare hour like "at 3" Ted might ask:
+  "Did you mean 3 AM or 3 PM?"
+
+Standing reminders (no time):
+  "remind me to buy more tape"
+  Ted: "Got it — I've added a reminder to buy more tape." (shows in briefing)
+
+Cancelling reminders:
+  "cancel the reminder"
+  "clear my reminders"
+  "delete the reminder"
+  Ted: "Cleared 2 reminders."
+
+
+--------------------------------------------------------------------------------
+TIMERS
+--------------------------------------------------------------------------------
+
+  "set a timer for 10 minutes"
+  "timer for 30 seconds"
+  "start a timer for an hour and a half"
+  "set timer for two and a half hours"
+
+Supported time parsing: plain numbers ("10 minutes"), word numbers
+("fifteen minutes", "an hour", "a minute and a half", "90 seconds"),
+combos ("2 hours 15 minutes").
+
+Ted responds: "Okay, 10 minute timer started."
+When the timer fires, Ted says it out loud: "Time's up — your 10 minute
+timer is done."
+
+Cancelling a running timer:
+  "cancel the timer"
+  "stop the timer"
+  "clear the timer"
+  Ted: "Timer cancelled." (or "You don't have a timer running.")
+
+
+--------------------------------------------------------------------------------
+NAMED LISTS (shopping list, to-do, reorder list, anything)
+--------------------------------------------------------------------------------
+
+Add to a list:
+  "add milk to the shopping list"
+  "put Excaliburs on the reorder list"
+  "add call the bank to my to-do list"
+
+Remove from a list:
+  "remove milk from the shopping list"
+  "take Excaliburs off the reorder list"
+
+Read a list:
+  "what's on the shopping list"
+  "read me the to-do list"
+  "show the reorder list"
+  "check the shopping list"
+
+Clear an entire list:
+  "clear the shopping list"
+  "empty the to-do list"
+  "wipe out the reorder list"
+
+Ted responds with confirmations like "Added milk to the shopping list."
+or "On the shopping list: milk, bread, eggs."
+
+Note: list names are case-insensitive. "Shopping List" and "shopping list"
+are the same list.
+
+
+--------------------------------------------------------------------------------
+GOAL TRACKING (Ted mode only)
+--------------------------------------------------------------------------------
+
+Saving a goal:
+  "I'm working on learning Python"
+  "I'm working on getting the website finished"
+  "my goal is to run a 5K"
+
+Ted: "Got it — I'll keep track that you're working on learning Python."
+
+Marking a goal done:
+  "I finished learning Python"
+  "I completed the website"
+  "I'm done with the 5K"
+
+Ted: "Nice work — marking that as done."
+
+Checking your goals:
+  "what am I working on"
+  "my goals"
+  "show my goals"
+  "my active goals"
+
+Ted: "You're working on: learning Python; getting the website finished."
+
+Automatic check-ins: If you haven't mentioned a goal in 3+ days, Ted
+will proactively ask "Hey, how's it going with learning Python?" once
+per day.
+
+
+--------------------------------------------------------------------------------
+HOLD THAT THOUGHT / PICK BACK UP
+--------------------------------------------------------------------------------
+
+Saving your place mid-conversation:
+  "hold that thought"
+  "hold that"
+  "save that thought"
+
+Ted: "Got it, I'll remember where we were." (saves last 120 chars of his
+last reply as the context anchor)
+
+Coming back to it:
+  "pick that back up"
+  "what were we talking about"
+  "where were we"
+  "go back to that"
+  "continue from before"
+  "resume that"
+
+Ted: "We were just on: [what he last said before you paused]."
+
+
+--------------------------------------------------------------------------------
+THINKING PARTNER MODE (Ted mode only)
+--------------------------------------------------------------------------------
+
+Entering thinking partner mode:
+  "let's think through something"
+  "help me think"
+  "help me think through this"
+  "think this through with me"
+  "thinking partner"
+  "think out loud"
+  "think"              (shortcut in shortcuts.json)
+  "thinking partner"   (shortcut in shortcuts.json)
+
+In thinking partner mode, Ted does NOT give advice or solutions. Instead
+he briefly reflects what you said and asks one focused Socratic question
+like: "What's stopping you?" / "What would success look like?" /
+"What have you actually tried so far?"
+
+Exiting thinking partner mode:
+  "stop thinking mode"
+  "done thinking"
+  "exit thinking mode"
+  "okay thanks"
+  "thanks Ted"
+  "got it, thanks"
+  "I think I got it"
+  "that helped"
+
+Ted: "Glad I could help you think that through."
+
+
+--------------------------------------------------------------------------------
+CHAT LOG / TRANSCRIPT PANEL
+--------------------------------------------------------------------------------
+
+Show the chat log:
+  "open chat"
+  "show chat"
+  "pull up the chat"
+  "bring up the log"
+  "display the transcript"
+  "let me see the history"
+
+Hide the chat log:
+  "hide chat"
+  "close the log"
+  "dismiss the chat"
+  "put away the transcript"
+
+Toggle:
+  "chat"
+  "chat log"
+  "log"
+
+Ted drives the UI — no spoken response, just opens/closes the panel.
+
+
+--------------------------------------------------------------------------------
+SPOTIFY — LOCAL PLAYBACK CONTROL
+--------------------------------------------------------------------------------
+
+These work without Spotify Web API (just needs Spotify app open):
+
+  Play/resume:
+    "play"
+    "resume"
+    "unpause"
+    "play music"
+    "play some music"
+    "keep playing"
+
+  Pause/stop music:
+    "pause"
+    "pause the music"
+    "pause Spotify"
+    "stop the music"
+    "stop the song"
+
+  Next track:
+    "next"
+    "skip"
+    "skip this"
+    "skip this song"
+    "next song"
+
+  Previous track:
+    "previous"
+    "go back a song"
+    "last song"
+
+  Volume up:
+    "turn it up"
+    "louder"
+    "volume up"
+    "turn the music up"
+    "turn up the music"
+
+  Volume down:
+    "turn it down"
+    "quieter"
+    "volume down"
+    "turn the music down"
+
+  What's playing:
+    "what's playing"
+    "what's this song"
+    "who sings this"
+    "what song is this"
+    "name this song"
+
+  Ted responds: "[Song name] by [Artist]." or "Nothing's playing right now."
+
+
+--------------------------------------------------------------------------------
+SPOTIFY — WEB API FEATURES (requires Spotify Premium + setup)
+--------------------------------------------------------------------------------
+
+These require the Spotify Web API to be connected (run authorize_spotify.py
+once to set it up). SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be
+set in config.py.
+
+Play a playlist:
+  "play my workout playlist"
+  "put on my chill playlist"
+  "start the road trip playlist"
+  "shuffle my workout playlist"
+  "play playlist [name]"
+
+Play a specific song:
+  "play the song [title]"
+  "play the track [title]"
+  "play [song] by [artist]"
+
+List your playlists:
+  "what playlists do I have"
+  "list my playlists"
+  "which playlists do I have"
+
+
+--------------------------------------------------------------------------------
+MOOD MUSIC (requires Spotify Web API)
+--------------------------------------------------------------------------------
+
+Triggers on emotional statements. Say how you feel and Ted plays music:
+
+  Calm/relax playlist (searches: "ambient lo-fi calm instrumental relaxing"):
+    "I'm feeling stressed"
+    "I'm feeling anxious"
+    "I'm worried"
+    "I need something calm"
+
+  Energy/hype playlist (searches: "upbeat high energy workout pump up"):
+    "I'm feeling energized"
+    "I'm feeling motivated"
+    "I'm hyped"
+    "I need energy"
+
+  Soft/gentle playlist (searches: "gentle acoustic soft mellow"):
+    "I'm feeling sad"
+    "I'm feeling down"
+    "play something soft"
+    "I'm feeling melancholy"
+
+  Focus playlist (searches: "lo-fi study focus instrumental"):
+    "I need to focus"
+    "I need to concentrate"
+    "I'm studying"
+    "I need to work"
+
+Ted: "Playing something calm to help you unwind." (then starts the track)
+
+
+--------------------------------------------------------------------------------
+OPEN APPS AND WEBSITES
+--------------------------------------------------------------------------------
+
+Open an app:
+  "open Spotify"
+  "open Safari"
+  "open Chrome"
+  "open Firefox"
+  "open Messages"
+  "open FaceTime"
+  "open Calendar"
+  "open Notes"
+  "open Mail"
+  "open Maps"
+  "open Photos"
+  "open Music"
+  "open Podcasts"
+  "open Terminal"
+  "open VSCode"
+  "open Finder"
+  "open Settings"
+
+Ted responds: "Opening Spotify!" and launches the app.
+
+Open a website:
+  "open github.com"
+  "open youtube.com"
+  "open reddit.com"
+
+Any single-word target with a "." in it is treated as a URL.
+Ted responds: "Opening https://github.com!"
+
+
+--------------------------------------------------------------------------------
+DATE AND TIME
+--------------------------------------------------------------------------------
+
+  "what's today's date"
+  "what day is it"
+  "what is today"
+  "what time is it"
+  "today's date"
+  "what is the date"
+
+Ted responds: "Today is Tuesday, June 24, 2026."
+(Note: Ted doesn't have a real-time clock for time-of-day — just the date.)
+
+
+--------------------------------------------------------------------------------
+FIREWORKS COUNTDOWN
+--------------------------------------------------------------------------------
+
+  "how many days until the Fourth of July"
+  "days until July 4th"
+  "how long until fireworks season"
+  "countdown to New Year's Eve"
+  "how many days until New Year's"
+
+Ted responds: "12 days until the Fourth of July." or "It's the Fourth of
+July today — the big one."
+
+Nearest upcoming holiday wins (July 4 or New Year's Eve).
+
+
+--------------------------------------------------------------------------------
+CASH AND CHANGE CALCULATOR (store mode / inventory)
+--------------------------------------------------------------------------------
+
+Total for multiple items:
+  "total on 3 at 45"
+  "3 at 45"
+  "two at 12.50"
+  "total on 5 Excaliburs at 25"
+
+Ted: "That comes to 135 dollars."
+
+With tax (if SALES_TAX is set in config.py):
+  "3 at 45 with tax"
+
+Ted: "3 at 45 dollars is 135 dollars, or 143.10 dollars with tax."
+
+Making change:
+  "change from a hundred for 67.50"
+  "change from 100 for 67.50"
+
+Ted: "Change is 32 dollars 50 cents."
+
+Percentage calculation:
+  "8 percent of 250"
+  "15 percent of 89"
+
+Ted: "20 dollars."
+
+
+--------------------------------------------------------------------------------
+INVENTORY AND STOCK QUESTIONS (requires inventory CSV setup)
+--------------------------------------------------------------------------------
+
+These trigger inventory context automatically:
+  "how many Excaliburs do we have"
+  "are we low on anything"
+  "what's running low"
+  "check inventory"
+  "what's in stock"
+  "how much Roman candles do we have"
+  "restock report"
+  "what should we reorder"
+  "out of 500 gram cakes"
+  "running low on sparklers"
+  "how many on hand"
+
+Ted/Tim will answer using real inventory numbers from the CSV (never guesses).
+
+Automatic low-stock alerts: Ted checks inventory every 30 minutes and
+proactively says "Heads up — Excaliburs are getting low." when something
+drops below its reorder point.
+
+
+--------------------------------------------------------------------------------
+LOGGING A SALE (store mode / inventory)
+--------------------------------------------------------------------------------
+
+  "I sold 3 Excaliburs"
+  "we sold two Roman candles"
+  "I just sold one 500 gram cake"
+  "log a sale of 5 sparklers"
+  "I sold a dozen fountain packs"
+
+Ted: "Logged 3 Excaliburs. 17 left."
+
+Ted matches what you say against the inventory — if it can't find the item,
+it says so and doesn't log anything.
+
+
+--------------------------------------------------------------------------------
+STAFF SCHEDULE (store mode)
+--------------------------------------------------------------------------------
+
+  "who's working today"
+  "who's on shift"
+  "what's the staff schedule"
+  "who do we have today"
+  "working today"
+  "staffing today"
+
+Tim responds: "Tuesday staff: Sarah 9:00-5:00, Mike 12:00-8:00."
+
+Requires data/staff_schedule.json to be set up. Tim will tell you if
+it's missing.
+
+
+--------------------------------------------------------------------------------
+SALES SUMMARY (store mode)
+--------------------------------------------------------------------------------
+
+  "how did we do"
+  "how'd we do today"
+  "sales today"
+  "today's sales"
+  "today's numbers"
+  "sales summary"
+  "how are sales"
+  "how did we do today"
+  "day's numbers"
+
+Tim responds with total units, number of products, top seller, and rough
+revenue estimate for the day.
+
+
+--------------------------------------------------------------------------------
+ASK CLAUDE (second brain for hard questions)
+--------------------------------------------------------------------------------
+
+Requires ANTHROPIC_API_KEY in config.py. Relays complex questions to Claude.
+
+  "ask Claude [question]"
+  "ask Claude about the history of fireworks"
+  "ask Claude to explain quantum computing"
+  "ask Claude what the best approach is for pricing fireworks"
+
+Ted: gets Claude's answer and reads it aloud.
+
+If no API key: "I'd need an Anthropic API key set in the config before I
+can ask Claude."
+
+
+--------------------------------------------------------------------------------
+WEB SEARCH (automatic, Ted mode only)
+--------------------------------------------------------------------------------
+
+Ted automatically searches the web when your question needs live info.
+Triggers on keywords like: weather, temperature, forecast, news, tonight,
+tomorrow, current, currently, latest, right now, price, cost, stock,
+score, how much is, happening, open now, hours, 2025, 2026, etc.
+
+You don't say anything special — just ask the question naturally:
+  "what's the weather like right now"
+  "what's in the news today"
+  "what's the current price of gold"
+  "is [business] open right now"
+
+For anything else (not time-sensitive), Ted answers from its own knowledge.
+
+
+--------------------------------------------------------------------------------
+GENERAL CONVERSATION (anything else)
+--------------------------------------------------------------------------------
+
+Ted handles general questions, conversation, advice, explanations, etc.
+Just talk to him. Examples:
+  "what's a good way to price seasonal fireworks"
+  "explain how echo cancellation works"
+  "what do you think about [topic]"
+  "I'm having a rough day"
+  "tell me something interesting"
+  "how should I handle a difficult customer"
+
+Ted keeps conversation history for the session. He references past
+exchanges naturally when relevant.
+
+Personal facts: Ted extracts and saves facts about you in the background
+(e.g., "Charlie WORKS_AT fireworks store") and uses them in future sessions.
+
+
+--------------------------------------------------------------------------------
+VOICE SHORTCUTS (shortcuts.json)
+--------------------------------------------------------------------------------
+
+These are configurable in ~/ted-ai/shortcuts.json. Current shortcuts:
+
+  "briefing"          → morning briefing (Ted mode)
+  "morning briefing"  → morning briefing (Ted mode)
+  "store briefing"    → Tim's operational briefing (store mode)
+  "open briefing"     → Tim's operational briefing (store mode)
+  "situation"         → Tim's operational briefing (store mode)
+  "think"             → enter thinking partner mode (Ted mode)
+  "thinking partner"  → enter thinking partner mode (Ted mode)
+
+You can add your own shortcuts by editing shortcuts.json. Each entry needs:
+  - key: the spoken phrase (case-insensitive)
+  - mode: "ted" or "store" (or omit for either mode)
+  - action: "morning_briefing", "daily_open_briefing", or "thinking_partner"
+
+
+--------------------------------------------------------------------------------
+AUTOMATIC BEHAVIORS (Ted does these on his own)
+--------------------------------------------------------------------------------
+
+On startup:
+  - Says "Online. Ready when you are."
+  - If more than 4 hours since last session, recaps what you talked about
+    last time: "Last time we talked — [summary]"
+  - Fires any reminders that went off while Ted was closed:
+    "Heads up — you had a reminder I missed: [reminder text]."
+  - Checks if you have habits at this hour (e.g., if you always ask about
+    inventory at 9am, he'll offer to pull it up)
+
+Every 4 seconds:
+  - Checks if any timers or reminders are due and fires them out loud
+
+Every 30 minutes:
+  - Checks inventory for newly low items and alerts you proactively
+
+Every 24 hours (per session):
+  - Checks goals you haven't mentioned in 3+ days and asks how it's going
+    "Hey, how's it going with [goal name]?"
+
+After 30 minutes of silence:
+  - Generates a 2-3 sentence summary of the session and saves it to Neo4j
+    so it can recap next time
+
+After 48 hours of silence (when you come back):
+  - Ted greets with "hey, it's been a minute —" or "been a few days —"
+  - Tim greets with "welcome back —" or "good to have you back —"
+
+Frustration detection (automatic):
+  - If you give 2+ short negative inputs in a row ("no", "wrong", "stop",
+    "ugh", "that's not right"), Ted detects frustration and shifts to being
+    more direct and dropping cheerful energy. Resets automatically.
+
+
+--------------------------------------------------------------------------------
+MEMORY SYSTEM (Neo4j graph database)
+--------------------------------------------------------------------------------
+
+Ted and Tim use separate memory namespaces in a local Neo4j database.
+
+Ted stores:
+  - Every conversation exchange (question + reply)
+  - Facts about you extracted from conversation (what you work on, own, like)
+  - Your goals
+  - Topic patterns (what you ask about and at what time of day)
+  - Session summaries for cross-session recall
+
+Tim stores:
+  - Every store-mode exchange in a separate namespace (never crosses into Ted)
+
+If Neo4j is not running, Ted falls back to session-only memory gracefully.
+Nothing crashes — he just won't remember things across restarts until Neo4j
+is back up. He retries the connection every 3 minutes.
+
+
+--------------------------------------------------------------------------------
+MUTE BUTTON
+--------------------------------------------------------------------------------
+
+The mute button in the HUD turns Ted's microphone off. When muted:
+  - Ted stops listening entirely
+  - Any speech in progress stops immediately
+  - Reminders wait until unmuted
+
+The button is in the UI — no voice command for this.
+
+
+--------------------------------------------------------------------------------
+STOP BUTTON (UI)
+--------------------------------------------------------------------------------
+
+The stop button in the HUD cuts off whatever Ted is saying and returns to
+listening. Same effect as saying "stop" or "be quiet".
+
+
+--------------------------------------------------------------------------------
+FILLER PHRASES (while Ted is "thinking")
+--------------------------------------------------------------------------------
+
+While waiting for the AI to respond, Ted says a random filler:
+  Ted mode: "hmm", "let me think", "one sec", "okay", "right..."
+  Store mode: "let me pull that up", "one moment", "on it", "give me a sec"
+
+He never repeats the same filler twice in a row.
+
+
+--------------------------------------------------------------------------------
+AUDIO MODES
+--------------------------------------------------------------------------------
+
+AEC mode (best): If the native Swift binary (native/ted_audio) is built,
+Ted uses hardware echo cancellation. You can interrupt him even over speakers
+and his own voice won't confuse the microphone.
+
+Fallback mode: Pure Python (sounddevice). Barge-in works great on headphones.
+On speakers Ted's voice can bleed into the mic and accidentally trigger
+barge-in — use headphones in this mode.
+
+
+--------------------------------------------------------------------------------
+CONFIGURATION (config.py)
+--------------------------------------------------------------------------------
+
+Required:
+  GROQ_API_KEY         — for speech-to-text and the LLM (Ted's brain)
+
+Optional:
+  ELEVENLABS_API_KEY   — ElevenLabs TTS (cloud, higher quality voice)
+  ELEVEN_LABS_VOICE_ID — which ElevenLabs voice to use
+  ANTHROPIC_API_KEY    — enables "ask Claude" second-brain feature
+  CLAUDE_MODEL         — which Claude model (default: claude-sonnet-4-6)
+  OWNER_NAME           — your name (default: "Charlie")
+  STORE_LOCATION       — city for weather in morning briefing (e.g. "Boise, ID")
+  SALES_TAX            — e.g. 0.06 for 6% (enables tax in cash calculator)
+  SPOTIFY_CLIENT_ID    — Spotify Web API (for playlists/song search)
+  SPOTIFY_CLIENT_SECRET
+
+Fallback TTS (no ElevenLabs):
+  Kokoro local model — voice "am_michael", speed 1.1
+
+
+--------------------------------------------------------------------------------
+TED'S VERSION
+--------------------------------------------------------------------------------
+
+Currently on: Ted v3
+
+
+================================================================================
+  END OF REFERENCE
+================================================================================

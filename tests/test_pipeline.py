@@ -50,8 +50,19 @@ class FakeEngine:
     def set_in_reply(self, v):      pass
     def calibrate(self):            return 0.010
     def capture_turn(self, prearmed=False): return None
-    def mute_mic(self):             self.calls.append("mute_mic")
-    def unmute_mic(self):           self.calls.append("unmute_mic")
+    def mute_mic(self):
+        self.calls.append("mute_mic")
+        self.mic_open = False
+
+    def unmute_mic(self):
+        self.calls.append("unmute_mic")
+        self.mic_open = True
+
+    # Ted now boots with no mic tap at all, so the engine reports whether it is
+    # actually holding the device rather than whether the user wants voice.
+    mic_open = False
+
+    def mic_is_open(self):          return self.mic_open
     def close(self):                pass
 
 
@@ -80,6 +91,11 @@ voice_stub.set_active_volume = lambda v: None
 voice_stub.play_chime = lambda window, api: None
 voice_stub.play_timer_bell = lambda: None
 voice_stub.spotify_volume = lambda pct: SPOTIFY_VOL.append(pct)
+# prepare_mic/release_mic are the only doors to the microphone now; the engine
+# is no longer poked directly from app.py.
+voice_stub.prepare_mic = fake_engine.unmute_mic
+voice_stub.release_mic = fake_engine.mute_mic
+voice_stub.mic_is_open = fake_engine.mic_is_open
 voice_stub.voice_label = lambda: "Test voice"
 
 import core                                    # noqa: E402  (package init only)
@@ -363,9 +379,8 @@ check("non-command reaches the streaming LLM once", LLM_STREAM_CALLS == ["how ar
 check("streamed reply is spoken and stored",
       SPOKEN == ["LLM reply."] and api.last_reply == "LLM reply.")
 check("reply lands in the HUD chat", js_containing(api, "addMessage"))
-check("plain conversation carries only the discovery meta-tool",
-      [s["function"]["name"] for s in LLM_STREAM_RUNTIMES[0].schemas]
-      == ["find_tools"])
+check("plain conversation carries no tool runtime",
+      LLM_STREAM_RUNTIMES == [None])
 check("a greeting uses lightweight—not vector—memory retrieval",
       LLM_CONTEXT_SCOPES == ["light"] and LLM_REQUIRE_TOOLS == [False])
 
@@ -373,7 +388,8 @@ api = make_api()
 api._respond("open Notes and YouTube")
 selected = {s["function"]["name"] for s in LLM_STREAM_RUNTIMES[0].schemas}
 check("mixed natural actions receive a small relevant capability menu",
-      {"find_tools", "open_app", "browse_to"}.issubset(selected)
+      {"open_app", "browse_to"}.issubset(selected)
+      and "find_tools" not in selected
       and len(selected) < 8)
 check("natural action reasoning skips episodic memory and requires a real tool",
       LLM_CONTEXT_SCOPES == ["none"] and LLM_REQUIRE_TOOLS == [True])

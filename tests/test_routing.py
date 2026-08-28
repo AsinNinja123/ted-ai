@@ -147,11 +147,11 @@ check("a conversational verb keeps its ordinary memory scope",
 
 print("\n— dynamic capability menus —")
 chat = routing.select_tool_schemas("how are you")
-check("plain conversation carries only capability discovery",
-      names(chat) == ["find_tools"])
+check("plain conversation carries no tool contracts", names(chat) == [])
 apps_web = routing.select_tool_schemas("open Notes and YouTube")
 check("mixed app/web request gets both relevant families",
-      {"find_tools", "open_app", "close_app", "browse_to"}.issubset(names(apps_web)))
+      {"open_app", "close_app", "browse_to"}.issubset(names(apps_web))
+      and "find_tools" not in names(apps_web))
 clipboard = routing.select_tool_schemas(
     "put this on my clipboard, then read the clipboard")
 check("dependent clipboard request gets read and write contracts",
@@ -159,6 +159,10 @@ check("dependent clipboard request gets read and write contracts",
 found = routing.discover_tool_schemas("send a text message", exclude={"find_tools"})
 check("capability discovery can recover an initially absent message tool",
       "send_message" in names(found))
+check("an unmatched but explicit action retains one discovery escape hatch",
+      names(routing.select_tool_schemas("relaunch frobnicator")) == ["find_tools"])
+check("an initial capability menu is hard-capped",
+      len(routing.select_tool_schemas("click and type into the screen control")) <= 8)
 check("operational actions skip episodic memory",
       routing.memory_scope_for("close the app", apps_web) == "none")
 check("explicit recall earns full memory",

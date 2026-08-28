@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime
 
@@ -145,8 +146,30 @@ def review(memory_id, decision):
     return cur.rowcount == 1
 
 
-def working_context(limit=10):
-    rows = list_memories(status="active", limit=limit)
+def working_context(limit=10, query=None, max_chars=900):
+    """Format approved memories, optionally selecting only relevant ones.
+
+    ``query=None`` preserves the dashboard/tests' full approved view. Runtime
+    callers pass the turn text; query-matched memories and global interaction
+    lessons survive, unrelated biography and preferences do not.
+    """
+    rows = list_memories(status="active", limit=100 if query is not None else limit)
+    if query is not None:
+        stop = {"the", "and", "that", "this", "with", "from", "your", "you",
+                "what", "how", "are", "can", "could", "would", "please"}
+        words = {w for w in re.findall(r"[a-z0-9]+", str(query).casefold())
+                 if len(w) > 2 and w not in stop}
+        ranked = []
+        for row in rows:
+            haystack = set(re.findall(
+                r"[a-z0-9]+", f"{row['memory_key']} {row['value']}".casefold()))
+            score = len(words & haystack)
+            if row["kind"] == "interaction_lesson":
+                score += 1
+            if score:
+                ranked.append((score, row["confidence"], row))
+        ranked.sort(key=lambda item: (-item[0], -item[1], -item[2]["id"]))
+        rows = [item[2] for item in ranked[:max(1, min(int(limit), 10))]]
     if not rows:
         return ""
     now = _now()
@@ -155,8 +178,12 @@ def working_context(limit=10):
             "UPDATE relationship_memory SET last_used=?,use_count=use_count+1 WHERE id=?",
             [(now, row["id"]) for row in rows])
         conn.commit()
-    lines = [f"- [{row['kind']}] {row['value']}" for row in rows]
-    return "WORKING RELATIONSHIP MEMORY (approved or explicitly stated):\n" + "\n".join(lines)
+    prefix = "APPROVED RELATIONSHIP MEMORY:\n"
+    body = "\n".join(f"- {row['value']}" for row in rows)
+    text = prefix + body
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit("\n", 1)[0] + "…"
+    return text
 
 
 _FEEDBACK_LESSONS = {

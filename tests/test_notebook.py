@@ -171,8 +171,9 @@ check("…but crossing out one entry does not",
       not th.needs_confirmation("notebook_delete", {"page": "fixes", "entry": 2}))
 
 llm_src = _read("core/llm.py")
-check("the page index is loaded on every turn, not only chatty ones",
-      "_load_notebook" in llm_src and "loaders = [_load_facts, _load_notebook]" in llm_src)
+check("the page index is loaded only when notebook tools are relevant",
+      "_load_notebook" in llm_src
+      and 'name.startswith("notebook_")' in llm_src)
 check("…and reaches the prompt",
       "notebook_index" in llm_src and "notebook.index_line()" in llm_src)
 check("the persona tells Ted the notebook is his to read, write and edit",

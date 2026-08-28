@@ -239,18 +239,49 @@ engine = AudioEngine(
     output_sr=24000 if _elevenlabs_client is not None else SAMPLE_RATE,
     fallback_bargein=FALLBACK_VOICE_BARGEIN,
 )
-_mode = engine.start()
+# Playback only. Ted boots chat-first and muted, and this module is imported
+# during startup, so starting the engine with a mic tap claimed the microphone
+# — and lit the macOS recording indicator — for a feature that was switched
+# off. The mic is claimed by prepare_mic() when voice is actually turned on.
+_mode = engine.start(mic=False)
 if _mode == "aec":
     print("🎧 Audio: native engine with echo cancellation — voice barge-in ON.")
 else:
     print("🔉 Audio: sounddevice fallback (no echo cancellation). Build native/ted_audio "
           "to enable talking over Ted.")
-print("Calibrating microphone — stay quiet for a second…")
-try:
-    _thr = engine.calibrate()
-    print(f"Mic calibrated (silence threshold ≈ {_thr:.4f})")
-except Exception as e:
-    print("Mic calibration skipped:", e)
+print("🎙️  Mic: off — not claimed until you turn voice on.")
+
+_mic_calibrated = False
+
+
+def prepare_mic():
+    """Claim the microphone for voice mode, calibrating it the first time.
+
+    Calibration needs ~0.8 s of real ambient frames, so it cannot happen at
+    import any more — there is no mic tap then. It happens here instead, once
+    per session, on the first press of the voice button.
+    """
+    global _mic_calibrated
+    engine.unmute_mic()
+    if _mic_calibrated:
+        return
+    _mic_calibrated = True
+    print("Calibrating microphone — stay quiet for a second…")
+    try:
+        thr = engine.calibrate()
+        print(f"Mic calibrated (silence threshold ≈ {thr:.4f})")
+    except Exception as e:
+        print("Mic calibration skipped:", e)
+
+
+def release_mic():
+    """Drop the microphone. macOS releases the recording indicator."""
+    engine.mute_mic()
+
+
+def mic_is_open():
+    """Whether this process is holding the mic open right now."""
+    return engine.mic_is_open()
 
 # ── session-level synth overrides ──
 # Set per-turn by the conversation loop; read by synth(). No threading concern

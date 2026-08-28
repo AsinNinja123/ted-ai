@@ -20,6 +20,17 @@ cloud call to every message.
 7. Keep failed or confirmation-blocked tasks waiting; mark verified successes
    complete.
 
+## Prompt budget
+
+- Greetings and acknowledgements carry no tools and perform no database retrieval.
+- Ordinary turns retrieve at most two related exchanges, two knowledge results,
+  and a small set of query-matched facts and approved relationship memories.
+- Notebook names and live Mac state appear only when that capability is relevant.
+- Known tool families omit `find_tools`; unmatched clear actions may use discovery
+  once. Initial and discovered menus are capped at eight contracts.
+- Conversation history is bounded by scope: four messages for lightweight chat,
+  eight for ordinary relevant context, and fourteen for explicit recall.
+
 ## Memory boundaries
 
 - `facts`: biography and durable facts.

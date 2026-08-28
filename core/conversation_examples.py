@@ -48,3 +48,12 @@ def select(text, interpretation=None, frustrated=False):
     else:
         key = "default"
     return "BEHAVIOR EXAMPLE FOR THIS SITUATION:\n" + _EXAMPLES[key]
+
+
+def needed(text, interpretation=None, frustrated=False):
+    """True only when an example corrects a non-routine interaction risk."""
+    if frustrated or (interpretation and interpretation.missing_information):
+        return True
+    return bool(re.search(
+        r"\b(?:opinion|think|honest|worth it|agree|rough day|upset|stressed|"
+        r"worried|feel like)\b", str(text or ""), re.I))

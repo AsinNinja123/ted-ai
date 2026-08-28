@@ -587,6 +587,43 @@ def get_facts_about(subject):
     return f"{subject}: " + "; ".join(parts)
 
 
+def get_relevant_facts(subject, query, limit=6, include_standing=False):
+    """Return only facts that can affect this turn.
+
+    Full profile recall still uses :func:`get_facts_about`. Ordinary turns use
+    lexical relevance, while operational turns may also carry a few standing
+    preferences so requests such as "open YouTube" can still honor "use Brave"
+    without sending Charlie's whole biography on every action.
+    """
+    rows = _query(
+        "SELECT relationship,object,importance,created FROM facts WHERE subject=? "
+        "ORDER BY importance DESC,created DESC LIMIT ?",
+        (subject, MAX_FACTS_IN_PROMPT),
+    )
+    if not rows:
+        return ""
+    query_words = set(_keywords(query))
+    ranked = []
+    for position, (rel, obj, importance, _created) in enumerate(rows):
+        haystack = set(_keywords(f"{rel.replace('_', ' ')} {obj}"))
+        overlap = len(query_words & haystack)
+        standing = include_standing and (
+            rel.startswith("PREFERS") or rel in {"USUALLY_USES", "DISLIKES"})
+        if not overlap and not standing:
+            continue
+        ranked.append((overlap, int(importance or 1), -position, rel, obj))
+    ranked.sort(reverse=True)
+    picked = [(rel, obj) for _score, _importance, _pos, rel, obj
+              in ranked[:max(1, min(int(limit), 12))]]
+    if not picked:
+        return ""
+    grouped = {}
+    for rel, obj in picked:
+        grouped.setdefault(rel.replace("_", " ").lower(), []).append(obj)
+    return f"{subject}: " + "; ".join(
+        f"{rel} {', '.join(objs)}" for rel, objs in grouped.items())
+
+
 def list_facts(subject):
     """Return facts as a list of (relationship, object) tuples, most important
     first. Used by the spoken 'what do you know about me' command, where the

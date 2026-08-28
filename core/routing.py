@@ -5,8 +5,8 @@ This module does two deliberately different jobs:
 * ``plan_reflex`` recognizes only complete, reversible app open/close requests.
   If even one target is unclear it returns ``None`` and the model gets the turn.
 * ``select_tool_schemas`` retrieves a small capability menu for natural requests.
-  A ``find_tools`` meta-tool is always present, so a novel phrasing can expand the
-  menu during the reasoning loop instead of being locked out by this router.
+  ``find_tools`` is reserved for unmistakable actions whose capability family
+  could not be identified locally; ordinary conversation carries no tools.
 
 The router chooses *capabilities*, never the final action for ambiguous requests.
 That is the line between a fast reflex and the old regex ladder that tried to be
@@ -46,7 +46,7 @@ the assistant.
 #      removed. See §34.
 #
 #  THE SHAPE OF IT
-#      FIND_TOOLS_SCHEMA      the escape hatch, always in the menu
+#      FIND_TOOLS_SCHEMA      one-use escape hatch for unmatched clear actions
 #      _FAMILIES              regex -> tool names. Rough groupings, not commands
 #      select_tool_schemas    the main entry: message in, small tool list out
 #      discover_tool_schemas  what find_tools actually runs
@@ -122,6 +122,32 @@ FIND_TOOLS_SCHEMA = {
 
 _SCHEMA_BY_NAME = {s["function"]["name"]: s for s in TOOL_SCHEMAS}
 
+# Words that carry no capability signal. Every one of these appears in several
+# tool descriptions because the descriptions are written as instructions, so a
+# query sharing one of them tells this module nothing.
+_DISCOVERY_STOPWORDS = frozenset("""
+a an and or the to of for in on at by with from is are be been was were it its
+this that these those use uses used using when whenever what which who whom how
+why if then than as into out up down about after before during while any all
+each every some no not do does did done can could should would may might must
+user users charlie ted his him he her she they them your you i me my mine our
+right now current currently recent recently new newest latest thing things
+something anything one two first second next last other another same only just
+also more most much many few least best good default e.g eg etc via per over
+under between across around back again still yet ever never always sometimes
+""".split())
+
+# A single shared common word scores 1 and must not qualify. A word appearing
+# in the tool's own name scores 3, which does.
+_DISCOVERY_MIN_SCORE = 3
+
+
+def _content_words(text):
+    """Lowercase word set with the noise removed."""
+    words = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return {w for w in words if len(w) > 2 and w not in _DISCOVERY_STOPWORDS}
+
+
 # These are capability-family hints, not command parsers. False positives cost a
 # few schema tokens; false negatives are recovered by find_tools.
 _FAMILIES = (
@@ -152,7 +178,8 @@ _FAMILIES = (
     # and that family already fires on the bare word "play".
     (r"\b(?:add|remove|delete|create|make|save)\b[^.?!]*\bplaylist\b|"
      r"\bplaylist\b[^.?!]*\b(?:add|remove|delete|create|make|save)\b|"
-     r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b",
+     r"\b(?:add|save|remove|delete)\s+(?:this|that|it|the current)\b"
+     r"[^.?!]*\b(?:song|track|music)\b",
      ("add_to_playlist", "remove_from_playlist", "create_playlist",
       "delete_playlist", "play_playlist")),
     # The text bouncer. "tell me when X texts" is a standing rule; "text X" is
@@ -203,15 +230,24 @@ _FAMILIES = (
      ("get_emails", "read_email", "email_action", "send_email")),
     (r"\b(?:calendar|event|meeting|appointment|schedule)\b",
      ("calendar_get", "calendar_add")),
-    (r"\b(?:school|schoolwork|homework|assignment|assignments|test|tests|quiz|"
-     r"quizzes|project|projects|reading|readings|class|classes|course|courses|"
-     r"due today|due tomorrow|overdue)\b", ("school_read",)),
     (r"\b(?:note|notes|write down|jot down)\b", ("notes_add", "notes_get")),
+    # Ted's own notebook is a different store from Apple Notes, and it had no
+    # family at all — "read my notebook page about X" produced an EMPTY menu, so
+    # no tools were sent and there was nothing for the model to recover with.
+    # "notebook" does not match the \bnote\b family above (the word continues),
+    # so this needs its own row rather than an extra alternative up there.
+    (r"\bnotebook\b|\bnote ?book\b",
+     ("notebook_read", "notebook_write", "notebook_edit", "notebook_search",
+      "notebook_delete")),
     (r"\b(?:clipboard|copy|paste)\b", ("clipboard_read", "clipboard_write")),
-    (r"\b(?:volume|brightness|screen|display|type|keyboard|cursor|click|tap|"
-     r"press|button|link|video|scroll|field|control)\b",
-     ("system_volume", "system_brightness", "screen_describe", "ui_inspect",
-      "ui_press", "ui_fill", "type_text", "create_document", "press_key", "scroll")),
+    (r"\bvolume\b", ("system_volume",)),
+    (r"\bbrightness\b", ("system_brightness",)),
+    (r"\b(?:screen|display|video)\b", ("screen_describe",)),
+    (r"\b(?:click|tap|button|link|cursor|control)\b",
+     ("ui_inspect", "ui_press", "screen_describe")),
+    (r"\b(?:type|field|input)\b", ("ui_inspect", "ui_fill", "type_text")),
+    (r"\b(?:press|keyboard|key)\b", ("press_key", "ui_press")),
+    (r"\bscroll\b", ("scroll",)),
     (r"\b(?:habit|streak|workout|worked out|exercise)\b",
      ("log_habit", "get_habit_streak")),
     (r"\b(?:calculate|math|percent|plus|minus|times|divided|\d\s*[-+*/]\s*\d)\b",
@@ -267,6 +303,18 @@ def tool_name(schema):
     return (schema.get("function") or {}).get("name", "")
 
 
+def catalog():
+    """Every tool contract Ted owns, keyed by name.
+
+    `select_tool_schemas` hands the model a small menu, so the model will
+    sometimes name a real capability the menu left out. That is a router miss,
+    not a hallucination, and llm.py resolves it from this mapping instead of
+    spending two extra rounds on find_tools. Returned as a copy: the runtime
+    mutates its own menu, never this one.
+    """
+    return dict(_SCHEMA_BY_NAME)
+
+
 def _family_names(text):
     names = []
     lowered = (text or "").lower()
@@ -290,8 +338,26 @@ def _family_names(text):
 # Only the second one is even visible, and it self-corrects. That asymmetry is
 # what lets this file stay simple.
 def select_tool_schemas(text, recent_action_text=""):
-    """Return a small initial tool menu plus the discovery escape hatch."""
+    """Return only the capability contracts this turn is likely to use.
+
+    A known family does not also pay for discovery: if its menu is incomplete,
+    the model can say so honestly. The discovery escape hatch is kept only for
+    clear action requests whose wording matched no family at all. This makes a
+    greeting a genuinely tool-free call and prevents every normal tool turn
+    from acquiring another model round by default.
+    """
     names = _family_names(text)
+    # When one phrase mentions both media and a concrete UI gesture ("tap the
+    # play button on this video"), broad media families appear earlier in the
+    # catalog. Put the explicitly requested interaction first so the global
+    # eight-contract cap cannot evict the tool that performs the verb.
+    if re.search(r"\b(?:click|tap|button|control)\b", text or "", re.I):
+        names = ["ui_inspect", "ui_press", "screen_describe", *names]
+    elif re.search(r"\b(?:type|field|input)\b", text or "", re.I):
+        names = ["ui_inspect", "ui_fill", "type_text", *names]
+    if re.search(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b",
+                 text or "", re.I):
+        names = ["create_document", *names]
     # Pronouns such as "close it" benefit from the last structured action, but
     # only use it to choose a family; the model still resolves the actual target.
     # "another", "a different one" and "next" are continuations too — they point
@@ -306,8 +372,11 @@ def select_tool_schemas(text, recent_action_text=""):
         if name in _SCHEMA_BY_NAME and name not in seen:
             chosen.append(_SCHEMA_BY_NAME[name])
             seen.add(name)
-    # Discovery first makes its purpose visible even when the initial list is empty.
-    return [FIND_TOOLS_SCHEMA, *chosen]
+        if len(chosen) >= 8:
+            break
+    if chosen:
+        return chosen
+    return [FIND_TOOLS_SCHEMA] if likely_action_request(text) else []
 
 
 # [BOOK §7.7] ─── THE CLEANUP REFLEX ─────────────────────────────────────────
@@ -436,29 +505,50 @@ def plan_document(text):
     }
 
 
-def discover_tool_schemas(query, exclude=(), limit=8):
-    """Retrieve schemas for a capability query; used by the find_tools meta-tool."""
+def discover_tool_schemas(query, exclude=(), limit=4):
+    """Retrieve schemas for a capability query; used by the find_tools meta-tool.
+
+    Two sources, deliberately not mixed. A capability FAMILY match is knowledge
+    this module actually has; bare word overlap against a description is a
+    guess. Mixing them is what put `code_overview`, `bouncer_status` and
+    `get_emails` on a turn asking for sports scores — the junk scored 2 on
+    "current" and "recent" while `web_search` scored 1, and the model paid a
+    round trip for a menu that could not answer it.
+
+    So: if any family matched, return only that. Word overlap fills the menu
+    only when this module recognized nothing at all, and then it must clear a
+    threshold no single common word can reach.
+    """
     excluded = set(exclude)
-    family = _family_names(query)
+    family = [n for n in _family_names(query) if n not in excluded]
+    if family:
+        ordered, seen = [], set()
+        for name in family:
+            if name in _SCHEMA_BY_NAME and name not in seen:
+                seen.add(name)
+                ordered.append(_SCHEMA_BY_NAME[name])
+        if ordered:
+            return ordered[:limit]
+
+    query_words = _content_words(query)
+    if not query_words:
+        return []
     ranked = []
-    query_words = set(re.findall(r"[a-z0-9]+", (query or "").lower()))
     for schema in TOOL_SCHEMAS:
         name = tool_name(schema)
         if name in excluded:
             continue
         fn = schema["function"]
-        haystack = (name.replace("_", " ") + " " + fn.get("description", "")).lower()
-        words = set(re.findall(r"[a-z0-9]+", haystack))
-        score = len(query_words & words)
-        if name in family:
-            score += 20 - family.index(name)
-        if score:
+        # A word in the tool's NAME is a much stronger signal than the same
+        # word buried in prose that exists to teach the model when to call it.
+        name_hits = len(query_words & set(name.split("_")))
+        desc_hits = len(query_words & _content_words(fn.get("description", "")))
+        score = 3 * name_hits + desc_hits
+        if score >= _DISCOVERY_MIN_SCORE:
             ranked.append((score, name, schema))
     ranked.sort(key=lambda item: (-item[0], item[1]))
-    if not ranked:
-        # Returning nothing tells the model to ask one useful question rather than
-        # silently loading all 32 contracts and recreating the original problem.
-        return []
+    # Returning nothing tells the model to ask one useful question rather than
+    # silently loading contracts that cannot serve the request.
     return [schema for _score, _name, schema in ranked[:limit]]
 
 
