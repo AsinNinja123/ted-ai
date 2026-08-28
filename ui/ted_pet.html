@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ted Pet</title>
+<style>
+:root{--ink:#3a210d;--deep:#5b3312;--honey:#d89127;--cream:#ffe4a9;--cyan:#5fd6e8;--paper:#fff0c8}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;
+  font-family:"Courier New",monospace;-webkit-user-select:none;user-select:none}
+button,textarea{font:700 12px/1.25 "Courier New",monospace}
+#stage{position:relative;width:100%;height:100%;min-height:330px}
+#bubble{position:absolute;z-index:4;left:8px;right:8px;top:4px;min-height:72px;
+  max-height:145px;overflow:auto;padding:12px 13px;color:var(--ink);background:var(--paper);
+  border:4px solid var(--ink);box-shadow:4px 4px 0 rgba(58,33,13,.35);opacity:0;
+  transform:translateY(-8px);transition:.16s;image-rendering:pixelated}
+#bubble.show{opacity:1;transform:none}
+#bubble:after{content:"";position:absolute;left:48%;bottom:-17px;width:18px;height:18px;
+  background:var(--paper);border-right:4px solid var(--ink);border-bottom:4px solid var(--ink);
+  transform:rotate(45deg)}
+#bubble .who{display:block;color:#9b5d11;font-size:9px;letter-spacing:2px;margin-bottom:5px}
+#bubble .text{white-space:pre-wrap;word-break:break-word}
+#bear{position:absolute;z-index:2;left:50%;bottom:64px;width:min(74vw,250px);height:auto;
+  transform:translateX(-50%);image-rendering:pixelated;filter:drop-shadow(5px 7px 0 rgba(40,20,5,.2));
+  cursor:grab;-webkit-user-drag:none;transition:filter .15s,transform .15s}
+#bear:active{cursor:grabbing}
+#stage.thinking #bear{animation:think 1.05s steps(4,end) infinite}
+#stage.speaking #bear{animation:talk .55s steps(2,end) infinite}
+#stage.listening #bear{filter:drop-shadow(0 0 8px var(--cyan)) drop-shadow(5px 7px 0 rgba(40,20,5,.2))}
+@keyframes think{50%{transform:translateX(-50%) translateY(-4px) rotate(-1deg)}}
+@keyframes talk{50%{transform:translateX(-50%) translateY(-2px)}}
+#controls{position:absolute;z-index:5;left:50%;bottom:10px;transform:translateX(-50%);
+  display:flex;gap:7px;padding:6px;background:rgba(255,240,200,.94);border:3px solid var(--ink);
+  box-shadow:4px 4px 0 rgba(58,33,13,.28);-webkit-app-region:no-drag}
+.mode{width:86px;height:39px;border:3px solid var(--ink);background:#ffc95d;color:var(--ink);
+  cursor:pointer;padding:3px;box-shadow:2px 2px 0 var(--deep);text-transform:uppercase}
+.mode:hover{background:#ffe09a}.mode.on{background:var(--cyan);transform:translate(2px,2px);box-shadow:none}
+#composer{position:absolute;z-index:7;left:8px;right:8px;bottom:62px;display:none;gap:6px;
+  padding:7px;background:var(--paper);border:4px solid var(--ink);-webkit-app-region:no-drag}
+#composer.open{display:flex}
+#pet-input{flex:1;min-height:58px;max-height:110px;resize:none;border:3px solid var(--ink);
+  background:#fff9e9;color:var(--ink);padding:7px;outline:none}
+#send{width:58px;border:3px solid var(--ink);background:var(--cyan);color:var(--ink);cursor:pointer}
+#menu{position:absolute;z-index:20;display:none;width:238px;padding:7px;background:var(--paper);
+  border:4px solid var(--ink);box-shadow:5px 5px 0 rgba(58,33,13,.4);-webkit-app-region:no-drag}
+#menu.open{display:block}
+#shutdown{width:100%;border:3px solid var(--ink);background:#e6644a;color:#fff;padding:9px;
+  cursor:pointer;text-align:left}
+#shutdown b{display:inline-block;width:25px;font-size:18px;vertical-align:-2px}
+</style>
+</head>
+<body>
+<main id="stage">
+  <section id="bubble" aria-live="polite"><span class="who">TED</span><div class="text"></div></section>
+  <img id="bear" src="ted_pet.png" alt="Ted, a pixel teddy bear" draggable="false">
+  <form id="composer">
+    <textarea id="pet-input" placeholder="TYPE TO TED..." aria-label="Message Ted"></textarea>
+    <button id="send" type="submit">SEND</button>
+  </form>
+  <nav id="controls" aria-label="Ted pet controls">
+    <button class="mode" id="voice" type="button">VOICE</button>
+    <button class="mode" id="transcribe" type="button">TRANSCRIBE</button>
+    <button class="mode" id="text" type="button">TEXT</button>
+  </nav>
+  <div id="menu" role="menu">
+    <button id="shutdown" type="button" role="menuitem"><b>&times;</b> REMOVE &amp; SHUT DOWN TED</button>
+  </div>
+</main>
+<script>
+function api(){return window.pywebview&&window.pywebview.api?window.pywebview.api:null}
+function $(id){return document.getElementById(id)}
+var mode='off', bubbleTimer=null;
+window.tedPet={
+  setState:function(state){$('stage').className=state||''},
+  setMode:function(next){
+    mode=next||'off';
+    $('voice').classList.toggle('on',mode==='voice');
+    $('transcribe').classList.toggle('on',mode==='transcribe');
+  },
+  showMessage:function(role,text){
+    var b=$('bubble'); b.querySelector('.who').textContent=role==='user'?'YOU':'TED';
+    b.querySelector('.text').textContent=String(text||''); b.classList.add('show');
+    clearTimeout(bubbleTimer); bubbleTimer=setTimeout(function(){b.classList.remove('show')},14000);
+  }
+};
+$('voice').onclick=function(){if(api())api().pet_voice_mode().then(tedPet.setMode)};
+$('transcribe').onclick=function(){if(api())api().pet_transcribe_mode().then(tedPet.setMode)};
+$('text').onclick=function(){
+  $('composer').classList.toggle('open');
+  if($('composer').classList.contains('open'))setTimeout(function(){$('pet-input').focus()},0);
+};
+$('composer').onsubmit=function(e){
+  e.preventDefault();var text=$('pet-input').value.trim();if(!text||!api())return;
+  $('pet-input').value='';$('composer').classList.remove('open');api().pet_ask(text);
+};
+$('pet-input').onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}};
+$('bear').oncontextmenu=function(e){
+  e.preventDefault();var m=$('menu');m.classList.add('open');
+  m.style.left=Math.max(6,Math.min(e.clientX,innerWidth-246))+'px';
+  m.style.top=Math.max(6,Math.min(e.clientY,innerHeight-58))+'px';
+};
+document.onmousedown=function(e){if(!$('menu').contains(e.target))$('menu').classList.remove('open')};
+$('shutdown').onclick=function(){if(api())api().shutdown_ted();else window.close()};
+window.addEventListener('pywebviewready',function(){if(api())api().pet_mode().then(tedPet.setMode)});
+</script>
+</body>
+</html>

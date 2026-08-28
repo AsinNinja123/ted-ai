@@ -120,6 +120,7 @@ import webview
 from core.paths import UI_HTML
 from core.voice import engine
 from core.app import TedApi
+from core import pet
 
 print("Ted is ready.")
 
@@ -346,6 +347,7 @@ if __name__ == "__main__":
                     _make_python_accessory)
             except Exception as exc:
                 print(f"[app] could not hide Python Dock identity: {exc}")
+        pet.open_pet(webview, api)
         api.start()
 
     webview.start(_ready)  # starts the runtime once the window is ready

@@ -350,6 +350,24 @@ check("a transcript goes into the input box",
       and "remind me to email the registrar" in api.window.js[-1])
 check("…and is never sent to the model on its own", LLM_STREAM_CALLS == [])
 
+# The floating pet's TRANSCRIBE mode is deliberately different from the HUD's
+# dictation control: it sends the captured words as a real turn, but keeps TTS
+# off so the answer can live in the pet's pixel thought bubble.
+api = make_api()
+api.muted = True
+check("the pet starts with no active input mode", api.pet_mode() == "off")
+check("pet voice mode turns ears and speech on",
+      api.pet_voice_mode() == "voice" and api.mic_on and api.speech_on)
+check("pressing pet voice again turns it off",
+      api.pet_voice_mode() == "off" and not api.mic_on and not api.speech_on)
+check("pet transcription listens but keeps speech off",
+      api.pet_transcribe_mode() == "transcribe"
+      and api.mic_on and not api.speech_on and api.pet_silent_chat
+      and not api.transcribe_only)
+check("voice switches cleanly out of silent pet transcription",
+      api.pet_voice_mode() == "voice" and api.speech_on
+      and not api.pet_silent_chat)
+
 print("\n— _respond: fall-through to the streaming LLM —")
 api = make_api()
 api._respond("from now on just give yes or no answers")

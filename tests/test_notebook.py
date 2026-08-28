@@ -195,21 +195,21 @@ check("…and its text sits on the rules rather than between them",
 check("every line on it is editable in place",
       'contenteditable="true"' in paper)
 
-print("\n— the bear is gone —")
-for rel in ("core/pet.py", "ui/ted_bear.js", "ui/ted_pet.html"):
-    check(f"{rel} no longer exists",
-          not os.path.exists(os.path.join(_root, rel)))
-check("nothing in the Python drives a bear",
-      "companion_pulse" not in app_src and "pet." not in app_src
-      and "setBearState" not in app_src)
-check("hud.py does not try to open a pet window",
-      "pet" not in _read("hud.py"))
-check("the HUD has no bear canvas or pet button left",
+print("\n— the pixel pet —")
+pet_html = _read("ui/ted_pet.html")
+check("the pet has voice, silent transcription, and text controls",
+      all(f'id="{name}"' in pet_html for name in
+          ("voice", "transcribe", "text", "pet-input")))
+check("right-click reveals an explicit Ted shutdown action",
+      "oncontextmenu" in pet_html and "shutdown_ted" in pet_html
+      and "REMOVE &amp; SHUT DOWN TED" in pet_html)
+check("typed pet turns are mirrored into the full conversation",
+      "pet_ask" in pet_html and "def pet_ask" in app_src)
+check("the pet is opened with the same API as the HUD",
+      "pet.open_pet(webview, api)" in _read("hud.py"))
+check("the old in-chat bear surfaces remain removed",
       'id="bear-id"' not in hud and 'id="petbtn"' not in hud
       and "ted_bear.js" not in hud)
-check("the bear's no-op stubs are gone from the HUD too",
-      "setBearState" not in hud and "setPetVisible" not in hud
-      and "setCompanionVisible" not in hud)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

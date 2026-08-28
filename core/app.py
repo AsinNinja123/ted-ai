@@ -109,7 +109,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime as _dt_cls
 
 from core import (attachments, bouncer, codebase, conversation_examples, events,
-                  features, lingo, llm, memory, messages, music, notebook, outcomes,
+                  features, lingo, llm, memory, messages, music, notebook, outcomes, pet,
                   relationship, routing, routines, system_state, task_state,
                   telemetry, tool_handlers as th, understanding, voice)
 from core.actions import (close_app, open_app, get_running_apps,
@@ -390,6 +390,7 @@ class TedApi:
         self.mic_on           = False             # is capture running
         self.speech_on        = False             # is TTS allowed to play
         self.transcribe_only  = False             # capture routes to the input box
+        self.pet_silent_chat  = False             # capture becomes a silent answered turn
         self.interrupt_speech = False             # set True to cut off current playback
         self.last_reply       = ""               # stored so 'repeat that' works
         self._last_cmd        = ("", 0.0)        # (normalized_text, timestamp) for dedup
@@ -708,7 +709,7 @@ class TedApi:
         if _wants_unmute:
             if echo_user:
                 add_message(w, "user", text)
-            if not self.mic_on or self.transcribe_only:
+            if not self.mic_on or self.transcribe_only or not self.speech_on:
                 self.toggle_mute()
                 reply = "I'm back — listening."
             else:
@@ -3956,6 +3957,7 @@ class TedApi:
         self.speech_on = not value
         if value:
             self.transcribe_only = False
+            self.pet_silent_chat = False
 
     def _apply_mic(self, on):
         """Start or stop capture, and keep the OS indicator honest about it.
@@ -3974,6 +3976,7 @@ class TedApi:
     def _push_mic_state(self):
         js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+        pet.set_mode(self.pet_mode())
 
     # ── the notification bouncer ───────────────────────────────────────────
 
@@ -4206,10 +4209,11 @@ class TedApi:
 
     def toggle_mute(self):
         """Mic button: full voice mode on/off — capture and speech together."""
-        going_on = not self.mic_on or self.transcribe_only
+        going_on = not self.mic_on or self.transcribe_only or not self.speech_on
         self.mic_on = going_on
         self.speech_on = going_on
         self.transcribe_only = False
+        self.pet_silent_chat = False
         self._apply_mic(self.mic_on)
         self._push_mic_state()
         return self.muted
@@ -4265,9 +4269,71 @@ class TedApi:
         self.transcribe_only = not self.transcribe_only
         self.mic_on = self.transcribe_only
         self.speech_on = False
+        self.pet_silent_chat = False
         self._apply_mic(self.mic_on)
         self._push_mic_state()
         return self.transcribe_only
+
+    def pet_mode(self):
+        if self.mic_on and self.speech_on:
+            return "voice"
+        if self.mic_on and self.pet_silent_chat:
+            return "transcribe"
+        return "off"
+
+    def pet_voice_mode(self):
+        """Pet voice button: listen and answer aloud, or turn capture off."""
+        if self.pet_mode() == "voice":
+            self.mic_on = self.speech_on = False
+        else:
+            self.mic_on = self.speech_on = True
+        self.transcribe_only = False
+        self.pet_silent_chat = False
+        self._apply_mic(self.mic_on)
+        self._push_mic_state()
+        return self.pet_mode()
+
+    def pet_transcribe_mode(self):
+        """Pet transcript button: listen, answer in bubbles, never use TTS."""
+        turning_on = self.pet_mode() != "transcribe"
+        self.mic_on = turning_on
+        self.speech_on = False
+        self.transcribe_only = False
+        self.pet_silent_chat = turning_on
+        self._apply_mic(self.mic_on)
+        self._push_mic_state()
+        return self.pet_mode()
+
+    def shutdown_ted(self):
+        """Right-click pet action: close every Ted window and end the runtime."""
+        self.mic_on = self.speech_on = self.pet_silent_chat = False
+        try:
+            self._apply_mic(False)
+        except Exception:
+            pass
+
+        # Let the JavaScript bridge return before destroying the window that
+        # owns the bridge call. WKWebView can otherwise wait on itself while
+        # pywebview tears the native object down.
+        def close_windows():
+            time.sleep(0.05)
+            pet.close_pet()
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
+
+        threading.Thread(target=close_windows, daemon=True,
+                         name="pet-shutdown").start()
+        return True
+
+    def pet_ask(self, text):
+        """Send typed pet input while keeping it visible in the full HUD too."""
+        text = str(text or "").strip()
+        if not text:
+            return False
+        add_message(self.window, "user", text)
+        return self.ask(text)
 
     # [BOOK §5.1] ─── THE TYPED WAY IN ───────────────────────────────────────
     # Called from the window as window.pywebview.api.ask(text) when you press

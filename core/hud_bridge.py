@@ -37,11 +37,21 @@ def js(window, code):
 def set_state(window, s):
     """Drive the HUD state indicator: 'idle' | 'listening' | 'thinking' | 'speaking' | 'error'."""
     js(window, f"tedHud.setState('{s}')")
+    try:
+        from core import pet
+        pet.set_state(s)
+    except Exception:
+        pass
 
 
 def add_message(window, role, text):
     """Append a chat message to the HUD log. role: 'user' | 'ted'."""
     js(window, f"tedHud.addMessage('{role}', {json.dumps(text)})")
+    try:
+        from core import pet
+        pet.add_message(role, text)
+    except Exception:
+        pass
 
 
 def show_issue(window, text):
