@@ -4,104 +4,170 @@
 <meta charset="utf-8">
 <title>Ted Pet</title>
 <style>
-:root{--ink:#3a210d;--deep:#5b3312;--honey:#d89127;--cream:#ffe4a9;--cyan:#5fd6e8;--paper:#fff0c8}
+:root{--ink:#3a210d;--cyan:#63d9ea;--white:#fff;--red:#d84d42}
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;
   font-family:"Courier New",monospace;-webkit-user-select:none;user-select:none}
-button,textarea{font:700 12px/1.25 "Courier New",monospace}
-#stage{position:relative;width:100%;height:100%;min-height:330px}
-#bubble{position:absolute;z-index:4;left:8px;right:8px;top:4px;min-height:72px;
-  max-height:145px;overflow:auto;padding:12px 13px;color:var(--ink);background:var(--paper);
-  border:4px solid var(--ink);box-shadow:4px 4px 0 rgba(58,33,13,.35);opacity:0;
-  transform:translateY(-8px);transition:.16s;image-rendering:pixelated}
-#bubble.show{opacity:1;transform:none}
-#bubble:after{content:"";position:absolute;left:48%;bottom:-17px;width:18px;height:18px;
-  background:var(--paper);border-right:4px solid var(--ink);border-bottom:4px solid var(--ink);
-  transform:rotate(45deg)}
-#bubble .who{display:block;color:#9b5d11;font-size:9px;letter-spacing:2px;margin-bottom:5px}
-#bubble .text{white-space:pre-wrap;word-break:break-word}
-#bear{position:absolute;z-index:2;left:50%;bottom:64px;width:min(74vw,250px);height:auto;
-  transform:translateX(-50%);image-rendering:pixelated;filter:drop-shadow(5px 7px 0 rgba(40,20,5,.2));
-  cursor:grab;-webkit-user-drag:none;transition:filter .15s,transform .15s}
+button,textarea{font:700 11px/1.25 "Courier New",monospace}
+#stage{position:relative;width:270px;height:320px;overflow:hidden}
+
+/* A reply is absent—not merely empty—until Ted actually says something. */
+#bubble{position:absolute;z-index:8;left:5px;top:7px;width:198px;max-height:108px;
+  overflow:visible;padding:10px 11px;color:#17120e;background:var(--white);
+  border:4px solid var(--ink);box-shadow:4px 4px 0 rgba(58,33,13,.3);
+  opacity:0;visibility:hidden;transform:translate(-5px,-5px) scale(.96);
+  transform-origin:bottom right;transition:opacity .13s,transform .13s,visibility 0s .13s;
+  image-rendering:pixelated;-webkit-app-region:no-drag}
+#bubble.show{opacity:1;visibility:visible;transform:none;transition-delay:0s}
+/* Two square thought-pixels point from the upper-left bubble toward Ted. */
+#bubble:before{content:"";position:absolute;right:17px;bottom:-13px;width:9px;height:9px;
+  background:#fff;border:3px solid var(--ink);box-shadow:13px 13px 0 -2px #fff,13px 13px 0 1px var(--ink)}
+#bubble .text{max-height:82px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.35}
+
+#bear{position:absolute;z-index:2;left:50%;bottom:52px;width:164px;height:auto;
+  transform:translateX(-50%);transform-origin:50% 100%;image-rendering:pixelated;
+  filter:drop-shadow(4px 6px 0 rgba(40,20,5,.18));cursor:grab;-webkit-user-drag:none}
 #bear:active{cursor:grabbing}
-#stage.thinking #bear{animation:think 1.05s steps(4,end) infinite}
-#stage.speaking #bear{animation:talk .55s steps(2,end) infinite}
-#stage.listening #bear{filter:drop-shadow(0 0 8px var(--cyan)) drop-shadow(5px 7px 0 rgba(40,20,5,.2))}
-@keyframes think{50%{transform:translateX(-50%) translateY(-4px) rotate(-1deg)}}
-@keyframes talk{50%{transform:translateX(-50%) translateY(-2px)}}
-#controls{position:absolute;z-index:5;left:50%;bottom:10px;transform:translateX(-50%);
-  display:flex;gap:7px;padding:6px;background:rgba(255,240,200,.94);border:3px solid var(--ink);
-  box-shadow:4px 4px 0 rgba(58,33,13,.28);-webkit-app-region:no-drag}
-.mode{width:86px;height:39px;border:3px solid var(--ink);background:#ffc95d;color:var(--ink);
-  cursor:pointer;padding:3px;box-shadow:2px 2px 0 var(--deep);text-transform:uppercase}
-.mode:hover{background:#ffe09a}.mode.on{background:var(--cyan);transform:translate(2px,2px);box-shadow:none}
-#composer{position:absolute;z-index:7;left:8px;right:8px;bottom:62px;display:none;gap:6px;
-  padding:7px;background:var(--paper);border:4px solid var(--ink);-webkit-app-region:no-drag}
+#stage.idle #bear{animation:idle 3.1s steps(4,end) infinite}
+#stage.thinking #bear{animation:think .95s steps(4,end) infinite}
+#stage.speaking #bear{animation:talk .5s steps(2,end) infinite}
+#stage.listening #bear{animation:listen 1.25s steps(3,end) infinite;
+  filter:drop-shadow(0 0 7px var(--cyan)) drop-shadow(4px 6px 0 rgba(40,20,5,.18))}
+#stage.bored #bear{animation:bored 4.8s steps(6,end) infinite}
+@keyframes idle{0%,100%{transform:translateX(-50%) scaleY(1)}50%{transform:translateX(-50%) scaleY(1.018)}}
+@keyframes think{0%,100%{transform:translateX(-50%) rotate(0)}50%{transform:translateX(-50%) translateY(-4px) rotate(-1.5deg)}}
+@keyframes talk{50%{transform:translateX(-50%) translateY(-3px) scaleY(1.015)}}
+@keyframes listen{50%{transform:translateX(-50%) scale(1.025)}}
+@keyframes bored{0%,70%,100%{transform:translateX(-50%)}76%{transform:translateX(-50%) rotate(-2deg)}82%{transform:translateX(-50%) rotate(2deg)}}
+
+/* Tiny code-drawn status emotes; no emoji glyphs or external icon font. */
+#emote{position:absolute;z-index:4;left:182px;top:110px;width:42px;height:35px;pointer-events:none}
+#emote i{display:none;position:absolute;width:6px;height:6px;background:var(--cyan);border:2px solid var(--ink)}
+#stage.thinking #emote i{display:block;animation:dot 1.05s steps(2,end) infinite}
+#emote i:nth-child(1){left:0;bottom:2px}.thinking #emote i:nth-child(2){left:12px;bottom:10px;animation-delay:.15s}
+.thinking #emote i:nth-child(3){left:25px;bottom:19px;animation-delay:.3s}
+@keyframes dot{50%{transform:translateY(-3px)}}
+#emote b{display:none;color:#807566;font-size:13px;line-height:1;position:absolute;left:8px;top:8px;
+  text-shadow:2px 0 #fff}
+#stage.bored #emote b{display:block;animation:zzz 2.2s steps(4,end) infinite}
+@keyframes zzz{0%{opacity:0;transform:translate(0,8px) scale(.7)}35%{opacity:1}100%{opacity:0;transform:translate(12px,-12px) scale(1.15)}}
+
+#controls{position:absolute;z-index:10;left:50%;bottom:8px;transform:translateX(-50%);
+  display:flex;gap:9px;-webkit-app-region:no-drag}
+.mode{display:grid;place-items:center;width:34px;height:34px;padding:0;border:3px solid var(--ink);
+  border-radius:50%;background:#fff3d3;color:var(--ink);cursor:pointer;
+  box-shadow:2px 2px 0 rgba(58,33,13,.65);transition:transform .12s,background .12s,box-shadow .12s}
+.mode:hover{background:#fff}.mode:active{transform:scale(1.18);box-shadow:none}
+.mode.on{background:var(--cyan);transform:scale(1.10);box-shadow:1px 1px 0 rgba(58,33,13,.6)}
+.mode svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2.3;
+  stroke-linecap:square;stroke-linejoin:miter;pointer-events:none}
+
+#composer{position:absolute;z-index:12;left:9px;right:9px;bottom:51px;display:none;gap:6px;
+  padding:6px;background:#fff;border:4px solid var(--ink);box-shadow:4px 4px 0 rgba(58,33,13,.3);
+  -webkit-app-region:no-drag}
 #composer.open{display:flex}
-#pet-input{flex:1;min-height:58px;max-height:110px;resize:none;border:3px solid var(--ink);
-  background:#fff9e9;color:var(--ink);padding:7px;outline:none}
-#send{width:58px;border:3px solid var(--ink);background:var(--cyan);color:var(--ink);cursor:pointer}
-#menu{position:absolute;z-index:20;display:none;width:238px;padding:7px;background:var(--paper);
-  border:4px solid var(--ink);box-shadow:5px 5px 0 rgba(58,33,13,.4);-webkit-app-region:no-drag}
-#menu.open{display:block}
-#shutdown{width:100%;border:3px solid var(--ink);background:#e6644a;color:#fff;padding:9px;
+#pet-input{flex:1;height:52px;resize:none;border:3px solid var(--ink);background:#fff;color:#17120e;
+  padding:6px;outline:none;-webkit-user-select:text;user-select:text}
+#send{width:43px;border:3px solid var(--ink);background:var(--cyan);color:var(--ink);cursor:pointer;padding:0}
+#send svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.5}
+
+#menu{position:absolute;z-index:20;display:none;width:205px;padding:6px;background:#fff;
+  border:4px solid var(--ink);box-shadow:5px 5px 0 rgba(58,33,13,.35);-webkit-app-region:no-drag}
+#menu.open{display:grid;gap:5px}
+#menu button{width:100%;border:3px solid var(--ink);padding:7px;background:#fff;color:var(--ink);
   cursor:pointer;text-align:left}
-#shutdown b{display:inline-block;width:25px;font-size:18px;vertical-align:-2px}
+#menu button:hover{background:#fff0c8}#menu #shutdown{background:var(--red);color:#fff}
+#menu b{display:inline-block;width:24px;font-size:16px;vertical-align:-1px}
 </style>
 </head>
 <body>
-<main id="stage">
-  <section id="bubble" aria-live="polite"><span class="who">TED</span><div class="text"></div></section>
+<main id="stage" class="idle">
+  <section id="bubble" aria-live="polite"><div class="text"></div></section>
+  <div id="emote" aria-hidden="true"><i></i><i></i><i></i><b>Z z</b></div>
   <img id="bear" src="ted_pet.png" alt="Ted, a pixel teddy bear" draggable="false">
   <form id="composer">
     <textarea id="pet-input" placeholder="TYPE TO TED..." aria-label="Message Ted"></textarea>
-    <button id="send" type="submit">SEND</button>
+    <button id="send" type="submit" title="Send" aria-label="Send">
+      <svg viewBox="0 0 24 24"><path d="M3 12h15M13 6l6 6-6 6"/></svg>
+    </button>
   </form>
   <nav id="controls" aria-label="Ted pet controls">
-    <button class="mode" id="voice" type="button">VOICE</button>
-    <button class="mode" id="transcribe" type="button">TRANSCRIBE</button>
-    <button class="mode" id="text" type="button">TEXT</button>
+    <button class="mode" id="voice" type="button" title="Voice mode" aria-label="Voice mode">
+      <svg viewBox="0 0 24 24"><path d="M4 7h8M4 12h14M4 17h11"/></svg>
+    </button>
+    <button class="mode" id="transcribe" type="button" title="Silent transcription" aria-label="Silent transcription">
+      <svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg>
+    </button>
+    <button class="mode" id="text" type="button" title="Type to Ted" aria-label="Type to Ted">
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14"/><path d="M6 9h2M10 9h2M14 9h2M18 9h1M6 13h2M10 13h2M14 13h2M18 13h1M7 16h10"/></svg>
+    </button>
   </nav>
   <div id="menu" role="menu">
-    <button id="shutdown" type="button" role="menuitem"><b>&times;</b> REMOVE &amp; SHUT DOWN TED</button>
+    <button id="close-pet" type="button" role="menuitem"><b>&times;</b> CLOSE PET</button>
+    <button id="shutdown" type="button" role="menuitem"><b>&#9632;</b> SHUT DOWN TED</button>
   </div>
 </main>
 <script>
 function api(){return window.pywebview&&window.pywebview.api?window.pywebview.api:null}
 function $(id){return document.getElementById(id)}
-var mode='off', bubbleTimer=null;
+var mode='off', state='idle', bored=false, engaged=false, bubbleTimer=null, boredTimer=null;
+function paintState(){$('stage').className=state+(bored?' bored':'')}
+function scheduleBored(){
+  clearTimeout(boredTimer);bored=false;paintState();
+  if(state!=='idle')return;
+  boredTimer=setTimeout(function(){
+    if(state!=='idle')return;bored=true;paintState();
+    boredTimer=setTimeout(function(){bored=false;paintState();scheduleBored()},7500);
+  },26000+Math.random()*14000);
+}
 window.tedPet={
-  setState:function(state){$('stage').className=state||''},
+  setState:function(next){state=next||'idle';scheduleBored()},
   setMode:function(next){
     mode=next||'off';
     $('voice').classList.toggle('on',mode==='voice');
     $('transcribe').classList.toggle('on',mode==='transcribe');
   },
   showMessage:function(role,text){
-    var b=$('bubble'); b.querySelector('.who').textContent=role==='user'?'YOU':'TED';
-    b.querySelector('.text').textContent=String(text||''); b.classList.add('show');
-    clearTimeout(bubbleTimer); bubbleTimer=setTimeout(function(){b.classList.remove('show')},14000);
+    /* Startup notices stay in the full HUD. The pet speaks only after Charlie
+       has actually addressed Ted, and Charlie's own words are never a thought. */
+    if(role==='user'){
+      engaged=true;$('bubble').classList.remove('show');return;
+    }
+    if(!engaged)return;
+    var b=$('bubble');b.querySelector('.text').textContent=String(text||'');b.classList.add('show');
+    clearTimeout(bubbleTimer);bubbleTimer=setTimeout(function(){b.classList.remove('show')},12000);
   }
 };
 $('voice').onclick=function(){if(api())api().pet_voice_mode().then(tedPet.setMode)};
 $('transcribe').onclick=function(){if(api())api().pet_transcribe_mode().then(tedPet.setMode)};
 $('text').onclick=function(){
-  $('composer').classList.toggle('open');
-  if($('composer').classList.contains('open'))setTimeout(function(){$('pet-input').focus()},0);
+  var form=$('composer'),opening=!form.classList.contains('open');form.classList.toggle('open',opening);
+  $('text').classList.toggle('on',opening);
+  if(opening){
+    var focus=function(){setTimeout(function(){$('pet-input').focus();$('pet-input').click()},35)};
+    if(api()&&api().pet_focus)api().pet_focus().then(focus).catch(focus);else focus();
+  }
 };
 $('composer').onsubmit=function(e){
   e.preventDefault();var text=$('pet-input').value.trim();if(!text||!api())return;
-  $('pet-input').value='';$('composer').classList.remove('open');api().pet_ask(text);
+  $('pet-input').value='';$('composer').classList.remove('open');$('text').classList.remove('on');api().pet_ask(text);
 };
 $('pet-input').onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}};
 $('bear').oncontextmenu=function(e){
   e.preventDefault();var m=$('menu');m.classList.add('open');
-  m.style.left=Math.max(6,Math.min(e.clientX,innerWidth-246))+'px';
-  m.style.top=Math.max(6,Math.min(e.clientY,innerHeight-58))+'px';
+  m.style.left=Math.max(5,Math.min(e.clientX,innerWidth-213))+'px';
+  m.style.top=Math.max(5,Math.min(e.clientY,innerHeight-91))+'px';
 };
-document.onmousedown=function(e){if(!$('menu').contains(e.target))$('menu').classList.remove('open')};
+document.onmousedown=function(e){
+  if(!$('menu').contains(e.target))$('menu').classList.remove('open');
+  if(!$('composer').contains(e.target)&&!$('text').contains(e.target)){
+    $('composer').classList.remove('open');$('text').classList.remove('on');
+  }
+};
+$('close-pet').onclick=function(){if(api())api().pet_close();else window.close()};
 $('shutdown').onclick=function(){if(api())api().shutdown_ted();else window.close()};
 window.addEventListener('pywebviewready',function(){if(api())api().pet_mode().then(tedPet.setMode)});
+scheduleBored();
 </script>
 </body>
 </html>

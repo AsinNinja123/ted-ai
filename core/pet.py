@@ -26,8 +26,8 @@ def open_pet(webview, js_api=None):
         try:
             _window = webview.create_window(
                 "Ted Pet", PET_HTML, js_api=js_api,
-                width=360, height=420, min_size=(300, 330),
-                resizable=True, frameless=True, easy_drag=True,
+                width=270, height=320, min_size=(270, 320),
+                resizable=False, frameless=True, easy_drag=True,
                 on_top=True, shadow=False, transparent=True,
                 background_color="#000000", focus=False,
             )
@@ -50,6 +50,32 @@ def close_pet():
     except Exception as exc:
         print(f"[pet] could not close cleanly: {exc}")
     return True
+
+
+def focus_pet():
+    """Bring the pet forward so its text field can accept keyboard input."""
+    window = _window
+    if window is None:
+        return False
+    try:
+        window.restore()
+        import AppKit
+        import Foundation
+
+        def focus_on_main():
+            app = AppKit.NSApplication.sharedApplication()
+            app.activateIgnoringOtherApps_(True)
+            for native_window in app.windows():
+                if native_window.title() == "Ted Pet":
+                    native_window.makeKeyAndOrderFront_(None)
+                    break
+
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
+            focus_on_main)
+        return True
+    except Exception as exc:
+        print(f"[pet] could not focus: {exc}")
+        return False
 
 
 def evaluate(code):

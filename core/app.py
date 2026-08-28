@@ -4327,6 +4327,20 @@ class TedApi:
                          name="pet-shutdown").start()
         return True
 
+    def pet_close(self):
+        """Close only the companion window; Ted and the full HUD keep running."""
+        def close_window():
+            time.sleep(0.05)
+            pet.close_pet()
+
+        threading.Thread(target=close_window, daemon=True,
+                         name="pet-close").start()
+        return True
+
+    def pet_focus(self):
+        """Give the frameless pet keyboard focus before editing its text box."""
+        return pet.focus_pet()
+
     def pet_ask(self, text):
         """Send typed pet input while keeping it visible in the full HUD too."""
         text = str(text or "").strip()
