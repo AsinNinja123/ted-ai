@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Ted Pet</title>
 <style>
-:root{--ink:#3a210d;--cyan:#63d9ea;--white:#fff;--red:#d84d42}
+:root{--ink:#3a210d;--cyan:#63d9ea;--white:#fff}
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;
   font-family:"Courier New",monospace;-webkit-user-select:none;user-select:none}
@@ -24,7 +24,7 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
   background:#fff;border:3px solid var(--ink);box-shadow:13px 13px 0 -2px #fff,13px 13px 0 1px var(--ink)}
 #bubble .text{max-height:82px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.35}
 
-#bear{position:absolute;z-index:2;left:50%;bottom:52px;width:164px;height:auto;
+#bear{position:absolute;z-index:3;left:50%;bottom:52px;width:138px;height:auto;
   transform:translateX(-50%);transform-origin:50% 100%;image-rendering:pixelated;
   filter:drop-shadow(4px 6px 0 rgba(40,20,5,.18));cursor:grab;-webkit-user-drag:none}
 #bear:active{cursor:grabbing}
@@ -41,7 +41,7 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
 @keyframes bored{0%,70%,100%{transform:translateX(-50%)}76%{transform:translateX(-50%) rotate(-2deg)}82%{transform:translateX(-50%) rotate(2deg)}}
 
 /* Tiny code-drawn status emotes; no emoji glyphs or external icon font. */
-#emote{position:absolute;z-index:4;left:182px;top:110px;width:42px;height:35px;pointer-events:none}
+#emote{position:absolute;z-index:4;left:174px;top:132px;width:42px;height:35px;pointer-events:none}
 #emote i{display:none;position:absolute;width:6px;height:6px;background:var(--cyan);border:2px solid var(--ink)}
 #stage.thinking #emote i{display:block;animation:dot 1.05s steps(2,end) infinite}
 #emote i:nth-child(1){left:0;bottom:2px}.thinking #emote i:nth-child(2){left:12px;bottom:10px;animation-delay:.15s}
@@ -52,8 +52,13 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
 #stage.bored #emote b{display:block;animation:zzz 2.2s steps(4,end) infinite}
 @keyframes zzz{0%{opacity:0;transform:translate(0,8px) scale(.7)}35%{opacity:1}100%{opacity:0;transform:translate(12px,-12px) scale(1.15)}}
 
-#controls{position:absolute;z-index:10;left:50%;bottom:8px;transform:translateX(-50%);
-  display:flex;gap:9px;-webkit-app-region:no-drag}
+#hover-zone{position:absolute;z-index:2;left:49px;right:49px;bottom:0;height:92px}
+#controls{position:absolute;z-index:10;left:50%;bottom:8px;
+  display:flex;gap:9px;opacity:0;pointer-events:none;
+  transform:translateX(-50%) translateY(5px);transition:opacity .13s,transform .13s;
+  -webkit-app-region:no-drag}
+#bear:hover~#controls,#hover-zone:hover~#controls,#controls:hover,#controls:focus-within,
+#composer.open~#controls{opacity:1;pointer-events:auto;transform:translateX(-50%)}
 .mode{display:grid;place-items:center;width:34px;height:34px;padding:0;border:3px solid var(--ink);
   border-radius:50%;background:#fff3d3;color:var(--ink);cursor:pointer;
   box-shadow:2px 2px 0 rgba(58,33,13,.65);transition:transform .12s,background .12s,box-shadow .12s}
@@ -71,13 +76,11 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
 #send{width:43px;border:3px solid var(--ink);background:var(--cyan);color:var(--ink);cursor:pointer;padding:0}
 #send svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.5}
 
-#menu{position:absolute;z-index:20;display:none;width:205px;padding:6px;background:#fff;
-  border:4px solid var(--ink);box-shadow:5px 5px 0 rgba(58,33,13,.35);-webkit-app-region:no-drag}
-#menu.open{display:grid;gap:5px}
-#menu button{width:100%;border:3px solid var(--ink);padding:7px;background:#fff;color:var(--ink);
-  cursor:pointer;text-align:left}
-#menu button:hover{background:#fff0c8}#menu #shutdown{background:var(--red);color:#fff}
-#menu b{display:inline-block;width:24px;font-size:16px;vertical-align:-1px}
+#close-x{position:absolute;z-index:20;display:none;left:72px;top:122px;width:23px;height:23px;
+  padding:0;border:3px solid var(--ink);background:#fff;color:var(--ink);font:700 17px/15px
+  "Courier New",monospace;cursor:pointer;box-shadow:2px 2px 0 rgba(58,33,13,.4);
+  -webkit-app-region:no-drag}
+#close-x.show{display:block}#close-x:hover{background:#ffd5ce}
 </style>
 </head>
 <body>
@@ -91,6 +94,7 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
       <svg viewBox="0 0 24 24"><path d="M3 12h15M13 6l6 6-6 6"/></svg>
     </button>
   </form>
+  <div id="hover-zone" aria-hidden="true"></div>
   <nav id="controls" aria-label="Ted pet controls">
     <button class="mode" id="voice" type="button" title="Voice mode" aria-label="Voice mode">
       <svg viewBox="0 0 24 24"><path d="M4 7h8M4 12h14M4 17h11"/></svg>
@@ -102,10 +106,7 @@ button,textarea{font:700 11px/1.25 "Courier New",monospace}
       <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14"/><path d="M6 9h2M10 9h2M14 9h2M18 9h1M6 13h2M10 13h2M14 13h2M18 13h1M7 16h10"/></svg>
     </button>
   </nav>
-  <div id="menu" role="menu">
-    <button id="close-pet" type="button" role="menuitem"><b>&times;</b> CLOSE PET</button>
-    <button id="shutdown" type="button" role="menuitem"><b>&#9632;</b> SHUT DOWN TED</button>
-  </div>
+  <button id="close-x" type="button" title="Close pet" aria-label="Close pet">&times;</button>
 </main>
 <script>
 function api(){return window.pywebview&&window.pywebview.api?window.pywebview.api:null}
@@ -144,7 +145,7 @@ $('text').onclick=function(){
   var form=$('composer'),opening=!form.classList.contains('open');form.classList.toggle('open',opening);
   $('text').classList.toggle('on',opening);
   if(opening){
-    var focus=function(){setTimeout(function(){$('pet-input').focus();$('pet-input').click()},35)};
+    var focus=function(){setTimeout(function(){$('pet-input').focus();$('pet-input').click()},180)};
     if(api()&&api().pet_focus)api().pet_focus().then(focus).catch(focus);else focus();
   }
 };
@@ -153,19 +154,21 @@ $('composer').onsubmit=function(e){
   $('pet-input').value='';$('composer').classList.remove('open');$('text').classList.remove('on');api().pet_ask(text);
 };
 $('pet-input').onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit()}};
-$('bear').oncontextmenu=function(e){
-  e.preventDefault();var m=$('menu');m.classList.add('open');
-  m.style.left=Math.max(5,Math.min(e.clientX,innerWidth-213))+'px';
-  m.style.top=Math.max(5,Math.min(e.clientY,innerHeight-91))+'px';
-};
+var bearDown=null;
+$('bear').onmousedown=function(e){if(e.button===0)bearDown={x:e.clientX,y:e.clientY}};
+$('bear').oncontextmenu=function(e){e.preventDefault();bearDown=null;$('close-x').classList.add('show')};
 document.onmousedown=function(e){
-  if(!$('menu').contains(e.target))$('menu').classList.remove('open');
+  if(e.target!==$('close-x')&&e.button===0)$('close-x').classList.remove('show');
   if(!$('composer').contains(e.target)&&!$('text').contains(e.target)){
     $('composer').classList.remove('open');$('text').classList.remove('on');
   }
 };
-$('close-pet').onclick=function(){if(api())api().pet_close();else window.close()};
-$('shutdown').onclick=function(){if(api())api().shutdown_ted();else window.close()};
+document.onmouseup=function(e){
+  if(!bearDown||e.button!==0)return;
+  var moved=Math.hypot(e.clientX-bearDown.x,e.clientY-bearDown.y);bearDown=null;
+  if(moved<5&&api())api().pet_open_dashboard();
+};
+$('close-x').onclick=function(e){e.stopPropagation();if(api())api().pet_close();else window.close()};
 window.addEventListener('pywebviewready',function(){if(api())api().pet_mode().then(tedPet.setMode)});
 scheduleBored();
 </script>

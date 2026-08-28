@@ -200,15 +200,22 @@ pet_html = _read("ui/ted_pet.html")
 check("the pet has voice, silent transcription, and text controls",
       all(f'id="{name}"' in pet_html for name in
           ("voice", "transcribe", "text", "pet-input")))
-check("right-click reveals an explicit Ted shutdown action",
-      "oncontextmenu" in pet_html and "shutdown_ted" in pet_html
-      and "SHUT DOWN TED" in pet_html)
+check("right-click reveals only the small close-pet x",
+      "oncontextmenu" in pet_html and 'id="close-x"' in pet_html
+      and "shutdown_ted" not in pet_html)
 check("the pet can close while Ted keeps running",
       "pet_close" in pet_html and "def pet_close" in app_src)
 check("typed pet turns are mirrored into the full conversation",
       "pet_ask" in pet_html and "def pet_ask" in app_src)
 check("text mode explicitly focuses the native pet before the textarea",
-      "pet_focus" in pet_html and "def pet_focus" in app_src)
+      "pet_focus" in pet_html and "def pet_focus" in app_src
+      and "focus=True" in _read("core/pet.py"))
+check("clicking the bear restores Ted's full dashboard",
+      "pet_open_dashboard" in pet_html and "def pet_open_dashboard" in app_src)
+check("the icon controls stay hidden until Ted or the area below is hovered",
+      "#bear:hover~#controls" in pet_html
+      and "#hover-zone:hover~#controls" in pet_html
+      and "opacity:0;pointer-events:none" in pet_html)
 check("the pet is opened with the same API as the HUD",
       "pet.open_pet(webview, api)" in _read("hud.py"))
 check("the old in-chat bear surfaces remain removed",

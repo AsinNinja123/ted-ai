@@ -29,7 +29,7 @@ def open_pet(webview, js_api=None):
                 width=270, height=320, min_size=(270, 320),
                 resizable=False, frameless=True, easy_drag=True,
                 on_top=True, shadow=False, transparent=True,
-                background_color="#000000", focus=False,
+                background_color="#000000", focus=True,
             )
             print("[pet] pixel pet is up")
         except Exception as exc:
@@ -56,6 +56,31 @@ def focus_pet():
     """Bring the pet forward so its text field can accept keyboard input."""
     window = _window
     if window is None:
+        return False
+
+
+def show_dashboard(window):
+    """Restore and activate Ted's full HUD when the pet itself is clicked."""
+    if window is None:
+        return False
+    try:
+        window.restore()
+        import AppKit
+        import Foundation
+
+        def show_on_main():
+            app = AppKit.NSApplication.sharedApplication()
+            app.activateIgnoringOtherApps_(True)
+            for native_window in app.windows():
+                if native_window.title().startswith("Ted "):
+                    native_window.makeKeyAndOrderFront_(None)
+                    break
+
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
+            show_on_main)
+        return True
+    except Exception as exc:
+        print(f"[pet] could not show dashboard: {exc}")
         return False
     try:
         window.restore()

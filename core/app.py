@@ -4341,6 +4341,10 @@ class TedApi:
         """Give the frameless pet keyboard focus before editing its text box."""
         return pet.focus_pet()
 
+    def pet_open_dashboard(self):
+        """A click on Ted restores the main chat/dashboard window."""
+        return pet.show_dashboard(self.window)
+
     def pet_ask(self, text):
         """Send typed pet input while keeping it visible in the full HUD too."""
         text = str(text or "").strip()
