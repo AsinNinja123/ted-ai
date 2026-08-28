@@ -4345,6 +4345,20 @@ class TedApi:
         """A click on Ted restores the main chat/dashboard window."""
         return pet.show_dashboard(self.window)
 
+    def pet_open(self):
+        """Main HUD button: restore or recreate the companion window."""
+        try:
+            import webview
+            return pet.open_pet(webview, js_api=self) is not None
+        except Exception as exc:
+            error_log.error(f"[pet] could not reopen: {exc}")
+            self.show_issue("I couldn't reopen the pet window.")
+            return False
+
+    def pet_resize_input(self, extra_height=0):
+        """Let the one-line pet composer grow downward as Charlie types."""
+        return pet.resize_for_input(extra_height)
+
     def pet_ask(self, text):
         """Send typed pet input while keeping it visible in the full HUD too."""
         text = str(text or "").strip()

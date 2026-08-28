@@ -223,9 +223,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 .chatitem .del:hover{color:var(--down);background:rgba(217,88,80,.15)}
 #sidefoot{padding:10px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--dim)}
 #sidefoot .row{display:flex;align-items:center;gap:10px;margin-top:6px}
-#membtn,#diagbtn,#notebtn{cursor:pointer;padding:6px 0;
+#membtn,#diagbtn,#notebtn,#petbtn{cursor:pointer;padding:6px 0;
   color:var(--dim);transition:color .2s}
-#membtn:hover,#diagbtn:hover,#notebtn:hover{color:var(--text)}
+#membtn:hover,#diagbtn:hover,#notebtn:hover,#petbtn:hover{color:var(--text)}
 .hd{display:flex;align-items:center;gap:4px;font-size:10px;letter-spacing:.08em}
 .hd i{width:6px;height:6px;border-radius:50%;background:var(--dim);display:inline-block}
 .hd i.on{background:var(--ok)}
@@ -606,6 +606,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
       <div id="membtn" title="Ted's memory">&#9783; Memory</div>
       <div id="diagbtn" title="Per-turn timings, tokens, which brain answered, and real errors">&#9201; Diagnostics</div>
       <div id="notebtn" title="Ted's notebook — pages he reads, writes and edits">&#128211; Notebook</div>
+      <div id="petbtn" title="Reopen the floating Ted pet">&#9633; Ted Pet</div>
     </div>
   </div>
 </div>
@@ -2022,6 +2023,7 @@ $('chatqx').onclick=function(){ $('chatq').value=''; setSearch(''); $('chatq').f
 $('newchat').onclick=newChat;
 $('membtn').onclick=function(){ tedHud.toggleMemory(); };
 $('diagbtn').onclick=function(){ tedHud.toggleDiagnostics(); };
+$('petbtn').onclick=function(){ if(api()&&api().pet_open) api().pet_open(); };
 /* ── attachments ──────────────────────────────────────────────────────────
    Three ways in, because Charlie will try all three: the paperclip (native
    picker, which is the only route that yields a real filesystem path), a file

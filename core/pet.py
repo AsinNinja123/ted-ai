@@ -1,9 +1,4 @@
-"""Floating pixel-pet window for Ted.
-
-The pet is a second, transparent pywebview surface backed by the same TedApi as
-the main HUD.  It owns presentation only: voice capture, transcription, chat,
-and shutdown all go through the existing runtime so there is still one Ted.
-"""
+"""Native window plumbing for Ted's floating pixel pet."""
 
 import json
 import os
@@ -12,9 +7,82 @@ import threading
 
 PET_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "ui", "ted_pet.html")
+BASE_WIDTH = 210
+BASE_HEIGHT = 205
 
 _window = None
 _lock = threading.Lock()
+_hover_monitor = None
+_hover_on = False
+_first_mouse_installed = False
+
+
+def _allow_first_mouse():
+    """Let controls receive the click that activates Ted from another app.
+
+    Cocoa normally consumes the first click on an inactive window. That made a
+    pet beside ChatGPT look interactive on hover but require a useless first
+    click before any button worked.
+    """
+    global _first_mouse_installed
+    if _first_mouse_installed:
+        return
+    try:
+        import objc
+        from webview.platforms.cocoa import BrowserView
+
+        def acceptsFirstMouse_(view, event):
+            return True
+
+        selector = objc.selector(acceptsFirstMouse_,
+                                 selector=b"acceptsFirstMouse:",
+                                 signature=b"Z@:@")
+        objc.classAddMethods(BrowserView.WebKitHost, [selector])
+        _first_mouse_installed = True
+    except Exception as exc:
+        print(f"[pet] first-click support unavailable: {exc}")
+
+
+def _install_native_hover():
+    """Track the pointer even while ChatGPT (or any other app) is active."""
+    try:
+        import AppKit
+        import Foundation
+
+        def install():
+            global _hover_monitor, _hover_on
+            native = next((w for w in AppKit.NSApplication.sharedApplication().windows()
+                           if w.title() == "Ted Pet"), None)
+            if native is None:
+                return
+            native.setAcceptsMouseMovedEvents_(True)
+            native.setHidesOnDeactivate_(False)
+            if _hover_monitor is not None:
+                AppKit.NSEvent.removeMonitor_(_hover_monitor)
+            _hover_on = False
+
+            def moved(event):
+                global _hover_on
+                point = AppKit.NSEvent.mouseLocation()
+                frame = native.frame()
+                inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
+                          and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
+                # Native coordinates rise from the bottom. The interactive pet
+                # and controls occupy the lower 190px; the bubble above is not
+                # an invitation to reveal controls.
+                near = inside and (point.y - frame.origin.y) <= 190
+                if near != _hover_on:
+                    _hover_on = near
+                    evaluate(f"tedPet.setHover({str(near).lower()})")
+
+            mask = getattr(AppKit, "NSEventMaskMouseMoved",
+                           getattr(AppKit, "NSMouseMovedMask", 0))
+            _hover_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                mask, moved)
+
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(install)
+    except Exception as exc:
+        print(f"[pet] inactive hover support unavailable: {exc}")
 
 
 def open_pet(webview, js_api=None):
@@ -22,15 +90,25 @@ def open_pet(webview, js_api=None):
     global _window
     with _lock:
         if _window is not None:
+            try:
+                _window.restore()
+            except Exception:
+                pass
             return _window
         try:
+            _allow_first_mouse()
             _window = webview.create_window(
                 "Ted Pet", PET_HTML, js_api=js_api,
-                width=270, height=320, min_size=(270, 320),
+                width=BASE_WIDTH, height=BASE_HEIGHT,
+                min_size=(BASE_WIDTH, BASE_HEIGHT),
                 resizable=False, frameless=True, easy_drag=True,
                 on_top=True, shadow=False, transparent=True,
                 background_color="#000000", focus=True,
             )
+            try:
+                _window.events.loaded += _install_native_hover
+            except Exception:
+                pass
             print("[pet] pixel pet is up")
         except Exception as exc:
             _window = None
@@ -38,11 +116,23 @@ def open_pet(webview, js_api=None):
         return _window
 
 
+def is_open():
+    return _window is not None
+
+
 def close_pet():
-    """Close the pet window without changing what appears next launch."""
-    global _window
+    """Close the pet window without shutting down Ted."""
+    global _window, _hover_monitor, _hover_on
     with _lock:
         window, _window = _window, None
+    try:
+        if _hover_monitor is not None:
+            import AppKit
+            AppKit.NSEvent.removeMonitor_(_hover_monitor)
+    except Exception:
+        pass
+    _hover_monitor = None
+    _hover_on = False
     if window is None:
         return False
     try:
@@ -53,9 +143,27 @@ def close_pet():
 
 
 def focus_pet():
-    """Bring the pet forward so its text field can accept keyboard input."""
+    """Make the pet key so its textarea receives actual keyboard events."""
     window = _window
     if window is None:
+        return False
+    try:
+        window.restore()
+        import AppKit
+        import Foundation
+
+        def focus_on_main():
+            app = AppKit.NSApplication.sharedApplication()
+            app.activateIgnoringOtherApps_(True)
+            for native in app.windows():
+                if native.title() == "Ted Pet":
+                    native.makeKeyAndOrderFront_(None)
+                    break
+
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(focus_on_main)
+        return True
+    except Exception as exc:
+        print(f"[pet] could not focus: {exc}")
         return False
 
 
@@ -71,35 +179,32 @@ def show_dashboard(window):
         def show_on_main():
             app = AppKit.NSApplication.sharedApplication()
             app.activateIgnoringOtherApps_(True)
-            for native_window in app.windows():
-                if native_window.title().startswith("Ted "):
-                    native_window.makeKeyAndOrderFront_(None)
+            for native in app.windows():
+                title = native.title()
+                if title != "Ted Pet" and title.startswith("Ted "):
+                    native.makeKeyAndOrderFront_(None)
                     break
 
-        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
-            show_on_main)
+        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(show_on_main)
         return True
     except Exception as exc:
         print(f"[pet] could not show dashboard: {exc}")
         return False
+
+
+def resize_for_input(extra_height=0):
+    """Grow the composer downward while keeping the pet's top-left anchored."""
+    window = _window
+    if window is None:
+        return False
     try:
-        window.restore()
-        import AppKit
-        import Foundation
-
-        def focus_on_main():
-            app = AppKit.NSApplication.sharedApplication()
-            app.activateIgnoringOtherApps_(True)
-            for native_window in app.windows():
-                if native_window.title() == "Ted Pet":
-                    native_window.makeKeyAndOrderFront_(None)
-                    break
-
-        Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
-            focus_on_main)
+        from webview.window import FixPoint
+        extra = max(0, min(int(extra_height or 0), 58))
+        window.resize(BASE_WIDTH, BASE_HEIGHT + extra,
+                      FixPoint.NORTH | FixPoint.WEST)
         return True
     except Exception as exc:
-        print(f"[pet] could not focus: {exc}")
+        print(f"[pet] could not resize input: {exc}")
         return False
 
 

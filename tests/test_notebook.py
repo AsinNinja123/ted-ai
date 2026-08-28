@@ -215,12 +215,24 @@ check("clicking the bear restores Ted's full dashboard",
 check("the icon controls stay hidden until Ted or the area below is hovered",
       "#bear:hover~#controls" in pet_html
       and "#hover-zone:hover~#controls" in pet_html
-      and "opacity:0;pointer-events:none" in pet_html)
+      and "opacity:0" in pet_html and "pointer-events:none" in pet_html)
+check("inactive macOS hover and first-click are handled natively",
+      "addGlobalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
+      and "acceptsFirstMouse:" in _read("core/pet.py"))
+check("Ted's body is thirty percent smaller",
+      "width:97px" in pet_html)
+check("the thin composer sits under the circles and grows downward",
+      "pet_resize_input" in pet_html and "def pet_resize_input" in app_src
+      and "FixPoint.NORTH | FixPoint.WEST" in _read("core/pet.py"))
+check("the thought bubble stays compact at Ted's upper right",
+      "#bubble{" in pet_html and "right:4px;top:4px;width:145px" in pet_html)
+check("the full HUD can reopen a closed pet",
+      'id="petbtn"' in hud and "api().pet_open()" in hud
+      and "def pet_open" in app_src)
 check("the pet is opened with the same API as the HUD",
       "pet.open_pet(webview, api)" in _read("hud.py"))
 check("the old in-chat bear surfaces remain removed",
-      'id="bear-id"' not in hud and 'id="petbtn"' not in hud
-      and "ted_bear.js" not in hud)
+      'id="bear-id"' not in hud and "ted_bear.js" not in hud)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
