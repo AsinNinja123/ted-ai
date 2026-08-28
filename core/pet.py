@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import time
 
 
 PET_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -14,6 +15,7 @@ _window = None
 _lock = threading.Lock()
 _hover_monitor = None
 _hover_on = False
+_hover_generation = 0
 _first_mouse_installed = False
 
 
@@ -50,35 +52,53 @@ def _install_native_hover():
         import Foundation
 
         def install():
-            global _hover_monitor, _hover_on
+            global _hover_monitor, _hover_on, _hover_generation
             native = next((w for w in AppKit.NSApplication.sharedApplication().windows()
                            if w.title() == "Ted Pet"), None)
             if native is None:
                 return
             native.setAcceptsMouseMovedEvents_(True)
             native.setHidesOnDeactivate_(False)
+            native.setCollectionBehavior_(
+                AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces |
+                AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
             if _hover_monitor is not None:
                 AppKit.NSEvent.removeMonitor_(_hover_monitor)
             _hover_on = False
 
-            def moved(event):
+            def update_hover():
                 global _hover_on
                 point = AppKit.NSEvent.mouseLocation()
                 frame = native.frame()
                 inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
                           and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
-                # Native coordinates rise from the bottom. The interactive pet
-                # and controls occupy the lower 190px; the bubble above is not
-                # an invitation to reveal controls.
                 near = inside and (point.y - frame.origin.y) <= 190
                 if near != _hover_on:
                     _hover_on = near
                     evaluate(f"tedPet.setHover({str(near).lower()})")
 
+            def moved(event):
+                update_hover()
+
             mask = getattr(AppKit, "NSEventMaskMouseMoved",
                            getattr(AppKit, "NSMouseMovedMask", 0))
             _hover_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
                 mask, moved)
+            update_hover()
+            _hover_generation += 1
+            generation = _hover_generation
+
+            def poll_pointer():
+                while _window is not None and generation == _hover_generation:
+                    try:
+                        update_hover()
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+
+            threading.Thread(target=poll_pointer, daemon=True,
+                             name="pet-hover").start()
+            print("[pet] inactive hover tracking ON")
 
         Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(install)
     except Exception as exc:
@@ -109,6 +129,10 @@ def open_pet(webview, js_api=None):
                 _window.events.loaded += _install_native_hover
             except Exception:
                 pass
+            # Cocoa can finish a secondary window before create_window()
+            # returns, which means the loaded event has already happened.
+            # Queue the same idempotent setup now as well.
+            _install_native_hover()
             print("[pet] pixel pet is up")
         except Exception as exc:
             _window = None
@@ -122,7 +146,7 @@ def is_open():
 
 def close_pet():
     """Close the pet window without shutting down Ted."""
-    global _window, _hover_monitor, _hover_on
+    global _window, _hover_monitor, _hover_on, _hover_generation
     with _lock:
         window, _window = _window, None
     try:
@@ -133,6 +157,7 @@ def close_pet():
         pass
     _hover_monitor = None
     _hover_on = False
+    _hover_generation += 1
     if window is None:
         return False
     try:
