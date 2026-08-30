@@ -8,8 +8,8 @@ import time
 
 PET_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "ui", "ted_pet.html")
-BASE_WIDTH = 210
-BASE_HEIGHT = 205
+BASE_WIDTH = 292
+BASE_HEIGHT = 248
 
 _window = None
 _lock = threading.Lock()
@@ -59,9 +59,12 @@ def _install_native_hover():
                 return
             native.setAcceptsMouseMovedEvents_(True)
             native.setHidesOnDeactivate_(False)
+            native.setCanHide_(False)
+            native.setLevel_(AppKit.NSFloatingWindowLevel)
             native.setCollectionBehavior_(
                 AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces |
                 AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
+            native.orderFrontRegardless()
             if _hover_monitor is not None:
                 AppKit.NSEvent.removeMonitor_(_hover_monitor)
             _hover_on = False
@@ -72,7 +75,7 @@ def _install_native_hover():
                 frame = native.frame()
                 inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
                           and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
-                near = inside and (point.y - frame.origin.y) <= 190
+                near = inside and (point.y - frame.origin.y) <= 215
                 if near != _hover_on:
                     _hover_on = near
                     evaluate(f"tedPet.setHover({str(near).lower()})")
@@ -193,7 +196,7 @@ def focus_pet():
 
 
 def show_dashboard(window):
-    """Restore and activate Ted's full HUD when the pet itself is clicked."""
+    """Restore and activate Ted's full HUD when the pet is double-clicked."""
     if window is None:
         return False
     try:

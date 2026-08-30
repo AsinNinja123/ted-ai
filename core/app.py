@@ -4342,7 +4342,7 @@ class TedApi:
         return pet.focus_pet()
 
     def pet_open_dashboard(self):
-        """A click on Ted restores the main chat/dashboard window."""
+        """A double-click on Ted restores the main chat/dashboard window."""
         return pet.show_dashboard(self.window)
 
     def pet_open(self):

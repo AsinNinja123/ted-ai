@@ -210,22 +210,31 @@ check("typed pet turns are mirrored into the full conversation",
 check("text mode explicitly focuses the native pet before the textarea",
       "pet_focus" in pet_html and "def pet_focus" in app_src
       and "focus=True" in _read("core/pet.py"))
-check("clicking the bear restores Ted's full dashboard",
-      "pet_open_dashboard" in pet_html and "def pet_open_dashboard" in app_src)
+check("only double-clicking Ted restores the full dashboard",
+      "ondblclick" in pet_html and "pet_open_dashboard" in pet_html
+      and "def pet_open_dashboard" in app_src and "document.onmouseup" not in pet_html)
 check("the icon controls stay hidden until Ted or the area below is hovered",
-      "#bear:hover~#controls" in pet_html
+      "#character:hover~#controls" in pet_html
       and "#hover-zone:hover~#controls" in pet_html
       and "opacity:0" in pet_html and "pointer-events:none" in pet_html)
 check("inactive macOS hover and first-click are handled natively",
       "addGlobalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
       and "acceptsFirstMouse:" in _read("core/pet.py"))
-check("Ted's body is thirty percent smaller",
-      "width:97px" in pet_html)
-check("the thin composer sits under the circles and grows downward",
+check("Ted has a large separate head and small separate body",
+      'id="head-piece"' in pet_html and 'id="body-piece"' in pet_html
+      and "#head-piece" in pet_html and "#body-piece" in pet_html)
+check("the Messages-style composer sits under the controls and grows downward",
       "pet_resize_input" in pet_html and "def pet_resize_input" in app_src
-      and "FixPoint.NORTH | FixPoint.WEST" in _read("core/pet.py"))
-check("the thought bubble stays compact at Ted's upper right",
-      "#bubble{" in pet_html and "right:4px;top:4px;width:145px" in pet_html)
+      and "FixPoint.NORTH | FixPoint.WEST" in _read("core/pet.py")
+      and "border-radius:21px" in pet_html)
+check("the smooth comic bubble stays beside Ted and off his face",
+      "#bubble{" in pet_html and "right:8px;top:9px;width:126px" in pet_html
+      and "border-radius:48%" in pet_html)
+check("Ted has sleepy, thinking, and long-work animations",
+      all(token in pet_html for token in
+          ('id="sleep"', 'id="glasses"', 'id="chalkboard"', 'id="work-prop"', "state='working'")))
+check("pet controls use translucent rounded glass styling",
+      "backdrop-filter:blur(18px)" in pet_html and "border-radius:50%" in pet_html)
 check("the full HUD can reopen a closed pet",
       'id="petbtn"' in hud and "api().pet_open()" in hud
       and "def pet_open" in app_src)
