@@ -3,7 +3,6 @@
 import json
 import os
 import threading
-import time
 
 
 PET_HTML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -14,8 +13,10 @@ BASE_HEIGHT = 248
 _window = None
 _lock = threading.Lock()
 _hover_monitor = None
+_click_monitor = None
+_hover_timer = None
 _hover_on = False
-_hover_generation = 0
+_hover_native = None
 _first_mouse_installed = False
 
 
@@ -52,11 +53,14 @@ def _install_native_hover():
         import Foundation
 
         def install():
-            global _hover_monitor, _hover_on, _hover_generation
+            global _hover_monitor, _click_monitor, _hover_timer, _hover_on, _hover_native
             native = next((w for w in AppKit.NSApplication.sharedApplication().windows()
                            if w.title() == "Ted Pet"), None)
             if native is None:
                 return
+            if _hover_native is native and _hover_timer is not None:
+                return
+            _hover_native = native
             native.setAcceptsMouseMovedEvents_(True)
             native.setHidesOnDeactivate_(False)
             native.setCanHide_(False)
@@ -67,6 +71,10 @@ def _install_native_hover():
             native.orderFrontRegardless()
             if _hover_monitor is not None:
                 AppKit.NSEvent.removeMonitor_(_hover_monitor)
+            if _click_monitor is not None:
+                AppKit.NSEvent.removeMonitor_(_click_monitor)
+            if _hover_timer is not None:
+                _hover_timer.invalidate()
             _hover_on = False
 
             def update_hover():
@@ -80,27 +88,77 @@ def _install_native_hover():
                     _hover_on = near
                     evaluate(f"tedPet.setHover({str(near).lower()})")
 
-            def moved(event):
+            def route_press(event, point=None):
+                # A global monitor sees presses sent to other applications,
+                # which is precisely the first click Cocoa can consume while
+                # Ted floats above an active window. Route that press to the
+                # real DOM element beneath it. Events already delivered to Ted
+                # are not visible to a global monitor, so this cannot double-
+                # fire a button that worked normally.
+                point = point or AppKit.NSEvent.mouseLocation()
+                frame = native.frame()
+                inside = (frame.origin.x <= point.x <= frame.origin.x + frame.size.width
+                          and frame.origin.y <= point.y <= frame.origin.y + frame.size.height)
+                if not inside:
+                    return
+                web_x = point.x - frame.origin.x
+                web_y = frame.size.height - (point.y - frame.origin.y)
+                clicks = max(1, int(event.clickCount()))
+                code = "tedPet.nativePress(%.1f, %.1f, %d)" % (web_x, web_y, clicks)
+                # Do not evaluate WebKit JavaScript re-entrantly inside Cocoa's
+                # event monitor. Queue it for the next main-loop turn so the
+                # native press can finish immediately.
+                def dispatch():
+                    evaluate(code)
+
+                Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    dispatch)
+
+            def observed(event):
                 update_hover()
+                left_down = getattr(AppKit, "NSEventTypeLeftMouseDown",
+                                    getattr(AppKit, "NSLeftMouseDown", 1))
+                if event.type() == left_down:
+                    route_press(event)
 
-            mask = getattr(AppKit, "NSEventMaskMouseMoved",
-                           getattr(AppKit, "NSMouseMovedMask", 0))
+            moved_mask = getattr(AppKit, "NSEventMaskMouseMoved",
+                                 getattr(AppKit, "NSMouseMovedMask", 0))
+            down_mask = getattr(AppKit, "NSEventMaskLeftMouseDown",
+                                getattr(AppKit, "NSLeftMouseDownMask", 0))
+            mask = moved_mask | down_mask
             _hover_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                mask, moved)
+                mask, observed)
+            # When acceptsFirstMouse succeeds, Cocoa sends the inactive press
+            # to Ted instead of the other app, so the global monitor correctly
+            # does not see it. Intercept just the glass control strip locally,
+            # dispatch its DOM click once, and consume the native press. This
+            # avoids both the swallowed-first-click bug and duplicate actions.
+            def local_press(event):
+                if event.window() != native:
+                    return event
+                point = event.locationInWindow()
+                web_x = point.x
+                web_y = native.frame().size.height - point.y
+                over_controls = 12 <= web_x <= 137 and 142 <= web_y <= 194
+                if not over_controls:
+                    return event
+                screen_point = AppKit.NSMakePoint(
+                    native.frame().origin.x + point.x,
+                    native.frame().origin.y + point.y)
+                route_press(event, screen_point)
+                return None
+
+            _click_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                down_mask, local_press)
+            # The global monitor handles active pointer movement immediately.
+            # A low-frequency native timer covers the one edge case it misses:
+            # another window moving Ted underneath a stationary pointer.  This
+            # must stay on Cocoa's main run loop.  The old Python polling thread
+            # touched NSWindow and WKWebView ten times per second off-main and
+            # could make an inactive floating pet feel intermittently unclickable.
+            _hover_timer = Foundation.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.35, True, lambda timer: update_hover())
             update_hover()
-            _hover_generation += 1
-            generation = _hover_generation
-
-            def poll_pointer():
-                while _window is not None and generation == _hover_generation:
-                    try:
-                        update_hover()
-                    except Exception:
-                        pass
-                    time.sleep(0.1)
-
-            threading.Thread(target=poll_pointer, daemon=True,
-                             name="pet-hover").start()
             print("[pet] inactive hover tracking ON")
 
         Foundation.NSOperationQueue.mainQueue().addOperationWithBlock_(install)
@@ -149,18 +207,27 @@ def is_open():
 
 def close_pet():
     """Close the pet window without shutting down Ted."""
-    global _window, _hover_monitor, _hover_on, _hover_generation
+    global _window, _hover_monitor, _click_monitor, _hover_timer, _hover_on, _hover_native
     with _lock:
         window, _window = _window, None
     try:
         if _hover_monitor is not None:
             import AppKit
             AppKit.NSEvent.removeMonitor_(_hover_monitor)
+        if _click_monitor is not None:
+            AppKit.NSEvent.removeMonitor_(_click_monitor)
+    except Exception:
+        pass
+    try:
+        if _hover_timer is not None:
+            _hover_timer.invalidate()
     except Exception:
         pass
     _hover_monitor = None
+    _click_monitor = None
+    _hover_timer = None
     _hover_on = False
-    _hover_generation += 1
+    _hover_native = None
     if window is None:
         return False
     try:
