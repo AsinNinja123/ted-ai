@@ -220,9 +220,9 @@ check("the icon controls stay hidden until Ted or the area below is hovered",
 check("inactive macOS hover and first-click are handled natively",
       "addGlobalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
       and "acceptsFirstMouse:" in _read("core/pet.py"))
-check("Ted has a large separate head and small separate body",
-      'id="head-piece"' in pet_html and 'id="body-piece"' in pet_html
-      and "#head-piece" in pet_html and "#body-piece" in pet_html)
+check("Ted uses one unified large-head, small-body sprite",
+      'id="bear"' in pet_html and 'src="ted_pet_chibi.png"' in pet_html
+      and "#head-piece" not in pet_html and "#body-piece" not in pet_html)
 check("the Messages-style composer sits under the controls and grows downward",
       "pet_resize_input" in pet_html and "def pet_resize_input" in app_src
       and "FixPoint.NORTH | FixPoint.WEST" in _read("core/pet.py")
