@@ -217,15 +217,14 @@ check("the icon controls stay hidden until Ted or the area below is hovered",
       "#character:hover~#controls" in pet_html
       and "#hover-zone:hover~#controls" in pet_html
       and "opacity:0" in pet_html and "pointer-events:none" in pet_html)
-check("inactive macOS hover and first-click stay on native event paths",
-      "addGlobalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
-      and "scheduledTimerWithTimeInterval_repeats_block_" in _read("core/pet.py")
-      and "acceptsFirstMouse:" in _read("core/pet.py")
-      and "NSEventMaskLeftMouseDown" in _read("core/pet.py")
-      and "addLocalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
-      and "tedPet.nativePress" in _read("core/pet.py")
-      and "nativePress:function" in pet_html
-      and "name=\"pet-hover\"" not in _read("core/pet.py"))
+check("inactive first-click is dispatched away from Cocoa's event thread",
+      "acceptsFirstMouse:" in _read("core/pet.py")
+      and "setAcceptsMouseMovedEvents_" in _read("core/pet.py")
+      and "addGlobalMonitorForEventsMatchingMask_handler_" in _read("core/pet.py")
+      and 'name="pet-click"' in _read("core/pet.py")
+      and "scheduledTimerWithTimeInterval_repeats_block_" not in _read("core/pet.py")
+      and "addLocalMonitorForEventsMatchingMask_handler_" not in _read("core/pet.py")
+      and "nativePress:function" in pet_html)
 check("Ted uses one unified large-head, small-body sprite",
       'id="bear"' in pet_html and 'src="ted_pet_chibi.png"' in pet_html
       and "#head-piece" not in pet_html and "#body-piece" not in pet_html)
@@ -239,8 +238,8 @@ check("the smooth comic bubble stays beside Ted and off his face",
 check("Ted has sleepy, thinking, and long-work animations",
       all(token in pet_html for token in
           ('id="sleep"', 'id="glasses"', 'id="chalkboard"', 'id="work-prop"', "state='working'")))
-check("pet controls use translucent rounded glass styling",
-      "backdrop-filter:blur(18px)" in pet_html and "border-radius:50%" in pet_html
+check("pet controls use lightweight translucent rounded glass styling",
+      "backdrop-filter:blur(6px)" in pet_html and "border-radius:50%" in pet_html
       and "visibility:hidden" in pet_html)
 check("the full HUD can reopen a closed pet",
       'id="petbtn"' in hud and "api().pet_open()" in hud
