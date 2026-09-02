@@ -348,6 +348,35 @@ def _family_names(text):
 #   too few tools   -> the model calls find_tools and asks for more (§7.3)
 # Only the second one is even visible, and it self-corrects. That asymmetry is
 # what lets this file stay simple.
+# [BOOK §7.4] ─── SOMETHING IS WAITING ON SCREEN ──────────────────────────────
+# A CLI or a dialog that has stopped and asked a question leaves a recognisable
+# shape in the text Ted already read back: a confirm hint, a y/n, a highlighted
+# option. When the last verified action surfaced one of those, the next turn is
+# probably the answer to it, however short and however it is worded.
+#
+# This is a capability hint like every other one in this file. It loads the
+# tools for interacting with what is on screen; the model still decides whether
+# to press anything, and what.
+_PENDING_PROMPT = re.compile(
+    r"(?:enter to confirm|press enter to|\(y/n\)|\[y/n\]|\by\s*/\s*n\b|"
+    r"do you want to (?:proceed|continue|trust)|are you sure|"
+    r"yes,? i trust|trust (?:this|the) (?:folder|workspace|author)|"
+    r"overwrite\?|continue\?|proceed\?|confirm\?|"
+    r"esc to cancel|\u276f\s*\S)", re.I)
+
+# Read what is in front of him, then answer it. Five, not the whole MacAgent
+# set: ui_fill is for forms rather than prompts, and screen_describe is a vision
+# call this turn has no reason to pay for when the text was already read back.
+# Nothing here is a capability Ted did not already have.
+_ON_SCREEN_TOOLS = ("terminal_read", "ui_inspect", "ui_press",
+                    "type_text", "press_key")
+
+
+def screen_awaits_answer(recent_action_text):
+    """True when the last verified action left a prompt waiting for input."""
+    return bool(_PENDING_PROMPT.search(recent_action_text or ""))
+
+
 def select_tool_schemas(text, recent_action_text=""):
     """Return only the capability contracts this turn is likely to use.
 
@@ -391,6 +420,19 @@ def select_tool_schemas(text, recent_action_text=""):
             break
     if chosen:
         return chosen
+    # An answer to something already on the screen is a continuation of the
+    # last turn, not a new request — and it almost never contains a word any
+    # family matches. "say yes" went out with tools=0 while Claude Code sat on
+    # a trust prompt, so Ted could not have pressed the button even if he had
+    # wanted to, and the empty menu then demoted the turn to the local brain.
+    #
+    # Note what is being matched: the EVIDENCE Ted already collected, not
+    # Charlie's phrasing. A pattern over screen text asks "is something
+    # waiting?"; a pattern over the user's words would be guessing what he
+    # meant, which is the vending machine this file exists to avoid.
+    if screen_awaits_answer(recent_action_text):
+        return [_SCHEMA_BY_NAME[n] for n in _ON_SCREEN_TOOLS
+                if n in _SCHEMA_BY_NAME]
     return [FIND_TOOLS_SCHEMA] if likely_action_request(text) else []
 
 

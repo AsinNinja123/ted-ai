@@ -127,6 +127,17 @@ try:
 except Exception:
     PRIMARY_CHAT_MODEL = "gpt-5.6-luna"
 
+# Luna refuses function tools and reasoning together on /v1/chat/completions.
+# /v1/responses is the endpoint that has somewhere to keep the model's thinking
+# between tool rounds. Default OFF: Ted is a daily driver, so the rollback for
+# a bad turn has to be one line in config.py, not a git operation.
+try:
+    from config import USE_LUNA_RESPONSES
+except Exception:
+    USE_LUNA_RESPONSES = False
+
+from core import luna_responses
+
 try:
     from config import CLOUD_CHAT_MODEL
 except Exception:
@@ -506,11 +517,25 @@ def _luna_create(**kwargs):
     # Ted uses "default" for Groq. OpenAI expects an explicit supported level.
     if params.get("reasoning_effort") == "default":
         params["reasoning_effort"] = "low"
-    # GPT-5.6 tool calls with reasoning are a Responses API feature. Ted's
-    # streamed tool loop still speaks Chat Completions, where Luna explicitly
-    # accepts function tools only with reasoning disabled. Preserve reasoning
-    # for prose turns, but make every tool-bearing round valid on this endpoint.
+    # A tool-bearing turn is exactly the turn that most needs to think, and
+    # Chat Completions has nowhere to keep that thinking between rounds. Send
+    # it to /v1/responses instead, which does. See core/luna_responses.py.
+    #
+    # With the flag off this falls back to the old behaviour — reasoning
+    # disabled on tool turns — because the request is otherwise a 400.
     if params.get("tools"):
+        if USE_LUNA_RESPONSES:
+            return luna_responses.create(
+                _openai,
+                model=params["model"],
+                messages=params.get("messages") or [],
+                tools=params.get("tools"),
+                tool_choice=params.get("tool_choice"),
+                reasoning_effort=params.get("reasoning_effort"),
+                max_tokens=params.get("max_completion_tokens"),
+                stream=bool(params.get("stream")),
+                timeout=params.get("timeout"),
+            )
         params["reasoning_effort"] = "none"
     return _openai.chat.completions.create(**params)
 

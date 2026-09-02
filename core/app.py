@@ -1246,8 +1246,12 @@ class TedApi:
         _needs_operational = bool(
             _action_likely or _interpretation.references
             or _interpretation.missing_information)
-        _recent_context = (routing.operational_context(self._recent_actions)
-                           if _needs_operational else "")
+        # Computed unconditionally. It is a few hundred characters of already
+        # verified action results, and select_tool_schemas now needs it even on
+        # turns that do not look operational — "say yes" while a terminal sits
+        # on a confirm prompt is the case that made this necessary. What gets
+        # INJECTED into the prompt is still gated by _needs_operational below.
+        _recent_context = routing.operational_context(self._recent_actions)
         if not LEGACY_LADDER:
             # Only recent verified actions may influence pronoun-based tool
             # selection. Passing the whole generated context here used words in
@@ -1274,7 +1278,10 @@ class TedApi:
         _op_context = "\n".join(
             part for part in (
                 _lingo_context, _interpretation_context, _task_context,
-                _relationship_context, _behavior_example, _live_context, _recent_context,
+                _relationship_context, _behavior_example, _live_context,
+                # Selection above may read the recent actions on any turn; the
+                # PROMPT only pays for them when the turn is operational.
+                _recent_context if _needs_operational else "",
             ) if part)
         if not LEGACY_LADDER and _selected_schemas:
             def _selected_dispatch(name, args):

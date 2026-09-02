@@ -161,6 +161,38 @@ def looks_like_failure(result):
     return any(m in r for m in _FAILURE_MARKERS)
 
 
+# [BOOK §11.9] ─── A WALL, NOT A FAILURE ─────────────────────────────────────
+# Some things Ted cannot do are not bugs and never will be. macOS refuses
+# synthetic clicks on its own permission, keychain and admin dialogs — that
+# refusal IS the security boundary, and an assistant able to grant itself file
+# access would not have one. Accessibility being switched off is the same
+# shape: a human hand has to move.
+#
+# These have to read differently from "the tool broke". A failure invites a
+# retry; a wall invites Charlie. Reported as a failure Ted loops on it; reported
+# as nothing at all he stalls in silence, which is exactly what happened when a
+# trust prompt appeared and the only way forward was Charlie typing "say yes"
+# into a turn that had no idea a task was in flight.
+_HUMAN_HAND_MARKERS = (
+    "accessibility permission", "accessibility access", "not trusted for",
+    "screen recording permission", "automation permission",
+    "grant access", "allow access", "system settings > privacy",
+    "requires your permission", "administrator password", "keychain",
+    "would like to access",
+)
+
+
+def needs_human_hand(result):
+    """True when the only way past this is Charlie clicking something.
+
+    Same technique as looks_like_failure and for the same reason: in this
+    codebase the sentence Ted says IS the result, so there is no status-code
+    layer to drift out of step with it.
+    """
+    r = (result or "").lower()
+    return any(m in r for m in _HUMAN_HAND_MARKERS)
+
+
 # Utterances likely to be action commands vs. conversation — used to skip the
 # tool-calling LLM round-trip for pure conversational messages.
 _TOOL_VERBS = frozenset({

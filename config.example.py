@@ -6,6 +6,7 @@
 # ── LLM ──────────────────────────────────────────────────────────────────────
 OPENAI_API_KEY = ""        # optional; when set, GPT-5.6 Luna is tried first
 PRIMARY_CHAT_MODEL = "gpt-5.6-luna"
+USE_LUNA_RESPONSES = False    # True = tool turns go to /v1/responses so Luna can reason
 GROQ_API_KEY = ""          # optional free hosted brain; local Ollama works without it
 CLOUD_CHAT_MODEL = "qwen/qwen3.6-27b"  # Groq fallback
 LOCAL_CHAT_MODEL = "qwen3.5:9b-q4_K_M"

@@ -101,11 +101,25 @@ class MacAgent(BaseAgent):
 
     def _call(self, method, args):
         result = str(self._dispatch(method, dict(args)) or "").strip()
+        evidence = {"tool": method, "args": dict(args), "result": result}
+        # A wall gets its own wording (§11.9). Ted stopping is correct here —
+        # macOS will not let anyone click its permission dialogs but Charlie —
+        # so the useful thing is saying WHICH wall, immediately, in the thought
+        # bubble, instead of going quiet and waiting to be prodded.
+        if tool_handlers.needs_human_hand(result):
+            evidence["blocked_on"] = "human"
+            return AgentResult(
+                ok=False,
+                did=result,
+                evidence=evidence,
+                failed=f"{result} I can see it but I can't click it — "
+                       f"that one needs you.",
+            )
         failed = tool_handlers.looks_like_failure(result)
         return AgentResult(
             ok=not failed,
             did=result or "The tool returned no result.",
-            evidence={"tool": method, "args": dict(args), "result": result},
+            evidence=evidence,
             failed=result if failed else None,
         )
 

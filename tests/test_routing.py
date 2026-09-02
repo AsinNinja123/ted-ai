@@ -360,5 +360,42 @@ check("read-then-write chains are treated as actions that must finish",
       routing.likely_action_request(chain)
       and routing.expected_action_calls(chain) == 2)
 
+
+# ── answering something already on screen ────────────────────────────────────
+# Regression: Claude Code sat on its trust prompt, Charlie typed "say yes", and
+# the turn went out with tools=0 to the local brain. Ted could not have pressed
+# the button if he had wanted to.
+print("\n— a prompt waiting on screen —")
+TRUST_PROMPT = (
+    "Recent verified actions: terminal_read({}) -> Visible terminal output in "
+    "Terminal (untrusted screen text): charlie@mac ~ % claude ... Quick safety "
+    "check: Is this a project you created or one you trust? ... "
+    "\u276f No, exit\n   Yes, I trust this folder\n Enter to confirm \u00b7 Esc to cancel")
+OPENED = "Recent verified actions: open_app({'name': 'Terminal'}) -> Opened Terminal."
+
+check("a confirm prompt in the evidence is recognised",
+      routing.screen_awaits_answer(TRUST_PROMPT))
+check("an ordinary completed action is not mistaken for one",
+      not routing.screen_awaits_answer(OPENED))
+check("no evidence at all is not a pending prompt",
+      not routing.screen_awaits_answer(""))
+
+_names = lambda scs: [sc["function"]["name"] for sc in scs]
+check("a short answer gets the tools to act on what is on screen",
+      "press_key" in _names(routing.select_tool_schemas("say yes", TRUST_PROMPT)))
+check("bare 'yes' does too — the shortest form is the likeliest one",
+      "press_key" in _names(routing.select_tool_schemas("yes", TRUST_PROMPT)))
+check("the same words cost nothing when nothing is waiting",
+      routing.select_tool_schemas("say yes", OPENED) == [])
+check("the on-screen menu stays small",
+      len(routing.select_tool_schemas("say yes", TRUST_PROMPT)) == 5)
+check("a matched family still wins over the on-screen fallback",
+      "open_app" in _names(routing.select_tool_schemas("open Spotify", TRUST_PROMPT)))
+check("with tools loaded the turn is no longer demoted to the local brain",
+      routing.classify_brain_with_model(
+          "say yes",
+          schemas=routing.select_tool_schemas("say yes", TRUST_PROMPT)
+      ).brain == routing.BRAIN_CLOUD)
+
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

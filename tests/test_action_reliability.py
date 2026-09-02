@@ -208,5 +208,38 @@ try:
 finally:
     actions.subprocess.run = original_action_run
 
+
+# ── a wall is not a failure ──────────────────────────────────────────────────
+# macOS refuses synthetic clicks on its own permission dialogs. Ted stopping
+# there is correct; Ted stopping there SILENTLY is what left Charlie typing
+# "say yes" into a turn that had no idea anything was waiting.
+print("\n— walls report themselves —")
+check("an accessibility refusal is a wall, not a broken tool",
+      th.needs_human_hand("Accessibility permission is off for Ted."))
+check("a folder-access prompt is a wall",
+      th.needs_human_hand('Ted would like to access files in your Documents folder'))
+check("an ordinary tool failure is not a wall",
+      not th.needs_human_hand("Couldn't find Spotify.")
+      and th.looks_like_failure("Couldn't find Spotify."))
+check("a plain success is neither",
+      not th.needs_human_hand("Opened Terminal.")
+      and not th.looks_like_failure("Opened Terminal."))
+
+from core.agents import MacAgent  # noqa: E402
+
+_blocked = MacAgent(
+    dispatch=lambda name, args: "Accessibility permission is off for Ted.",
+    list_apps=lambda: [],
+)._call("ui_press", {"target": "Yes, I trust this folder"})
+check("MacAgent turns a wall into a reported failure, not a stall",
+      _blocked.ok is False and "needs you" in (_blocked.failed or ""))
+check("the evidence names what it is blocked on",
+      _blocked.evidence.get("blocked_on") == "human")
+
+_ok = MacAgent(dispatch=lambda name, args: "Pressed enter.",
+               list_apps=lambda: [])._call("press_key", {"key": "enter"})
+check("a normal press is untouched by the new branch",
+      _ok.ok is True and _ok.failed is None)
+
 print(f"\n{'=' * 50}\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)
