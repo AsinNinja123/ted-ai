@@ -244,8 +244,9 @@ check("pet controls use lightweight translucent rounded glass styling",
 check("the full HUD can reopen a closed pet",
       'id="petbtn"' in hud and "api().pet_open()" in hud
       and "def pet_open" in app_src)
-check("the pet is opened with the same API as the HUD",
-      "pet.open_pet(webview, api)" in _read("hud.py"))
+check("the pet opens only from the HUD button, never automatically at startup",
+      "pet.open_pet(webview, api)" not in _read("hud.py")
+      and "pet.open_pet(webview, js_api=self)" in app_src)
 check("the old in-chat bear surfaces remain removed",
       'id="bear-id"' not in hud and "ted_bear.js" not in hud)
 

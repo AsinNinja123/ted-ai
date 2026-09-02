@@ -438,6 +438,8 @@ check("thinking disappears as soon as reply text arrives",
 check("starting a new chat cannot leave a hidden thinking timer running",
       "function newChat(){" in hud2 and "hideThinking();" in
       hud2[hud2.index("function newChat(){"):hud2.index("function newChat(){") + 260])
+check("a startup greeting cannot create a chat before the user types",
+      "role!=='user' && currentChat==null && chatCreatePromise==null" in hud2)
 
 
 print("\n" + "=" * 50)

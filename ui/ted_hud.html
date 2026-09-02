@@ -1271,6 +1271,12 @@ function ensureChat(epoch){
 }
 function recordTurn(role,text){
   if(!text||!text.trim()) return Promise.resolve(currentChat);
+  /* Startup greetings, recaps, and proactive suggestions are display-only
+     until Charlie actually says something. A Ted-only launch is not a
+     conversation and must not create a memory/sidebar row. Once a user turn
+     creates the chat, every following Ted turn is persisted normally. */
+  if(role!=='user' && currentChat==null && chatCreatePromise==null)
+    return Promise.resolve(null);
   turnCount++;
   var epoch=chatEpoch, turn={role:role,content:text};
   chatSaveQueue=chatSaveQueue.then(function(){
