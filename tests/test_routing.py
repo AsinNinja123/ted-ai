@@ -86,7 +86,7 @@ check("unrelated comma-separated actions are both required",
 terminal_chain = "open Terminal and run the status command"
 check("terminal command chains get entry and submission tools",
       routing.expected_action_calls(terminal_chain) == 3
-      and {"open_app", "type_text", "press_key"}.issubset(
+      and {"open_app", "terminal_read", "type_text", "press_key"}.issubset(
           names(routing.select_tool_schemas(terminal_chain))))
 check("discussion containing an action verb does not force execution",
       not routing.likely_action_request(

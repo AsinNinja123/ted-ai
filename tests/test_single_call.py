@@ -135,6 +135,7 @@ def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=N
             "calculate": ({"expression": {"type": "string"}}, ["expression"]),
             "set_timer": ({"duration": {"type": "string"}}, ["duration"]),
             "screen_describe": ({"question": {"type": "string"}}, []),
+            "terminal_read": ({}, []),
             "type_text": ({"text": {"type": "string"}}, ["text"]),
             "press_key": ({"key": {"type": "string"}}, ["key"]),
             "clipboard_write": ({"text": {"type": "string"}}, ["text"]),
@@ -501,13 +502,16 @@ llm.chat_create = scripted(
     FakeStream([tool_chunk(0, id="c4", name="press_key",
                            args='{"key":"enter"}')]),
     FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="c5", name="terminal_read", args='{}')]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("open a terminal, open an assistant and prompt it to build a calculator",
              runtime(lambda n, a: (COMPOUND_CONTROL.append(n), f"{n} ok.")[1],
                      action_tools={"open_app", "type_text", "press_key"}),
              require_tool=True, context_scope="none", min_action_calls=4)
 check("compound control keeps executing past the first opened app",
-      COMPOUND_CONTROL == ["open_app", "open_app", "type_text", "press_key"])
+      COMPOUND_CONTROL == ["open_app", "open_app", "type_text", "press_key",
+                           "terminal_read"])
 check("compound control reports every verified operation",
       out == "open_app ok. open_app ok. type_text ok. press_key ok.")
 
@@ -522,15 +526,66 @@ llm.chat_create = scripted(
     FakeStream([tool_chunk(0, id="c3", name="press_key",
                            args='{"key":"enter"}')]),
     FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="c4", name="terminal_read", args='{}')]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("open Terminal and run the task", runtime(
     lambda n, a: (AUDITED_CONTROL.append(n), f"{n} ok.")[1],
     action_tools={"open_app", "type_text", "press_key"}),
     require_tool=True, context_scope="none", min_action_calls=2)
 check("completion audit catches a missing UI operation beyond the lower bound",
-      AUDITED_CONTROL == ["open_app", "type_text", "press_key"])
+      AUDITED_CONTROL == ["open_app", "type_text", "press_key", "terminal_read"])
 check("the internal completion marker never appears in Ted's reply",
       out == "open_app ok. type_text ok. press_key ok." and "COMPLETE" not in out)
+
+TERMINAL_RECOVERY = []
+terminal_outputs = iter([
+    "Claude Code needs access to files in this folder. Continue? [y/N]",
+    "Error resolved after approval. Claude Code ready >",
+    "Created calculator.py",
+])
+
+def terminal_dispatch(name, args):
+    TERMINAL_RECOVERY.append((name, dict(args)))
+    if name == "terminal_read":
+        return next(terminal_outputs)
+    return f"{name} ok."
+
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="t1", name="open_app",
+                           args='{"name":"Terminal"}')]),
+    FakeStream([tool_chunk(0, id="t2", name="type_text",
+                           args='{"text":"claude"}')]),
+    FakeStream([tool_chunk(0, id="t3", name="press_key",
+                           args='{"key":"enter"}')]),
+    # The model tries to stop, but the loop requires terminal evidence.
+    FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="t4", name="terminal_read", args='{}')]),
+    FakeStream([tool_chunk(0, id="t5", name="type_text", args='{"text":"y"}')]),
+    FakeStream([tool_chunk(0, id="t6", name="press_key",
+                           args='{"key":"enter"}')]),
+    FakeStream([tool_chunk(0, id="t7", name="terminal_read", args='{}')]),
+    FakeStream([tool_chunk(0, id="t8", name="type_text",
+                           args='{"text":"Create a simple Python calculator"}')]),
+    FakeStream([tool_chunk(0, id="t9", name="press_key",
+                           args='{"key":"enter"}')]),
+    FakeStream([tool_chunk(0, id="t10", name="terminal_read", args='{}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run(
+    "open Terminal, run Claude Code, allow its folder access, and prompt it to "
+    "create a simple Python calculator",
+    runtime(terminal_dispatch,
+            action_tools={"open_app", "type_text", "press_key"}),
+    require_tool=True, context_scope="none", min_action_calls=4)
+check("terminal workflows read each result and adapt to an intermediate prompt",
+      [name for name, _ in TERMINAL_RECOVERY] == [
+          "open_app", "type_text", "press_key", "terminal_read", "type_text",
+          "press_key", "terminal_read", "type_text", "press_key", "terminal_read"])
+check("a changing terminal buffer may be read more than once",
+      sum(name == "terminal_read" for name, _ in TERMINAL_RECOVERY) == 3)
+check("terminal permission input follows Charlie's explicit authorization",
+      ("type_text", {"text": "y"}) in TERMINAL_RECOVERY)
 
 RECOVERED_OPEN = []
 llm.chat_create = scripted(
@@ -541,6 +596,8 @@ llm.chat_create = scripted(
     FakeStream([tool_chunk(0, id="c3", name="press_key",
                            args='{"key":"enter"}')]),
     FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="c4", name="terminal_read", args='{}')]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("start the command-line helper in this terminal", runtime(
     lambda n, a: (RECOVERED_OPEN.append(n),
@@ -550,7 +607,7 @@ out, _ = run("start the command-line helper in this terminal", runtime(
     is_failure=lambda result: "couldn't" in result),
     require_tool=True, context_scope="none", min_action_calls=2)
 check("a failed app guess can replan through the current terminal",
-      RECOVERED_OPEN == ["open_app", "type_text", "press_key"])
+      RECOVERED_OPEN == ["open_app", "type_text", "press_key", "terminal_read"])
 check("a failed app guess does not count as a completed stage",
       "type_text ok." in out and "press_key ok." in out)
 

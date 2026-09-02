@@ -24,11 +24,11 @@
 |---|---|
 | Thinks with | `gpt-5.6-luna` (OpenAI), then `qwen/qwen3.6-27b` (Groq), then `qwen3.5:9b-q4_K_M` for chat / `qwen3.5:35b-a3b` for tools on local Ollama |
 | Hears / speaks | `whisper-large-v3-turbo` / `kokoro-v1.0.onnx` (local) |
-| Tools | 63 |
+| Tools | 64 |
 | Routing | local app reflex + one streamed loop + cleanup lane (llama router); legacy path behind TED_LEGACY_LADDER=1 |
-| Agents | MacAgent (13 tools) — see Code Book ch. 36 |
+| Agents | MacAgent (14 tools) — see Code Book ch. 36 |
 | Memory | 58 facts, ~1600 chat turns, 11 session memories |
-| Tests | 1255 checks across 37 suites |
+| Tests | 1260 checks across 37 suites |
 | Calendar daemon | built, never started on this Mac |
 
 **Standing issues, detected not remembered:**

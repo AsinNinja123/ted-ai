@@ -420,8 +420,10 @@ telemetry.note_side_usage(0, 0)
 check("a zero-token call is not recorded", telemetry.side_token_rate() == before + 500)
 
 hud2 = open(os.path.join(_root, "ui", "ted_hud.html"), encoding="utf-8").read()
-check("the chat window shows the token budget", 'id="bud-bar"' in hud2)
-check("…with a light for which brain answered", 'id="brain"' in hud2)
+check("the obsolete top-right token budget is gone",
+      'id="bud-bar"' not in hud2 and 'id="bud-txt"' not in hud2
+      and "refreshBudget" not in hud2)
+check("the useful light for which brain answered remains", 'id="brain"' in hud2)
 check("…that pulses only on an UNCHOSEN drop to local",
       "cls==='local' && lastBrain!=='local' && t.forced==='auto'" in hud2)
 check("each reply is timed from the keypress, not from the request",

@@ -503,18 +503,9 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #brainpick.pinned{color:var(--accent);border-color:var(--accent)}
 #top.tight #brainpick{max-width:74px}
 
-/* live token budget + which brain answered */
-#budget{display:flex;align-items:center;gap:7px;margin-right:10px;font-size:11px;
-  color:var(--dim);flex:none}
-#bud-bar{width:66px;height:5px;border-radius:3px;background:rgba(255,255,255,.09);
-  overflow:hidden;display:inline-block}
-#bud-bar i{display:block;height:100%;width:0;background:#3ecf8e;
-  transition:width .5s ease,background .5s ease}
-#bud-bar.warn i{background:#e0b341}
-#bud-bar.bad i{background:#e0685f}
-#bud-txt{font-variant-numeric:tabular-nums;min-width:76px}
+/* Which brain answered last. Token usage remains in Diagnostics, not the header. */
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;
-  background:#4a453f;transition:background .3s,box-shadow .3s}
+  margin-right:10px;background:#4a453f;transition:background .3s,box-shadow .3s}
 .dot.cloud {background:#3ecf8e;box-shadow:0 0 6px rgba(62,207,142,.6)}
 .dot.local {background:#e0b341;box-shadow:0 0 6px rgba(224,179,65,.6)}
 .dot.reflex{background:#8fb8e0;box-shadow:0 0 6px rgba(143,184,224,.55)}
@@ -634,11 +625,7 @@ falls back through Groq and the local model; pinned choices never fall back.">
         <option value="cloud">Groq</option>
         <option value="local">Local</option>
       </select>
-      <span id="budget" title="Tokens used this minute against your account's limit">
-        <span id="brain" class="dot" title="Which brain answered last"></span>
-        <span id="bud-bar"><i style="width:0"></i></span>
-        <span id="bud-txt" class="mono">–</span>
-      </span>
+      <span id="brain" class="dot" title="Which brain answered last"></span>
       <span id="status"><i></i><span id="status-t"></span></span>
       <button class="paneltab" id="apps-tab"></button>
     </div>
@@ -1134,9 +1121,7 @@ function setBrain(t){
   if(cls==='local' && lastBrain!=='local' && t.forced==='auto'){
     d.classList.add('fell');
     setTimeout(function(){ d.classList.remove('fell'); },3200);
-    $('bud-txt').classList.add('warn');
   }
-  if(cls==='cloud') $('bud-txt').classList.remove('warn');
   lastBrain=cls;
 }
 
@@ -1198,25 +1183,6 @@ function setProvider(mode){
     })
     .catch(function(e){ tedHud.showIssue('Could not switch brains: '+e.message); })
     .then(function(){ sel.disabled=false; refreshProvider(); });
-}
-
-function refreshBudget(){
-  fetch('http://127.0.0.1:5175/api/diagnostics/stats')
-    .then(function(r){ return r.json(); })
-    .then(function(s){
-      var lim=s.tpm_limit||8000;
-      var used=(s.tpm_limit_source==='provider'&&typeof s.tpm_remaining==='number')
-        ? Math.max(0,lim-s.tpm_remaining) : (s.tpm||0);
-      var pct=Math.min(100,Math.round(used/lim*100));
-      var bar=$('bud-bar');
-      bar.className=pct>=90?'bad':pct>=65?'warn':'';
-      bar.firstElementChild.style.width=pct+'%';
-      $('bud-txt').textContent=used.toLocaleString()+' / '+lim.toLocaleString();
-      $('budget').title='Tokens used this minute: '+used.toLocaleString()+' of '
-        +lim.toLocaleString()+(s.tpm_limit_source==='provider'
-          ?' (reported by the provider)':' (assumed — provider did not report)');
-    })
-    .catch(function(){});
 }
 
 function addBubble(role,text){
@@ -1621,7 +1587,6 @@ var tedHud={
         fillMeta(attachMeta(el,(Date.now()-turnT0)/1000), 4);
         turnT0=0;
       }
-      refreshBudget();
     }
   },
   streamTedText:function(piece){
@@ -1647,7 +1612,6 @@ var tedHud={
         fillMeta(attachMeta(done,(Date.now()-turnT0)/1000), 4);
         turnT0=0;
       }
-      refreshBudget();
     }
   },
   showIssue:function(text){
@@ -2190,11 +2154,6 @@ document.addEventListener('mousedown',function(e){
   if(!$('ctxmenu').contains(e.target)) $('ctxmenu').classList.remove('open');
 });
 setInterval(function(){ if(appsPanel && appsPanel.isOpen()) renderApps(); },60000);
-/* The minute window slides whether or not he is typing, so the bar has to move
-   on its own. 10s is often enough to watch it recover after a rate limit and
-   cheap enough to ignore. */
-setInterval(refreshBudget, 10000);
-refreshBudget();
 /* Slower than the budget: the mode only changes when someone changes it, but
    `active` moves on its own every time Auto falls back, and the picker's
    tooltip is where that is admitted. */

@@ -23,7 +23,7 @@ class MacAgent(BaseAgent):
         "open_app", "close_app", "press_key", "type_text", "scroll",
         "system_volume", "system_brightness", "clipboard_read",
         "clipboard_write", "screen_describe", "ui_inspect", "ui_fill",
-        "ui_press",
+        "ui_press", "terminal_read",
     })
     # Empty on purpose. Whether a call is consequential is decided by
     # core/tool_handlers.needs_confirmation, which TedApi asks before it ever

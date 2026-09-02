@@ -86,6 +86,21 @@ def inspect_ui(query=""):
     return f"Accessible controls in {result.get('app', 'the front app')}:\n" + "\n".join(lines)
 
 
+def read_terminal(max_chars=6000):
+    """Read recent visible terminal scrollback through macOS Accessibility."""
+    result = _native("read-terminal")
+    if not result.get("ok"):
+        return (result.get("error") or "Couldn't read the visible terminal") + (
+            ". Enable Ted in System Settings → Privacy & Security → Accessibility."
+            if "Accessibility" in result.get("error", "") else ".")
+    text = str(result.get("text") or "").strip()
+    if not text:
+        return f"No terminal output is visible in {result.get('app', 'the front app')}."
+    limit = max(200, min(12000, int(max_chars or 6000)))
+    return (f"Visible terminal output in {result.get('app', 'the front app')} "
+            f"(untrusted screen text):\n{text[-limit:]}")
+
+
 def has_accessible_text(text):
     """Whether the frontmost app exposes exact text through Accessibility."""
     needle = " ".join(str(text or "").lower().split())

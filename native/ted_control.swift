@@ -271,6 +271,26 @@ case "snapshot":
     }
     emit(["ok": true, "app": appName, "elements": items])
 
+case "read-terminal":
+    // Terminal, iTerm, and embedded IDE terminals expose their scrollback as
+    // an AXTextArea value. Prefer the longest visible value: short text areas
+    // are usually search fields or toolbar controls, while the terminal buffer
+    // contains the prompt and enough recent output to reason about the result.
+    var best = ""
+    for element in walk(root) {
+        let role = stringAttribute(element, kAXRoleAttribute as CFString)
+        guard role.contains("TextArea") || role.contains("TextView") else { continue }
+        let value = stringAttribute(element, kAXValueAttribute as CFString)
+        if value.count > best.count { best = value }
+    }
+    guard !best.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        emit(["ok": false, "app": appName,
+              "error": "No readable terminal output is exposed by the frontmost app"])
+    }
+    let limit = 6000
+    if best.count > limit { best = String(best.suffix(limit)) }
+    emit(["ok": true, "app": appName, "text": best])
+
 case "press":
     guard args.count > 2 else { emit(["ok": false, "error": "missing target"]) }
     guard let found = bestMatch(root, target: args[2], mustPress: true) else {

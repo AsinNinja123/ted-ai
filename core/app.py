@@ -2978,6 +2978,11 @@ class TedApi:
                     return features.computer.inspect_ui(args.get("query", ""))
                 return "Computer module unavailable."
 
+            if name == "terminal_read":
+                if features.HAS_COMPUTER:
+                    return features.computer.read_terminal()
+                return "Computer module unavailable."
+
             if name == "ui_press":
                 if features.HAS_COMPUTER:
                     return features.computer.press_target(args.get("target", ""))

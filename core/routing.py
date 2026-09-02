@@ -157,7 +157,7 @@ _FAMILIES = (
      r"\b(?:run|execute|start|type|enter)\b|"
      r"\b(?:run|execute)\b[^.?!]*\b(?:in|using)\s+(?:the\s+)?"
      r"(?:terminal|shell)\b",
-     ("ui_inspect", "ui_fill", "type_text", "press_key")),
+     ("terminal_read", "ui_inspect", "ui_fill", "type_text", "press_key")),
     # "clean up" shares no words with the family above, so without its own row
     # the one tool that turns four round trips into one is never on the menu.
     (r"\b(?:clean(?:\s*up|ing)?|tidy|declutter|close everything|close them all|"
@@ -364,6 +364,9 @@ def select_tool_schemas(text, recent_action_text=""):
     # eight-contract cap cannot evict the tool that performs the verb.
     if re.search(r"\b(?:click|tap|button|control)\b", text or "", re.I):
         names = ["ui_inspect", "ui_press", "screen_describe", *names]
+    elif re.search(r"\b(?:terminal|shell|command[- ]line|cli|claude code)\b",
+                   text or "", re.I):
+        names = ["terminal_read", "ui_inspect", "type_text", "press_key", *names]
     elif re.search(r"\b(?:type|enter|field|input|fill(?:\s+in)?|prompt|promt|paste)\b",
                    text or "", re.I):
         names = ["ui_inspect", "ui_fill", "type_text", "press_key", *names]

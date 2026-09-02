@@ -22,7 +22,8 @@ def check(label, condition):
 
 print("— contracts and routing —")
 names = {item["function"]["name"] for item in tools.TOOL_SCHEMAS}
-check("semantic inspect and press tools exist", {"ui_inspect", "ui_press"} <= names)
+check("semantic inspect, terminal read, and press tools exist",
+      {"ui_inspect", "terminal_read", "ui_press"} <= names)
 check("HTML fill and document-writing tools exist", {"ui_fill", "create_document"} <= names)
 check("keyboard and scroll controls exist", {"type_text", "press_key", "scroll"} <= names)
 selected = {item["function"]["name"] for item in routing.select_tool_schemas(
@@ -76,6 +77,13 @@ try:
     result = computer.inspect_ui("Blank")
     check("inspection exposes semantic labels to the model",
           "AXButton: Blank document" in result)
+
+    computer._native = lambda command, *args: {
+        "ok": True, "app": "Terminal", "text": "error: missing file\n$ "}
+    result = computer.read_terminal()
+    check("terminal output is exposed as untrusted visible evidence",
+          "Visible terminal output in Terminal" in result
+          and "untrusted screen text" in result and "missing file" in result)
 finally:
     computer._native = real_native
 
@@ -107,6 +115,8 @@ check("control matching uses whole words, not substrings",
       "wordTokens" in swift and "containsPhrase" in swift)
 check("labeled HTML inputs use settable AX values",
       'case "fill"' in swift and "AXUIElementSetAttributeValue" in swift)
+check("terminal scrollback is read through Accessibility",
+      'case "read-terminal"' in swift and 'kAXValueAttribute' in swift)
 check("web editors can be focused semantically before typing",
       'case "focus"' in swift and "kAXFocusedAttribute" in swift)
 check("rich editor paste preserves the existing clipboard",
