@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,7 @@ _HELPER = os.environ.get("TED_CONTROL_HELPER") or (
     if os.environ.get("TED_NATIVE_HOST") == "1" and os.path.isfile(_APP_EXECUTABLE)
     else _STANDALONE_HELPER)
 _HELPER_PREFIX = ["--control"] if _HELPER == _APP_EXECUTABLE else []
+_CONTROL_IPC = os.environ.get("TED_CONTROL_IPC", "")
 _permission_prompted = False
 
 _CONSEQUENTIAL_TARGET = re.compile(
@@ -41,25 +43,61 @@ _CONSEQUENTIAL_TARGET = re.compile(
     r"withdraw)\b", re.I)
 
 
+def _native_via_host(command, *args):
+    """Ask the already-trusted Ted.app process to perform one control call."""
+    token = f"{os.getpid()}-{uuid.uuid4().hex}"
+    request = os.path.join(_CONTROL_IPC, token + ".request.json")
+    response = os.path.join(_CONTROL_IPC, token + ".response.json")
+    temporary = request + ".tmp"
+    try:
+        with open(temporary, "x", encoding="utf-8") as handle:
+            json.dump({"args": [command, *[str(arg) for arg in args]]}, handle)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, request)
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if os.path.isfile(response):
+                with open(response, encoding="utf-8") as handle:
+                    return json.load(handle)
+            time.sleep(0.02)
+        return {"ok": False, "error": "Ted's native control bridge timed out"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Ted's native control bridge failed: {exc}"}
+    finally:
+        for path in (temporary, request, response):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+
 def _native(command, *args):
     """Run one native control command and return its JSON object."""
     global _permission_prompted
     if not os.path.isfile(_HELPER) or not os.access(_HELPER, os.X_OK):
         return {"ok": False, "error": "Ted's native control helper is not built"}
     try:
-        argv = [_HELPER, *_HELPER_PREFIX, command, *[str(a) for a in args]]
-        result = subprocess.run(
-            argv, capture_output=True,
-            text=True, timeout=12,
-        )
-        line = (result.stdout or "").strip().splitlines()
-        data = json.loads(line[-1]) if line else {
-            "ok": False, "error": (result.stderr or "native helper failed").strip()}
+        if _CONTROL_IPC:
+            data = _native_via_host(command, *args)
+        else:
+            argv = [_HELPER, *_HELPER_PREFIX, command, *[str(a) for a in args]]
+            result = subprocess.run(
+                argv, capture_output=True,
+                text=True, timeout=12,
+            )
+            line = (result.stdout or "").strip().splitlines()
+            data = json.loads(line[-1]) if line else {
+                "ok": False,
+                "error": (result.stderr or "native helper failed").strip()}
         if (not data.get("ok") and "Accessibility permission" in data.get("error", "")
                 and not _permission_prompted):
             _permission_prompted = True
-            subprocess.run([_HELPER, *_HELPER_PREFIX, "status", "prompt"], capture_output=True,
-                           text=True, timeout=12)
+            if _CONTROL_IPC:
+                _native_via_host("status", "prompt")
+            else:
+                subprocess.run(
+                    [_HELPER, *_HELPER_PREFIX, "status", "prompt"],
+                    capture_output=True, text=True, timeout=12)
         return data
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

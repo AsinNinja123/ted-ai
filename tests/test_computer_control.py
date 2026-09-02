@@ -133,6 +133,13 @@ check("Ted.app itself owns Accessibility instead of a loose helper",
       and "ted_control.swift" in build_src
       and "_APP_EXECUTABLE" in computer_src
       and "_HELPER_PREFIX" in computer_src)
+check("live control calls execute inside the trusted Ted.app process",
+      "TED_CONTROL_IPC" in launcher_src and "tedControlResult" in launcher_src
+      and "_native_via_host" in computer_src)
+check("rebuilds retain one designated identity for macOS privacy grants",
+      "--requirements" in build_src
+      and 'identifier "com.charlierowenhorst.ted"' in build_src
+      and 'codesign --verify --strict "$APP"' in build_src)
 press_schema = next(item["function"] for item in tools.TOOL_SCHEMAS
                     if item["function"]["name"] == "ui_press")
 check("vision fallback coordinates stay internal, not model-facing schema",

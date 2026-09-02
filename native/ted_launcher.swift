@@ -12,6 +12,8 @@ import Foundation
 final class TedDelegate: NSObject, NSApplicationDelegate {
     private var child: Process?
     private var logHandle: FileHandle?
+    private var controlTimer: Timer?
+    private var controlDirectory: URL?
     private var shuttingDown = false
 
     private var projectURL: URL {
@@ -29,6 +31,50 @@ final class TedDelegate: NSObject, NSApplicationDelegate {
             NSApp.hide(nil)
             Darwin.kill(pid, SIGUSR1)
         }
+    }
+
+    /// Keep Accessibility work inside the process macOS actually trusts.
+    private func startControlBridge() -> URL? {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ted-control-\(getpid())", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+        } catch {
+            return nil
+        }
+        controlDirectory = directory
+        controlTimer = Timer.scheduledTimer(withTimeInterval: 0.025, repeats: true) {
+            [weak self] _ in self?.processControlRequest()
+        }
+        return directory
+    }
+
+    private func processControlRequest() {
+        guard let directory = controlDirectory,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]),
+              let request = files.first(where: {
+                  $0.lastPathComponent.hasSuffix(".request.json")
+              }) else { return }
+
+        let response = directory.appendingPathComponent(
+            request.lastPathComponent.replacingOccurrences(
+                of: ".request.json", with: ".response.json"))
+        var result: [String: Any] = [
+            "ok": false, "error": "Invalid native control request"]
+        if let data = try? Data(contentsOf: request),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let arguments = object["args"] as? [String], !arguments.isEmpty {
+            result = tedControlResult(
+                [Bundle.main.executablePath ?? "Ted"] + arguments)
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: result) {
+            try? data.write(to: response, options: .atomic)
+        }
+        try? FileManager.default.removeItem(at: request)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -61,12 +107,23 @@ final class TedDelegate: NSObject, NSApplicationDelegate {
             try? logHandle?.write(contentsOf: bytes)
         }
 
+        guard let controlBridge = startControlBridge() else {
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Ted couldn't start native control"
+            alert.informativeText = "The private control bridge could not be created."
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
+
         let process = Process()
         process.executableURL = python
         process.arguments = ["-u", script.path]
         process.currentDirectoryURL = project
         var environment = ProcessInfo.processInfo.environment
         environment["TED_NATIVE_HOST"] = "1"
+        environment["TED_CONTROL_IPC"] = controlBridge.path
         environment["PYTHONUNBUFFERED"] = "1"
         process.environment = environment
         process.standardOutput = logHandle
@@ -122,6 +179,10 @@ final class TedDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let child, child.isRunning { child.terminate() }
+        controlTimer?.invalidate()
+        if let controlDirectory {
+            try? FileManager.default.removeItem(at: controlDirectory)
+        }
         try? logHandle?.close()
     }
 }

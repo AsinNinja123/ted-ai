@@ -130,8 +130,15 @@ swiftc -O -parse-as-library \
     "$PROJECT/native/ted_control.swift" \
     -o "$APP/Contents/MacOS/Ted" \
     -framework Foundation -framework AppKit -framework ApplicationServices
+# An ordinary ad-hoc signature identifies each rebuild by its changing code
+# hash. TCC then leaves Ted visibly checked in Accessibility while rejecting
+# the new binary. Give development builds one explicit designated requirement
+# so macOS recognizes later rebuilds as the same local app. This Mac has no
+# Apple Development signing identity; replace `-` with one if that changes.
 codesign --force --sign - --identifier com.charlierowenhorst.ted \
-    "$APP/Contents/MacOS/Ted" >/dev/null 2>&1 || true
+    --requirements '=designated => identifier "com.charlierowenhorst.ted"' \
+    "$APP"
+codesign --verify --strict "$APP"
 
 # Confirm macOS agrees this is an application before claiming success. Opening
 # the bundle in Script Editor is what "not an application" looks like from the

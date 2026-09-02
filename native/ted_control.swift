@@ -238,22 +238,22 @@ func postKey(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     return true
 }
 
-func runTedControl(_ args: [String]) -> Never {
-guard args.count >= 2 else { emit(["ok": false, "error": "missing command"]) }
+func tedControlResult(_ args: [String]) -> [String: Any] {
+guard args.count >= 2 else { return ["ok": false, "error": "missing command"] }
 let command = args[1]
 
 if command == "status" {
     let prompt = args.count > 2 && args[2] == "prompt"
-    emit(["ok": trusted(prompt: prompt),
+    return ["ok": trusted(prompt: prompt),
           "trusted": trusted(prompt: false),
-          "frontmost": NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"])
+          "frontmost": NSWorkspace.shared.frontmostApplication?.localizedName ?? "Unknown"]
 }
 
 guard trusted(prompt: false) else {
-    emit(["ok": false, "error": "Accessibility permission is not enabled for Ted"])
+    return ["ok": false, "error": "Accessibility permission is not enabled for Ted"]
 }
 guard let (root, appName) = frontmostRoot() else {
-    emit(["ok": false, "error": "No frontmost application"])
+    return ["ok": false, "error": "No frontmost application"]
 }
 
 switch command {
@@ -269,7 +269,7 @@ case "snapshot":
         items.append(["role": role, "name": title, "detail": detail])
         if items.count >= 80 { break }
     }
-    emit(["ok": true, "app": appName, "elements": items])
+    return ["ok": true, "app": appName, "elements": items]
 
 case "read-terminal":
     // Terminal, iTerm, and embedded IDE terminals expose their scrollback as
@@ -284,26 +284,26 @@ case "read-terminal":
         if value.count > best.count { best = value }
     }
     guard !best.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        emit(["ok": false, "app": appName,
-              "error": "No readable terminal output is exposed by the frontmost app"])
+        return ["ok": false, "app": appName,
+                "error": "No readable terminal output is exposed by the frontmost app"]
     }
     let limit = 6000
     if best.count > limit { best = String(best.suffix(limit)) }
-    emit(["ok": true, "app": appName, "text": best])
+    return ["ok": true, "app": appName, "text": best]
 
 case "press":
-    guard args.count > 2 else { emit(["ok": false, "error": "missing target"]) }
+    guard args.count > 2 else { return ["ok": false, "error": "missing target"] }
     guard let found = bestMatch(root, target: args[2], mustPress: true) else {
-        emit(["ok": false, "error": "No accessible control matched '\(args[2])'", "app": appName])
+        return ["ok": false, "error": "No accessible control matched '\(args[2])'", "app": appName]
     }
     let error = AXUIElementPerformAction(found.element, kAXPressAction as CFString)
-    emit(["ok": error == .success, "app": appName, "matched": found.detail,
-          "role": found.role, "error": error == .success ? "" : "Accessibility press failed (\(error.rawValue))"])
+    return ["ok": error == .success, "app": appName, "matched": found.detail,
+            "role": found.role, "error": error == .success ? "" : "Accessibility press failed (\(error.rawValue))"]
 
 case "fill":
-    guard args.count > 3 else { emit(["ok": false, "error": "missing field label or text"]) }
+    guard args.count > 3 else { return ["ok": false, "error": "missing field label or text"] }
     guard let found = bestEditableMatch(root, target: args[2]) else {
-        emit(["ok": false, "error": "No accessible editable field matched '\(args[2])'", "app": appName])
+        return ["ok": false, "error": "No accessible editable field matched '\(args[2])'", "app": appName]
     }
     let focused = AXUIElementSetAttributeValue(
         found.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -311,14 +311,14 @@ case "fill":
         found.element, kAXValueAttribute as CFString, args[3] as CFTypeRef)
     let after = stringAttribute(found.element, kAXValueAttribute as CFString)
     let ok = set == .success && after == args[3]
-    emit(["ok": ok, "verified": ok, "app": appName, "matched": found.detail,
-          "role": found.role,
-          "error": ok ? "" : "Accessibility field update failed (focus \(focused.rawValue), value \(set.rawValue))"])
+    return ["ok": ok, "verified": ok, "app": appName, "matched": found.detail,
+            "role": found.role,
+            "error": ok ? "" : "Accessibility field update failed (focus \(focused.rawValue), value \(set.rawValue))"]
 
 case "focus":
-    guard args.count > 2 else { emit(["ok": false, "error": "missing target"]) }
+    guard args.count > 2 else { return ["ok": false, "error": "missing target"] }
     guard let found = bestMatch(root, target: args[2], mustPress: false) else {
-        emit(["ok": false, "error": "No accessible element matched '\(args[2])'", "app": appName])
+        return ["ok": false, "error": "No accessible element matched '\(args[2])'", "app": appName]
     }
     let error = AXUIElementSetAttributeValue(
         found.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
@@ -339,26 +339,26 @@ case "focus":
         clicked = clickPoint(CGPoint(x: clickX, y: clickY))
         usleep(120_000)
     }
-    emit(["ok": error == .success && (!found.role.contains("TextArea") || clicked),
-          "app": appName, "matched": found.detail, "clicked": clicked,
-          "x": clickX, "y": clickY,
-          "role": found.role,
-          "error": error != .success ? "Accessibility focus failed (\(error.rawValue))" :
-              (clicked ? "" : "Accessibility element has no clickable frame")])
+    return ["ok": error == .success && (!found.role.contains("TextArea") || clicked),
+            "app": appName, "matched": found.detail, "clicked": clicked,
+            "x": clickX, "y": clickY,
+            "role": found.role,
+            "error": error != .success ? "Accessibility focus failed (\(error.rawValue))" :
+                (clicked ? "" : "Accessibility element has no clickable frame")]
 
 case "type-text":
-    guard args.count > 2 else { emit(["ok": false, "error": "missing text"]) }
+    guard args.count > 2 else { return ["ok": false, "error": "missing text"] }
     let focused = focusedElement()
     let before = focused.map { stringAttribute($0, kAXValueAttribute as CFString) } ?? ""
     let sent = unicodeType(args[2])
     usleep(160_000)
     let after = focused.map { stringAttribute($0, kAXValueAttribute as CFString) } ?? ""
-    emit(["ok": sent, "verified": before != after,
-          "app": appName,
-          "error": "Could not create keyboard events"])
+    return ["ok": sent, "verified": before != after,
+            "app": appName,
+            "error": "Could not create keyboard events"]
 
 case "paste-text":
-    guard args.count > 2 else { emit(["ok": false, "error": "missing text"]) }
+    guard args.count > 2 else { return ["ok": false, "error": "missing text"] }
     let board = NSPasteboard.general
     var saved: [[NSPasteboard.PasteboardType: Data]] = []
     for item in board.pasteboardItems ?? [] {
@@ -394,11 +394,11 @@ case "paste-text":
         return item
     }
     if !restored.isEmpty { board.writeObjects(restored) }
-    emit(["ok": sent, "verified": verified, "app": appName,
-          "error": sent ? "" : "Could not create paste shortcut"])
+    return ["ok": sent, "verified": verified, "app": appName,
+            "error": sent ? "" : "Could not create paste shortcut"]
 
 case "key":
-    guard args.count > 2 else { emit(["ok": false, "error": "missing key"]) }
+    guard args.count > 2 else { return ["ok": false, "error": "missing key"] }
     let map: [String: CGKeyCode] = ["return": 36, "enter": 36, "tab": 48,
         "space": 49, "delete": 51, "backspace": 51, "escape": 53,
         "left": 123, "right": 124, "down": 125, "up": 126]
@@ -412,32 +412,36 @@ case "key":
     let name = args[2].lowercased()
     let spec = shortcuts[name] ?? map[name].map { ($0, CGEventFlags()) }
     guard let (code, flags) = spec else {
-        emit(["ok": false, "error": "Unknown key '\(args[2])'"])
+        return ["ok": false, "error": "Unknown key '\(args[2])'"]
     }
-    emit(["ok": postKey(code, flags: flags), "app": appName, "key": name])
+    return ["ok": postKey(code, flags: flags), "app": appName, "key": name]
 
 case "scroll":
     guard args.count > 2, let amount = Int32(args[2]) else {
-        emit(["ok": false, "error": "missing scroll amount"])
+        return ["ok": false, "error": "missing scroll amount"]
     }
     guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
                               wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else {
-        emit(["ok": false, "error": "Could not create scroll event"])
+        return ["ok": false, "error": "Could not create scroll event"]
     }
     event.post(tap: .cghidEventTap)
-    emit(["ok": true, "app": appName, "amount": amount])
+    return ["ok": true, "app": appName, "amount": amount]
 
 case "click":
     guard args.count > 3, let x = Double(args[2]), let y = Double(args[3]) else {
-        emit(["ok": false, "error": "missing click coordinates"])
+        return ["ok": false, "error": "missing click coordinates"]
     }
     let point = CGPoint(x: x, y: y)
     guard clickPoint(point) else {
-        emit(["ok": false, "error": "Could not create mouse events"])
+        return ["ok": false, "error": "Could not create mouse events"]
     }
-    emit(["ok": true, "app": appName, "x": x, "y": y])
+    return ["ok": true, "app": appName, "x": x, "y": y]
 
 default:
-    emit(["ok": false, "error": "unknown command '\(command)'"])
+    return ["ok": false, "error": "unknown command '\(command)'"]
 }
+}
+
+func runTedControl(_ args: [String]) -> Never {
+    emit(tedControlResult(args))
 }
