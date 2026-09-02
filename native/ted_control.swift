@@ -238,7 +238,7 @@ func postKey(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     return true
 }
 
-let args = CommandLine.arguments
+func runTedControl(_ args: [String]) -> Never {
 guard args.count >= 2 else { emit(["ok": false, "error": "missing command"]) }
 let command = args[1]
 
@@ -419,4 +419,5 @@ case "click":
 
 default:
     emit(["ok": false, "error": "unknown command '\(command)'"])
+}
 }

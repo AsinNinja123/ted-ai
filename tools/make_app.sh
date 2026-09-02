@@ -121,10 +121,15 @@ PLIST
 # A script that execs framework Python leaves the visible AppKit process named
 # Python, so the Dock puts its running dot under Python's icon. Keep a real Ted
 # process alive as the app host and run Python as its accessory child instead.
+# The same signed executable also owns Accessibility control. macOS permission
+# is therefore granted to the Ted.app the user selected, not to an ad-hoc helper
+# elsewhere in the repository.
 echo "  building native app host…"
-swiftc -O "$PROJECT/native/ted_launcher.swift" \
+swiftc -O -parse-as-library \
+    "$PROJECT/native/ted_launcher.swift" \
+    "$PROJECT/native/ted_control.swift" \
     -o "$APP/Contents/MacOS/Ted" \
-    -framework Foundation -framework AppKit
+    -framework Foundation -framework AppKit -framework ApplicationServices
 codesign --force --sign - --identifier com.charlierowenhorst.ted \
     "$APP/Contents/MacOS/Ted" >/dev/null 2>&1 || true
 

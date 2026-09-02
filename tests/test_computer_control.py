@@ -115,6 +115,14 @@ check("rich editor paste preserves the existing clipboard",
 computer_src = open(os.path.join(root, "core", "computer.py"), encoding="utf-8").read()
 check("ordinary semantic clicks and typing do not take screenshots",
       "screencapture" not in computer_src and "_screen_digest" not in computer_src)
+launcher_src = open(os.path.join(root, "native", "ted_launcher.swift"), encoding="utf-8").read()
+build_src = open(os.path.join(root, "tools", "make_app.sh"), encoding="utf-8").read()
+check("Ted.app itself owns Accessibility instead of a loose helper",
+      '"--control"' in launcher_src
+      and "runTedControl" in launcher_src
+      and "ted_control.swift" in build_src
+      and "_APP_EXECUTABLE" in computer_src
+      and "_HELPER_PREFIX" in computer_src)
 press_schema = next(item["function"] for item in tools.TOOL_SCHEMAS
                     if item["function"]["name"] == "ui_press")
 check("vision fallback coordinates stay internal, not model-facing schema",

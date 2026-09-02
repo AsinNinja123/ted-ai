@@ -21,7 +21,7 @@ codesign --force --sign - --identifier com.ted.audio ./ted_audio 2>/dev/null \
 echo "✅ Built: $(pwd)/ted_audio"
 
 echo "Building ted_control (macOS Accessibility bridge)…"
-swiftc -O ted_control.swift -o ted_control \
+swiftc -O -parse-as-library ted_control_main.swift ted_control.swift -o ted_control \
     -framework Foundation \
     -framework AppKit \
     -framework ApplicationServices

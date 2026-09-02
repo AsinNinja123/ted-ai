@@ -25,8 +25,13 @@ import time
 
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_HELPER = os.environ.get("TED_CONTROL_HELPER") or os.path.join(
-    _ROOT, "native", "ted_control")
+_APP_EXECUTABLE = os.path.join(_ROOT, "Ted.app", "Contents", "MacOS", "Ted")
+_STANDALONE_HELPER = os.path.join(_ROOT, "native", "ted_control")
+_HELPER = os.environ.get("TED_CONTROL_HELPER") or (
+    _APP_EXECUTABLE
+    if os.environ.get("TED_NATIVE_HOST") == "1" and os.path.isfile(_APP_EXECUTABLE)
+    else _STANDALONE_HELPER)
+_HELPER_PREFIX = ["--control"] if _HELPER == _APP_EXECUTABLE else []
 _permission_prompted = False
 
 _CONSEQUENTIAL_TARGET = re.compile(
@@ -42,8 +47,9 @@ def _native(command, *args):
     if not os.path.isfile(_HELPER) or not os.access(_HELPER, os.X_OK):
         return {"ok": False, "error": "Ted's native control helper is not built"}
     try:
+        argv = [_HELPER, *_HELPER_PREFIX, command, *[str(a) for a in args]]
         result = subprocess.run(
-            [_HELPER, command, *[str(a) for a in args]], capture_output=True,
+            argv, capture_output=True,
             text=True, timeout=12,
         )
         line = (result.stdout or "").strip().splitlines()
@@ -52,7 +58,7 @@ def _native(command, *args):
         if (not data.get("ok") and "Accessibility permission" in data.get("error", "")
                 and not _permission_prompted):
             _permission_prompted = True
-            subprocess.run([_HELPER, "status", "prompt"], capture_output=True,
+            subprocess.run([_HELPER, *_HELPER_PREFIX, "status", "prompt"], capture_output=True,
                            text=True, timeout=12)
         return data
     except Exception as exc:

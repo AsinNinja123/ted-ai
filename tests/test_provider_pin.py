@@ -117,6 +117,11 @@ check("Luna receives its configured model and translated token limit",
       calls[-1][1].get("model") == providers.PRIMARY_CHAT_MODEL
       and calls[-1][1].get("max_completion_tokens") == 80
       and "max_tokens" not in calls[-1][1])
+providers.chat_create(messages=[{"role": "user", "content": "open Terminal"}],
+                      tools=[{"type": "function", "function": {"name": "open_app"}}],
+                      reasoning_effort="default")
+check("Luna tool calls disable reasoning on Chat Completions",
+      calls[-1][1].get("reasoning_effort") == "none")
 check("active_provider reports OpenAI", providers.active_provider() == "openai")
 providers.set_provider_mode("auto")
 result = providers.chat_create(messages=[{"role": "user", "content": "foreground"}])

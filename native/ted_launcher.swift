@@ -126,8 +126,19 @@ final class TedDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = TedDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-app.run()
+@main
+struct TedApplication {
+    static func main() {
+        if CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--control" {
+            let controlArguments = [CommandLine.arguments[0]]
+                + Array(CommandLine.arguments.dropFirst(2))
+            runTedControl(controlArguments)
+        }
+
+        let app = NSApplication.shared
+        let delegate = TedDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+}

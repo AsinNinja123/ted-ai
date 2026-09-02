@@ -506,6 +506,12 @@ def _luna_create(**kwargs):
     # Ted uses "default" for Groq. OpenAI expects an explicit supported level.
     if params.get("reasoning_effort") == "default":
         params["reasoning_effort"] = "low"
+    # GPT-5.6 tool calls with reasoning are a Responses API feature. Ted's
+    # streamed tool loop still speaks Chat Completions, where Luna explicitly
+    # accepts function tools only with reasoning disabled. Preserve reasoning
+    # for prose turns, but make every tool-bearing round valid on this endpoint.
+    if params.get("tools"):
+        params["reasoning_effort"] = "none"
     return _openai.chat.completions.create(**params)
 
 
