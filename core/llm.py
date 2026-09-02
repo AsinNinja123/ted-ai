@@ -869,7 +869,11 @@ DISCOVERY_GUIDANCE = (
     "loads. Otherwise just answer."
 )
 
-MAX_TOOL_ROUNDS = 5
+# A UI chain often needs open -> inspect -> fill/type -> submit, and compound
+# requests may contain more than one such stage. Ten total calls remains the
+# harder side-effect ceiling; eight reasoning rounds gives those calls enough
+# room without permitting an unbounded loop.
+MAX_TOOL_ROUNDS = 8
 MAX_TOOL_CALLS = 10
 
 
@@ -1518,7 +1522,11 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     seen_calls = set()
     action_results = []
     had_non_action = False
-    planning_sequence = _multi_step_request(user_input)
+    # The router's lower bound sees comma-separated and mixed-capability work,
+    # not just phrases containing the literal words "and then". Treat every
+    # such request as a sequence so one successful action cannot end the turn.
+    planning_sequence = (_multi_step_request(user_input)
+                         or min_action_calls > 1)
     # App.py supplies an exact lower bound for recognized multi-target requests.
     # Keep ask_streaming safe for direct callers too: an explicit dependency
     # connector ("and then", "after that") necessarily asks for at least two
@@ -1528,6 +1536,7 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     tool_retry_used = False
     stream_retry_used = False
     completion_retry_used = False
+    completion_audit = False
     thinking_retry_used = False
     format_retry_used = False
     completed_tool_calls = 0
@@ -1723,8 +1732,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     # narration may be appended for mixed read+act chains, but
                     # it can never replace the verified action results.
                     parts = [str(r) for r in action_results]
-                    if had_non_action and turn_text.strip():
-                        parts.append(turn_text.strip())
+                    # A compound action gets one model-side audit after the
+                    # deterministic lower bound is reached. COMPLETE is an
+                    # internal control token, not part of Ted's reply.
+                    audited_text = turn_text.strip()
+                    if completion_audit and re.fullmatch(
+                            r"COMPLETE[.!]?", audited_text, re.I):
+                        audited_text = ""
+                    if had_non_action and audited_text:
+                        parts.append(audited_text)
                     final = " ".join(parts)
                     full_reply += final
                     yield final
@@ -1798,6 +1814,10 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 prepared.append((c, args, parse_error))
             if not prepared:
                 print("[tools] model repeated a call it already made — stopping")
+                if action_results and not full_reply.strip():
+                    final = " ".join(str(r) for r in action_results)
+                    full_reply += final
+                    yield final
                 break
             if total_calls + len(prepared) > MAX_TOOL_CALLS:
                 print(f"[tools] hit MAX_TOOL_CALLS ({MAX_TOOL_CALLS})")
@@ -1849,10 +1869,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 print(f"[tools] {c['name']}({args}) → {str(result)[:80]}")
                 _turn.note_tool(c["name"])
                 results.append(result)
+                is_action = c["name"] in tool_runtime.action_tools
+                call_failed = is_action and tool_runtime.is_failure(result)
                 if c["name"] != "find_tools":
-                    completed_tool_calls += 1
+                    # A rejected/failed action is evidence for replanning, not
+                    # evidence that one requested stage completed.
+                    if not call_failed:
+                        completed_tool_calls += 1
                     visible_results.append(result)
-                if c["name"] not in tool_runtime.action_tools:
+                if not is_action:
                     all_actions = False
                     had_non_action = True
                 else:
@@ -1860,7 +1885,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     # surfacing on the HUD — that check lives in the tool layer.
                     tool_runtime.on_failure(result)
                     action_results.append(result)
-                    action_failed = action_failed or tool_runtime.is_failure(result)
+                    # Failing to open an app is recoverable only in a compound
+                    # plan: the model may have confused a CLI with a GUI and can
+                    # use an already-open terminal instead. A simple failed open
+                    # should still return immediately. Failed typing/clicking
+                    # always stops, because submitting after unverified input
+                    # would be unsafe.
+                    action_failed = action_failed or (
+                        call_failed and (c["name"] != "open_app"
+                                         or not planning_sequence))
                 msgs.append({"role": "tool",
                              "tool_call_id": c["id"] or f"call_{n}",
                              "name": c["name"],
@@ -1884,8 +1917,26 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     yield final
                     break
                 if outcome_complete and planning_sequence:
-                    # The lower bound accounts for each explicit dependent stage.
-                    # Once reached, another model round would only invite repeats.
+                    # A lower bound cannot know how many UI operations a stage
+                    # required. Audit against the original request once the
+                    # bound is reached: the model can call a still-missing tool
+                    # (for example Enter after typing) or explicitly finish.
+                    # This is what lets arbitrary compound work complete without
+                    # hard-coding workflows into the router.
+                    if rounds < MAX_TOOL_ROUNDS:
+                        completion_audit = True
+                        msgs = msgs + [{"role": "system", "content": (
+                            "Audit the original user request against every tool result "
+                            "above. If any requested target, stage, submission, or "
+                            "dependent step is still missing, call the next needed tool "
+                            "now. Do not repeat completed calls. If and only if the whole "
+                            "request is complete, reply with exactly COMPLETE and no tool."
+                        )}]
+                        try:
+                            resp = _do_groq_call(msgs)
+                            continue
+                        except Exception as e:
+                            print(f"[tools] completion audit failed: {e}")
                     final = " ".join(str(r) for r in action_results)
                     full_reply += final
                     yield final

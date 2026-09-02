@@ -72,6 +72,22 @@ check("dependent non-app stages are counted",
 check("two different capabilities joined by and are both required",
       routing.expected_action_calls(
           "open Notes and send a message to Gavin") == 2)
+compound_control = (
+    "open a terminal, open a command-line assistant and prompt it to build a calculator")
+check("punctuation and mixed verbs preserve every requested stage",
+      routing.expected_action_calls(compound_control) == 4)
+check("compound app-plus-input requests receive keyboard capabilities",
+      {"open_app", "type_text", "press_key"}.issubset(
+          names(routing.select_tool_schemas(compound_control))))
+check("commas inside typed payloads do not invent another stage",
+      routing.expected_action_calls("type hello, world into Notes") == 1)
+check("unrelated comma-separated actions are both required",
+      routing.expected_action_calls("open Notes, set a timer for ten minutes") == 2)
+terminal_chain = "open Terminal and run the status command"
+check("terminal command chains get entry and submission tools",
+      routing.expected_action_calls(terminal_chain) == 3
+      and {"open_app", "type_text", "press_key"}.issubset(
+          names(routing.select_tool_schemas(terminal_chain))))
 check("discussion containing an action verb does not force execution",
       not routing.likely_action_request(
           "I wonder whether I should remove that from my workflow"))

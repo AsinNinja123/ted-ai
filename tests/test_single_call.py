@@ -136,6 +136,7 @@ def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=N
             "set_timer": ({"duration": {"type": "string"}}, ["duration"]),
             "screen_describe": ({"question": {"type": "string"}}, []),
             "type_text": ({"text": {"type": "string"}}, ["text"]),
+            "press_key": ({"key": {"type": "string"}}, ["key"]),
             "clipboard_write": ({"text": {"type": "string"}}, ["text"]),
             "clipboard_read": ({}, []),
             "web_search": ({"query": {"type": "string"}}, ["query"]),
@@ -461,6 +462,7 @@ llm.chat_create = scripted(
                            args='{"name":"Notes"}')]),
     FakeStream([tool_chunk(0, id="c2", name="open_app",
                            args='{"name":"Calendar"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("open Notes and Calendar", runtime(
     lambda n, a: (completed.append(a["name"]), f"Opened {a['name']}.")[1],
@@ -487,6 +489,70 @@ check("dependent action tools continue across model rounds",
                           ("type_text", {"text": "buy milk"})])
 check("dependent action chain reports only verified handler results",
       out == "Notes opened. Text typed.")
+
+COMPOUND_CONTROL = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app",
+                           args='{"name":"Terminal"}')]),
+    FakeStream([tool_chunk(0, id="c2", name="open_app",
+                           args='{"name":"Assistant"}')]),
+    FakeStream([tool_chunk(0, id="c3", name="type_text",
+                           args='{"text":"build a calculator"}')]),
+    FakeStream([tool_chunk(0, id="c4", name="press_key",
+                           args='{"key":"enter"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("open a terminal, open an assistant and prompt it to build a calculator",
+             runtime(lambda n, a: (COMPOUND_CONTROL.append(n), f"{n} ok.")[1],
+                     action_tools={"open_app", "type_text", "press_key"}),
+             require_tool=True, context_scope="none", min_action_calls=4)
+check("compound control keeps executing past the first opened app",
+      COMPOUND_CONTROL == ["open_app", "open_app", "type_text", "press_key"])
+check("compound control reports every verified operation",
+      out == "open_app ok. open_app ok. type_text ok. press_key ok.")
+
+AUDITED_CONTROL = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app",
+                           args='{"name":"Terminal"}')]),
+    FakeStream([tool_chunk(0, id="c2", name="type_text",
+                           args='{"text":"run the task"}')]),
+    # The numeric lower bound is reached, but the completion audit notices the
+    # typed command was not submitted and issues the missing operation.
+    FakeStream([tool_chunk(0, id="c3", name="press_key",
+                           args='{"key":"enter"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("open Terminal and run the task", runtime(
+    lambda n, a: (AUDITED_CONTROL.append(n), f"{n} ok.")[1],
+    action_tools={"open_app", "type_text", "press_key"}),
+    require_tool=True, context_scope="none", min_action_calls=2)
+check("completion audit catches a missing UI operation beyond the lower bound",
+      AUDITED_CONTROL == ["open_app", "type_text", "press_key"])
+check("the internal completion marker never appears in Ted's reply",
+      out == "open_app ok. type_text ok. press_key ok." and "COMPLETE" not in out)
+
+RECOVERED_OPEN = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="c1", name="open_app",
+                           args='{"name":"command-line helper"}')]),
+    FakeStream([tool_chunk(0, id="c2", name="type_text",
+                           args='{"text":"helper"}')]),
+    FakeStream([tool_chunk(0, id="c3", name="press_key",
+                           args='{"key":"enter"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("start the command-line helper in this terminal", runtime(
+    lambda n, a: (RECOVERED_OPEN.append(n),
+                  "I couldn't find that GUI app." if n == "open_app"
+                  else f"{n} ok.")[1],
+    action_tools={"open_app", "type_text", "press_key"},
+    is_failure=lambda result: "couldn't" in result),
+    require_tool=True, context_scope="none", min_action_calls=2)
+check("a failed app guess can replan through the current terminal",
+      RECOVERED_OPEN == ["open_app", "type_text", "press_key"])
+check("a failed app guess does not count as a completed stage",
+      "type_text ok." in out and "press_key ok." in out)
 
 print("\n— non-action tools: one follow-up round narrates the result —")
 
@@ -568,6 +634,7 @@ llm.chat_create = scripted(
                            args='{"text":"TED TOOL TEST"}')]),
     Boom([]),
     FakeStream([tool_chunk(0, id="c2", name="clipboard_read", args="{}")]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("copy this, then read it", runtime(
     lambda n, a: (PARTIAL_RECOVERY_CALLS.append(n),
@@ -587,6 +654,7 @@ llm.chat_create = scripted(
     Boom([]),
     FakeStream([tool_chunk(0, id="c2", name="notes_add",
                            args='{"title":"Forecast","body":"Clear, 67F; high 79, low 62"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
 )
 out, _ = run("Check the weather, then add the forecast to a note.", runtime(
     lambda n, a: (WEATHER_NOTE_CALLS.append((n, a)),

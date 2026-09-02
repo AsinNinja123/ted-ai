@@ -196,6 +196,8 @@ def likely_command(text):
 def tool_find_app_key(name):
     """Fuzzy-match a natural-language app name to an APPS or WEB_APPS dict key."""
     n = name.lower().strip()
+    n = re.sub(r"\b(?:app|application)\b", " ", n)
+    n = " ".join(n.split())
     all_keys = {**APPS, **WEB_APPS}
     if n in all_keys:
         return n
@@ -203,7 +205,12 @@ def tool_find_app_key(name):
     if app_key is not None:
         return app_key
     for key in all_keys:
-        if key in n or n in key:
+        # A shorter utterance may be a useful partial app name ("visual" for
+        # "visual studio code"). The reverse is unsafe: a known GUI name inside
+        # a longer product name may identify a different command-line program.
+        # For example, silently discarding the extra words can open the wrong
+        # product while reporting success.
+        if n in key:
             return key
     n_words = set(n.split())
     best, best_score = None, 0
@@ -211,7 +218,11 @@ def tool_find_app_key(name):
         score = len(set(key.split()) & n_words)
         if score > best_score:
             best, best_score = key, score
-    return best if best_score > 0 else None
+    # One shared word in a longer product name is not enough. It turned
+    # "Claude Code" into "VS Code" after correctly refusing to call it the
+    # Claude GUI. All supplied words must identify the same known app here;
+    # spelling errors were already handled by resolve_app_alias above.
+    return best if best_score == len(n_words) and best_score > 0 else None
 
 
 def tool_open_app(name):

@@ -326,7 +326,9 @@ TOOL_SCHEMAS = [
             "name": "open_app",
             "description": (
                 "Open a macOS application. Use for any variant of 'open', 'launch', "
-                "'pull up', 'start', 'bring up' + an app name. Handles typos and partial names."
+                "'pull up', 'start', 'bring up' + a GUI app name. Handles typos and "
+                "partial names. Do not use this to start a command-line program: open "
+                "a terminal, type its command with type_text, then press Enter."
             ),
             "parameters": {
                 "type": "object",
@@ -1102,8 +1104,9 @@ TOOL_SCHEMAS = [
             "name": "type_text",
             "description": (
                 "Type text at the current cursor position using the keyboard. "
-                "Use for an already-focused editor. For a new document, use "
-                "create_document; for a labeled HTML field, use ui_fill."
+                "Use for an already-focused editor, terminal command, or interactive "
+                "AI prompt. This only enters text and does not submit it. For a new "
+                "document, use create_document; for a labeled HTML field, use ui_fill."
             ),
             "parameters": {
                 "type": "object",
@@ -1118,7 +1121,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "press_key",
-            "description": "Press a keyboard key or shortcut in the frontmost app.",
+            "description": (
+                "Press a keyboard key or shortcut in the frontmost app. After type_text, "
+                "use Enter when the user asked to run a terminal command or submit a "
+                "prompt to an interactive AI. Never use Enter to bypass confirmation for "
+                "messages, purchases, deletion, or other consequential actions."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

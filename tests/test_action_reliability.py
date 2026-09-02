@@ -178,6 +178,8 @@ check("a misspelled running app resolves to its real process name",
 check("an unrelated vague name is not guessed",
       actions.match_running_app("something", ["Finder", "Spotify", "Notes"])
       is None)
+check("a longer product name is not collapsed to a different GUI app",
+      th.tool_find_app_key("Claude Code") is None)
 
 
 print("\n— verified system volume —")

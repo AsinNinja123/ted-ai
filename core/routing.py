@@ -153,6 +153,11 @@ def _content_words(text):
 _FAMILIES = (
     (r"\b(?:open|close|quit|launch|start|bring up|pull up|app|application|window)\b",
      ("open_app", "close_app")),
+    (r"\b(?:terminal|shell|command[- ]line|cli)\b[^.?!]*"
+     r"\b(?:run|execute|start|type|enter)\b|"
+     r"\b(?:run|execute)\b[^.?!]*\b(?:in|using)\s+(?:the\s+)?"
+     r"(?:terminal|shell)\b",
+     ("ui_inspect", "ui_fill", "type_text", "press_key")),
     # "clean up" shares no words with the family above, so without its own row
     # the one tool that turns four round trips into one is never on the menu.
     (r"\b(?:clean(?:\s*up|ing)?|tidy|declutter|close everything|close them all|"
@@ -245,7 +250,12 @@ _FAMILIES = (
     (r"\b(?:screen|display|video)\b", ("screen_describe",)),
     (r"\b(?:click|tap|button|link|cursor|control)\b",
      ("ui_inspect", "ui_press", "screen_describe")),
-    (r"\b(?:type|field|input)\b", ("ui_inspect", "ui_fill", "type_text")),
+    # Text entry is broader than the literal verb "type". People naturally say
+    # "enter this", "fill in X", or "prompt an assistant with Y". Missing those
+    # words left compound requests with only app-opening tools, so the model
+    # could do the first clause and had no visible way to finish the rest.
+    (r"\b(?:type|enter|input|fill(?:\s+in)?|prompt|promt|paste)\b",
+     ("ui_inspect", "ui_fill", "type_text", "press_key")),
     (r"\b(?:press|keyboard|key)\b", ("press_key", "ui_press")),
     (r"\bscroll\b", ("scroll",)),
     (r"\b(?:habit|streak|workout|worked out|exercise)\b",
@@ -279,7 +289,8 @@ _FAMILIES = (
 _ACTION_WORDS = re.compile(
     r"^(?:open|close|quit|launch|relaunch|reopen|browse|navigate|"
     r"play|pause|resume|skip|mute|unmute|"
-    r"imessage|paste|screenshot|click|tap|press|scroll|type)\b",
+    r"imessage|paste|screenshot|click|tap|press|scroll|type|enter|input|"
+    r"fill|prompt|promt)\b",
     re.I,
 )
 
@@ -353,8 +364,9 @@ def select_tool_schemas(text, recent_action_text=""):
     # eight-contract cap cannot evict the tool that performs the verb.
     if re.search(r"\b(?:click|tap|button|control)\b", text or "", re.I):
         names = ["ui_inspect", "ui_press", "screen_describe", *names]
-    elif re.search(r"\b(?:type|field|input)\b", text or "", re.I):
-        names = ["ui_inspect", "ui_fill", "type_text", *names]
+    elif re.search(r"\b(?:type|enter|field|input|fill(?:\s+in)?|prompt|promt|paste)\b",
+                   text or "", re.I):
+        names = ["ui_inspect", "ui_fill", "type_text", "press_key", *names]
     if re.search(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b",
                  text or "", re.I):
         names = ["create_document", *names]
@@ -578,18 +590,38 @@ def likely_action_request(text):
     # weather") but still contains an action that must complete. Classify each
     # explicit stage instead of judging only the first verb. This is what makes
     # a provider failure after the lookup retry rather than leak a raw 500.
-    stages = [part.strip(" ,") for part in _SEQUENCE_SEP.split(t)
-              if part.strip(" ,")]
+    stages = _request_stages(t)
     return len(stages) > 1 and any(likely_action_request(stage) for stage in stages)
 
 
 _SEQUENCE_SEP = re.compile(
     r"\b(?:and then|then|after that|afterwards|followed by|once that)\b|"
     r"\band\s+(?=(?:open|close|quit|launch|play|pause|send|message|text|email|"
-    r"set|add|create|write|copy|paste|type|delete|flag|mark|change|turn|search|"
+    r"set|add|create|write|copy|paste|type|enter|input|fill|prompt|promt|run|execute|"
+    r"delete|flag|mark|change|turn|search|"
     r"find|look up|show|hide|read|check|log|calculate|browse|navigate|remove|tell)\b)",
     re.I,
 )
+
+_PUNCTUATED_STAGE_SEP = re.compile(
+    r"[,;]\s*(?=(?:open|close|quit|launch|play|pause|send|message|text|email|"
+    r"set|add|create|write|copy|paste|type|enter|input|fill|prompt|promt|run|execute|"
+    r"delete|flag|mark|change|turn|search|find|look up|show|hide|read|check|"
+    r"log|calculate|browse|navigate|remove|tell)\b)",
+    re.I,
+)
+
+
+def _request_stages(text):
+    """Split punctuation only when it introduces another action clause.
+
+    A blanket comma split would corrupt payloads such as ``type hello, world``.
+    Requiring an action verb after punctuation preserves those payloads while
+    recognizing natural dictated lists separated by commas or semicolons.
+    """
+    punctuated = _PUNCTUATED_STAGE_SEP.sub(" then ", text or "")
+    return [part.strip(" ,;") for part in _SEQUENCE_SEP.split(punctuated)
+            if part.strip(" ,;")]
 
 
 def expected_action_calls(text):
@@ -606,12 +638,17 @@ def expected_action_calls(text):
     if (re.search(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b", lower_text)
             and re.search(r"\b(?:type|write|start|draft|paragraph)\b", lower_text)):
         return 1
-    segments = [part.strip(" ,") for part in _SEQUENCE_SEP.split(text or "")
-                if part.strip(" ,")]
+    segments = _request_stages(text)
     total = 0
     previous_targets = 1
     for segment in segments or [text or ""]:
         lower = segment.lower()
+        # Prompting an interactive agent or running a typed command takes two
+        # distinct operations: enter the text, then submit it. This remains a
+        # lower bound; the model chooses the actual UI/keyboard tools.
+        if re.match(r"\s*(?:prompt|promt|run|execute)\b", lower):
+            total += 2
+            continue
         app_match = re.search(
             r"\b(?:open|close|quit|launch|start|run|pull up|bring up|exit|kill|shut)\s+(.+)",
             lower,
