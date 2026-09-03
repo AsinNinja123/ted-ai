@@ -377,9 +377,17 @@ def _open_verified_browser(app_name, url, new_window=False):
         if windows is not None and windows > 0:
             if (not new_window and before is not None and before > 0
                     and windows > before):
+                tab = _active_tab(app_name, tries=1, delay=0)
+                if _tab_matches_requested_url(tab, url):
+                    return True, (f"requested page verified; {app_name} also created "
+                                  f"{windows - before} extra window(s)")
                 return False, (f"{app_name} created a new window instead of "
                                "reusing the existing one")
             if not new_window and before == 0 and windows > 1:
+                tab = _active_tab(app_name, tries=1, delay=0)
+                if _tab_matches_requested_url(tab, url):
+                    return True, (f"requested page verified despite {windows} visible "
+                                  "browser windows")
                 return False, f"{app_name} unexpectedly created {windows} windows"
             if new_window and before is not None and windows <= before:
                 time.sleep(0.2)
@@ -392,6 +400,22 @@ def _open_verified_browser(app_name, url, new_window=False):
         return False, (f"{app_name} is running without a browser window; "
                        "quit and reopen it once")
     return False, "macOS window verification was unavailable"
+
+
+def _tab_matches_requested_url(tab, requested_url):
+    """Whether the observed active tab reached the requested web origin."""
+    observed = str((tab or {}).get("url") or "").strip()
+    if not observed:
+        return False
+    try:
+        wanted_host = (urllib.parse.urlparse(requested_url).hostname or "").lower()
+        actual_host = (urllib.parse.urlparse(observed).hostname or "").lower()
+    except Exception:
+        return False
+    wanted_host = wanted_host.removeprefix("www.")
+    actual_host = actual_host.removeprefix("www.")
+    return bool(wanted_host and
+                (actual_host == wanted_host or actual_host.endswith("." + wanted_host)))
 
 
 def _active_tab(app_name, tries=3, delay=0.7):
@@ -476,7 +500,10 @@ def tool_browse_to(site, browser=None, new_window=False):
         app_name = _BROWSERS.get(browser.strip().lower(), browser.strip())
         verified, detail = _open_verified_browser(app_name, url, bool(new_window))
         if verified:
-            return _tab_report(app_name, label)
+            report = _tab_report(app_name, label)
+            if "extra window" in detail or "despite" in detail:
+                report += f" Note: {detail}."
+            return report
         return (f"I couldn't verify that {label} opened in {app_name}; "
                 f"nothing is being claimed as complete. ({detail})")
 

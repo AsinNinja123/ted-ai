@@ -1267,6 +1267,29 @@ class TedApi:
         _needs_operational = bool(
             _action_likely or _interpretation.references
             or _interpretation.missing_information)
+        # Write the requested-work lower bound to the durable scratchpad before
+        # building its prompt card. That way the model sees what is already
+        # verified and how many real actions remain, including after restart.
+        _minimum_actions = routing.expected_action_calls(routing_text)
+        _new_request_actions = _minimum_actions
+        if _interpretation.references and _active_task:
+            _original_minimum = routing.expected_action_calls(
+                _active_task.get("goal") or "")
+            _completed_count = len(_active_task.get("completed_steps") or [])
+            if re.search(r"\b(?:again|repeat|one more time|same)\b", text, re.I):
+                _minimum_actions = max(_minimum_actions, _original_minimum)
+            elif _minimum_actions == 0:
+                _minimum_actions = max(1, _original_minimum - _completed_count)
+        if _action_likely and self._active_task_id:
+            _plan_source = routing_text
+            if (_interpretation.references and _active_task
+                    and (_new_request_actions == 0 or re.search(
+                        r"\b(?:again|repeat|one more time|same)\b", text, re.I))):
+                _plan_source = _active_task.get("goal") or routing_text
+            task_state.set_plan(
+                self._active_task_id, _minimum_actions,
+                routing.requested_action_steps(_plan_source))
+            _active_task = task_state.active_for(self._active_chat_id)
         # Computed unconditionally. It is a few hundred characters of already
         # verified action results, and select_tool_schemas now needs it even on
         # turns that do not look operational — "say yes" while a terminal sits
@@ -1334,6 +1357,8 @@ class TedApi:
                 action_tools=th.ACTION_TOOLS,
                 on_failure=_note_action_result,
                 is_failure=th.looks_like_failure,
+                progress_reader=(
+                    lambda: task_state.progress(self._active_task_id)),
                 # Router-miss recovery. The menu above is small on purpose; this
                 # is what stops a tool the router omitted from costing two extra
                 # round trips at ~4,400 tokens each.
@@ -1350,15 +1375,6 @@ class TedApi:
                            if self._active_chat_id is not None else {})
         _response_style = ({"response_mode": self.response_mode}
                            if self.response_mode else {})
-        _minimum_actions = routing.expected_action_calls(routing_text)
-        if _interpretation.references and _active_task:
-            _original_minimum = routing.expected_action_calls(
-                _active_task.get("goal") or "")
-            _completed_count = len(_active_task.get("completed_steps") or [])
-            if re.search(r"\b(?:again|repeat|one more time|same)\b", text, re.I):
-                _minimum_actions = max(_minimum_actions, _original_minimum)
-            elif _minimum_actions == 0:
-                _minimum_actions = max(1, _original_minimum - _completed_count)
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -1380,10 +1396,13 @@ class TedApi:
         if full.strip():
             self.last_reply = full
             add_message(w, "ted", full)
-            if (_action_likely and not th.looks_like_failure(full)
-                    and self._pending_tool_confirmation is None
+            if (_action_likely and self._pending_tool_confirmation is None
                     and self._pending_msg is None
                     and self._pending_compose is None):
+                # complete() consults the ledger itself. A sentence from an
+                # early failed attempt may remain in the truthful final report
+                # even after later observation proved recovery, so scanning the
+                # concatenated prose for "failed" is the wrong completion gate.
                 task_state.complete(self._active_task_id, full)
         else:
             # An empty stream is a runtime failure, not a failure to understand
@@ -2481,6 +2500,13 @@ class TedApi:
         # terminal matters, and this is read on every turn.
         if name in routing.OBSERVATION_TOOLS:
             self._last_screen = str(result or "")[-2000:]
+            observation_failed = bool(re.match(
+                r"^(?:i couldn'?t|could not|accessibility permission|"
+                r"computer control unavailable|no readable|no terminal output)",
+                str(result or "").strip(), re.I))
+            task_state.record_observation(
+                getattr(self, "_active_task_id", None), name, args, result,
+                failed=observation_failed)
         # Consequential tools have not acted when they merely arm confirmation.
         acted = (name in th.ACTION_TOOLS
                  and (confirmed or not th.needs_confirmation(name, args)))

@@ -83,7 +83,10 @@ The first launch after building asks for **microphone permission** — allow it.
 - **Meaning and task continuity:** every non-reflex turn gets an inspectable local
   interpretation containing its goal, resolved references, constraints, confidence,
   clarification policy, and intended context sources. Action requests create durable
-  task state, so “go ahead,” corrections, and interruptions can resume one goal.
+  task state, so “go ahead,” corrections, and interruptions can resume one goal. Its
+  per-chat scratchpad separates requested stages, verified actions, observed page
+  state, actual/unknown changes, resolved failures, and the next unfinished step;
+  merely inspecting a page never counts as completing an action.
 - **Relationship learning:** explicit communication preferences are kept separately
   from biography. Repeated feedback and session reflections become reviewable
   proposals; inferred lessons never enter Ted's working context until approved in

@@ -494,6 +494,63 @@ check("dependent action tools continue across model rounds",
 check("dependent action chain reports only verified handler results",
       out == "Notes opened. Text typed.")
 
+OBSERVED_THEN_ACTED = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="o1", name="open_app",
+                           args='{"name":"Outlook"}')]),
+    FakeStream([tool_chunk(0, id="o2", name="ui_inspect",
+                           args='{"query":"New mail"}')]),
+    # Looking at the page is evidence, not the requested click. The loop must
+    # reject this premature finish and demand the missing real action.
+    FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="o3", name="ui_press",
+                           args='{"target":"New mail"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("open Outlook and then click New mail", runtime(
+    lambda n, a: (OBSERVED_THEN_ACTED.append(n),
+                  "New mail is visible." if n == "ui_inspect" else f"{n} ok.")[1],
+    action_tools={"open_app", "ui_press"}),
+    require_tool=True, context_scope="none", min_action_calls=2)
+check("page inspection cannot satisfy a requested action stage",
+      OBSERVED_THEN_ACTED == ["open_app", "ui_inspect", "ui_press"])
+check("the verified report includes actions but not inspection narration",
+      out == "open_app ok. ui_press ok.")
+
+RECOVERED_LEDGER = {"verified": 0}
+RECOVERED_LEDGER_CALLS = []
+
+def recovered_ledger_dispatch(name, args):
+    RECOVERED_LEDGER_CALLS.append(name)
+    if name == "open_app":
+        return "I couldn't verify that Outlook opened."
+    if name == "ui_inspect":
+        RECOVERED_LEDGER["verified"] = 1
+        return "Outlook is visible and New mail is present."
+    RECOVERED_LEDGER["verified"] = 2
+    return "Pressed New mail and verified To appeared."
+
+recovered_runtime = runtime(
+    recovered_ledger_dispatch, action_tools={"open_app", "ui_press"},
+    is_failure=lambda result: "couldn't" in result)
+recovered_runtime.progress_reader = lambda: dict(RECOVERED_LEDGER)
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="r1", name="open_app",
+                           args='{"name":"Outlook"}')]),
+    FakeStream([tool_chunk(0, id="r2", name="ui_inspect",
+                           args='{"query":"New mail"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+    FakeStream([tool_chunk(0, id="r3", name="ui_press",
+                           args='{"target":"New mail"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("open Outlook and then click New mail", recovered_runtime,
+             require_tool=True, context_scope="none", min_action_calls=2)
+check("later evidence counts a recovered false-negative exactly once",
+      RECOVERED_LEDGER_CALLS == ["open_app", "ui_inspect", "ui_press"])
+check("recovery still requires the actual remaining click",
+      "Pressed New mail" in out)
+
 COMPOUND_CONTROL = []
 llm.chat_create = scripted(
     FakeStream([tool_chunk(0, id="c1", name="open_app",
@@ -782,7 +839,7 @@ llm.chat_create = scripted(
 out, _ = run("open google.com, inspect Search, click it, then type", runtime(
     lambda n, a: (PAGE_FLOW_CALLS.append(n), f"{n} ok.")[1],
     action_tools={"browse_to", "ui_press", "type_text"}),
-    require_tool=True, min_action_calls=5)
+    require_tool=True, min_action_calls=3)
 check("the same page observation may run again after an intervening action",
       PAGE_FLOW_CALLS == ["ui_inspect", "browse_to", "ui_inspect",
                           "ui_press", "type_text"])

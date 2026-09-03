@@ -93,6 +93,14 @@ check("discussion containing an action verb does not force execution",
           "I wonder whether I should remove that from my workflow"))
 check("a polite direct request still requires execution",
       routing.likely_action_request("Could you pause the music?"))
+check("a yes-now follow-up still requires the named UI action",
+      routing.likely_action_request("Yes now click on New mail and draft an email"))
+check("an Outlook cursor draft is action work, not conversational writing",
+      routing.likely_action_request(
+          "Create an email draft in Outlook by using the cursor and typing it"))
+check("an Outlook draft reserves real work beyond page inspection",
+      routing.expected_action_calls(
+          "Create an email draft in Outlook by using the cursor and typing it") >= 2)
 
 doc = routing.plan_document(
     "open doc and write a 2 page paper on WW2. 12 font. Double spaced")

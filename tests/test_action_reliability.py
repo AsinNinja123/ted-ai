@@ -94,7 +94,8 @@ window_counts = iter([0, 2])
 th._browser_window_count = lambda _app: next(window_counts, 2)
 result = th.tool_browse_to("youtube", "Brave")
 check("a cold launch never calls two Brave windows success",
-      "unexpectedly created 2 windows" in result and th.looks_like_failure(result))
+      result.startswith("Opened Youtube in Brave Browser")
+      and "Stub Page Title" in result and not th.looks_like_failure(result))
 
 
 th.subprocess.run = successful_browser

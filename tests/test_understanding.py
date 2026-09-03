@@ -70,6 +70,44 @@ again = understanding.resolve("Do it again.", active_task=task_state.active_for(
 check("a completed task remains available as a follow-up referent",
       again.continues_task_id == task_id)
 
+print("\n— task scratchpad separates actions from observations —")
+scratch_turn = understanding.resolve(
+    "Open Outlook and click New mail", action_likely=True)
+scratch_id = task_state.begin_or_continue(84, scratch_turn)
+task_state.set_plan(scratch_id, 2, ["Open Outlook", "Click New mail"])
+failed_open = outcomes.normalize(
+    "open_app", {"name": "outlook"},
+    "I couldn't verify that Outlook opened.",
+    is_failure=lambda _value: True)
+task_state.record_action(scratch_id, "open_app", failed_open)
+task_state.record_observation(
+    scratch_id, "ui_inspect", {"query": "mail"},
+    "AXWindow: Mail - Outlook - Google Chrome\nAXButton: New mail")
+scratch = task_state.active_for(84)
+scratch_progress = task_state.progress(scratch_id)
+check("later page evidence resolves a false-negative launch",
+      scratch_progress["unresolved_failures"] == 0
+      and scratch["failed_steps"][0]["resolved"])
+check("recovered state is explicit that causation is unknown",
+      scratch["completed_steps"][0]["changed"] == "unknown")
+check("an observation does not itself satisfy the remaining click",
+      scratch_progress["verified"] == 1 and scratch_progress["remaining"] == 1
+      and not scratch_progress["ready"]
+      and "Click New mail" in scratch_progress["next_step"])
+click = outcomes.normalize(
+    "ui_press", {"label": "New mail"},
+    "Pressed New mail; verified that To appeared.",
+    is_failure=lambda _value: False)
+task_state.record_action(scratch_id, "ui_press", click)
+check("the scratchpad names zero remaining work only after the real action",
+      task_state.progress(scratch_id)["ready"]
+      and "audit" in task_state.progress(scratch_id)["next_step"].lower())
+scratch_card = task_state.format_for_prompt(task_state.active_for(84))
+check("the prompt card exposes progress, changed state, evidence, and next step",
+      "progress=2/2" in scratch_card and "changed=unknown" in scratch_card
+      and "latest observed state=" in scratch_card
+      and "next required step=" in scratch_card)
+
 with sqlite3.connect(db) as conn:
     conn.execute("CREATE TABLE chat_turns(id INTEGER PRIMARY KEY,session_id INTEGER,"
                  "role TEXT,content TEXT,ts TEXT)")

@@ -309,6 +309,14 @@ _TARGETED_ACTIONS = (
      re.compile(r"\b(?:clipboard|to my clipboard|into|out loud)\b", re.I)),
     (re.compile(r"^(?:create|start|make|write|draft)\b", re.I),
      re.compile(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b", re.I)),
+    # Creating prose is normally conversation, but an email draft explicitly
+    # located in Outlook or driven through the Mac UI is unmistakably a request
+    # to operate the app. This keeps "write me an email" conversational while
+    # correctly routing "draft an email in Outlook with the cursor".
+    (re.compile(r"^(?:create|start|make|write|draft)\b", re.I),
+     re.compile(r"\b(?:email|mail)\b.{0,60}\b(?:outlook|cursor|mouse|new mail)\b|"
+                r"\b(?:outlook|cursor|mouse|new mail)\b.{0,60}\b(?:email|mail)\b",
+                re.I)),
 )
 
 
@@ -635,7 +643,9 @@ def likely_action_request(text):
     # Peel only explicit request wrappers. A verb appearing later in discussion
     # ("I wonder whether I should remove it") must not force a tool call.
     t = re.sub(r"^(?:(?:hey|okay|ok|alright|alight|um|uh|well|so)\s+ted[,.]?\s*|"
-               r"(?:hey|okay|ok|alright|alight|um|uh|well|so|please)[,.]?\s*|"
+               r"(?:hey|okay|ok|alright|alight|um|uh|well|so|please|yes|yeah|yep)"
+               r"[,.]?\s*(?:now\s+)?|"
+               r"now[,.]?\s*|"
                r"(?:let'?s|let us)\s+)+", "", t,
                flags=re.I)
     t = re.sub(
@@ -657,17 +667,19 @@ def likely_action_request(text):
 _SEQUENCE_SEP = re.compile(
     r"\b(?:and then|then|after that|afterwards|followed by|once that)\b|"
     r"\band\s+(?=(?:open|close|quit|launch|play|pause|send|message|text|email|"
-    r"set|add|create|write|copy|paste|type|enter|input|fill|prompt|promt|run|execute|"
+    r"set|add|create|draft|write|copy|paste|type|enter|input|fill|click|tap|press|scroll|"
+    r"prompt|promt|run|execute|"
     r"delete|flag|mark|change|turn|search|"
-    r"find|look up|show|hide|read|check|log|calculate|browse|navigate|remove|tell)\b)",
+    r"find|look up|show|hide|read|check|log|calculate|browse|navigate|go|use|remove|tell)\b)",
     re.I,
 )
 
 _PUNCTUATED_STAGE_SEP = re.compile(
     r"[,;]\s*(?=(?:open|close|quit|launch|play|pause|send|message|text|email|"
-    r"set|add|create|write|copy|paste|type|enter|input|fill|prompt|promt|run|execute|"
+    r"set|add|create|draft|write|copy|paste|type|enter|input|fill|click|tap|press|scroll|"
+    r"prompt|promt|run|execute|"
     r"delete|flag|mark|change|turn|search|find|look up|show|hide|read|check|"
-    r"log|calculate|browse|navigate|remove|tell)\b)",
+    r"log|calculate|browse|navigate|go|use|remove|tell)\b)",
     re.I,
 )
 
@@ -684,6 +696,20 @@ def _request_stages(text):
             if part.strip(" ,;")]
 
 
+def requested_action_steps(text):
+    """Short human-readable stages for the durable task scratchpad."""
+    stages = _request_stages(text)
+    lower = (text or "").lower()
+    if (len(stages) <= 1
+            and re.search(r"\b(?:create|make|write|draft)\w*\b.{0,35}\b(?:email|mail)\b|"
+                          r"\b(?:email|mail)\b.{0,35}\b(?:create|make|write|draft)\w*\b",
+                          lower)
+            and re.search(r"\b(?:outlook|cursor|mouse|new mail)\b", lower)):
+        return ["Open Outlook and reach the New mail composer",
+                "Enter the requested email draft content"]
+    return [" ".join(stage.split())[:180] for stage in stages]
+
+
 def expected_action_calls(text):
     """Conservative lower bound for whether a requested outcome is complete.
 
@@ -698,6 +724,14 @@ def expected_action_calls(text):
     if (re.search(r"\b(?:new|blank)\b.{0,20}\b(?:document|google doc|textedit)\b", lower_text)
             and re.search(r"\b(?:type|write|start|draft|paragraph)\b", lower_text)):
         return 1
+    # A request to construct a draft in Outlook has at least two visible
+    # stages: reach/open the composer, then enter draft content. Page reads used
+    # to satisfy this bound, which let Ted stop after merely seeing Outlook.
+    if (re.search(r"\b(?:create|make|write|draft)\w*\b.{0,35}\b(?:email|mail)\b|"
+                  r"\b(?:email|mail)\b.{0,35}\b(?:create|make|write|draft)\w*\b",
+                  lower_text)
+            and re.search(r"\b(?:outlook|cursor|mouse|new mail)\b", lower_text)):
+        return max(2, len(_request_stages(text)))
     segments = _request_stages(text)
     total = 0
     previous_targets = 1

@@ -730,10 +730,11 @@ class ToolRuntime:
     """
     __slots__ = ("schemas", "dispatch", "action_tools", "on_failure",
                  "is_failure", "schema_by_name", "discovery_used",
-                 "catalog", "max_admissions", "admitted")
+                 "catalog", "max_admissions", "admitted", "progress_reader")
 
     def __init__(self, schemas, dispatch, action_tools=(), on_failure=None,
-                 is_failure=None, catalog=None, max_admissions=3):
+                 is_failure=None, catalog=None, max_admissions=3,
+                 progress_reader=None):
         # Keep one mutable list. The find_tools meta-tool can append schemas
         # between reasoning rounds and the next provider call sees the expansion.
         self.schemas = list(schemas)
@@ -752,6 +753,7 @@ class ToolRuntime:
         self.catalog = dict(catalog or {})
         self.max_admissions = max(0, int(max_admissions))
         self.admitted = []
+        self.progress_reader = progress_reader
 
     def admit(self, name):
         """Take in a real tool the router did not put on the menu.
@@ -1535,6 +1537,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     stateful_observations = frozenset({
         "ui_inspect", "screen_describe", "clipboard_read",
     })
+    # These tools only observe current state. They are vital evidence, but they
+    # must never satisfy the user's requested-action lower bound. Counting two
+    # ui_inspect calls as two completed stages is how Ted stopped after looking
+    # at Outlook without clicking New mail or typing the draft.
+    progress_observations = frozenset({
+        "ui_inspect", "screen_describe", "terminal_read",
+    })
     action_results = []
     had_non_action = False
     # The router's lower bound sees comma-separated and mixed-capability work,
@@ -1559,6 +1568,13 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     thinking_retry_used = False
     format_retry_used = False
     completed_tool_calls = 0
+    ledger_verified = 0
+    if tool_runtime is not None and tool_runtime.progress_reader:
+        try:
+            ledger_verified = int(
+                (tool_runtime.progress_reader() or {}).get("verified") or 0)
+        except Exception:
+            ledger_verified = 0
     try:
         msgs = messages
         rounds = 0
@@ -1925,6 +1941,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 results.append(result)
                 is_action = c["name"] in tool_runtime.action_tools
                 call_failed = is_action and tool_runtime.is_failure(result)
+                ledger_delta = 0
+                if tool_runtime.progress_reader:
+                    try:
+                        ledger_now = int(
+                            (tool_runtime.progress_reader() or {}).get("verified") or 0)
+                        ledger_delta = max(0, ledger_now - ledger_verified)
+                        ledger_verified = ledger_now
+                    except Exception:
+                        ledger_delta = 0
                 if (c["name"] == "press_key"
                         and str(args.get("key", "")).lower() == "enter"
                         and not call_failed and terminal_workflow):
@@ -1942,10 +1967,16 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                 if c["name"] != "find_tools":
                     # A rejected/failed action is evidence for replanning, not
                     # evidence that one requested stage completed.
-                    if not call_failed:
+                    if not call_failed and c["name"] not in progress_observations:
                         completed_tool_calls += 1
                         if is_action:
                             observation_revision += 1
+                    elif c["name"] in progress_observations and ledger_delta:
+                        # An observation is normally zero work. The one exception
+                        # is when durable evidence resolves a false-negative action
+                        # from earlier in this same turn; count that recovered stage
+                        # once so the loop neither stops early nor repeats it.
+                        completed_tool_calls += ledger_delta
                     visible_results.append(result)
                 if not is_action:
                     all_actions = False
