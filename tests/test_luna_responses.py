@@ -222,6 +222,30 @@ check("the previous round's thinking is put back in",
 check("it goes back BEFORE the call it produced",
       round_two[2]["type"] == "function_call")
 
+# Regression: the API returns bookkeeping on a reasoning item that it refuses
+# to accept back. Echoing it verbatim 400s the SECOND round of every tool turn
+# — Ted opened Terminal and stopped dead.
+lr.forget_reasoning()
+drain([
+    ev("response.output_item.added",
+       item={"type": "function_call", "id": "fc_x", "call_id": "call_x",
+             "name": "open_app", "arguments": ""}),
+    ev("response.completed", response={
+        "output": [{"type": "reasoning", "id": "rs_x", "status": "completed",
+                    "encrypted_content": "ENC", "summary": []},
+                   {"type": "function_call", "call_id": "call_x",
+                    "name": "open_app", "status": "completed"}],
+        "usage": {}}),
+])
+echoed = lr.recall_reasoning(["call_x"])[0]
+check("output-only bookkeeping is stripped before it is echoed",
+      "status" not in echoed)
+check("the parts the model actually needs survive",
+      echoed["type"] == "reasoning" and echoed["id"] == "rs_x"
+      and echoed["encrypted_content"] == "ENC")
+check("an empty summary is not sent back as a null field",
+      "summary" not in echoed or echoed["summary"] == [])
+
 lr.forget_reasoning()
 missed = lr.to_input_items([
     {"role": "assistant", "content": "", "tool_calls": [

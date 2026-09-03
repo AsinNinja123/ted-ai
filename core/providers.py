@@ -517,6 +517,12 @@ def _luna_create(**kwargs):
     # Ted uses "default" for Groq. OpenAI expects an explicit supported level.
     if params.get("reasoning_effort") == "default":
         params["reasoning_effort"] = "low"
+    # Luna accepts only the default temperature. Ted sets 0.1-0.35 on helper
+    # calls for Groq's benefit, and every one of those was 400ing here — the
+    # chat summariser among them. Drop it rather than fail the call; sampling
+    # temperature is a preference, the summary is not.
+    if params.get("temperature") not in (None, 1, 1.0):
+        params.pop("temperature", None)
     # A tool-bearing turn is exactly the turn that most needs to think, and
     # Chat Completions has nowhere to keep that thinking between rounds. Send
     # it to /v1/responses instead, which does. See core/luna_responses.py.

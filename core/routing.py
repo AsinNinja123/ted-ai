@@ -371,13 +371,19 @@ _PENDING_PROMPT = re.compile(
 _ON_SCREEN_TOOLS = ("terminal_read", "ui_inspect", "ui_press",
                     "type_text", "press_key")
 
+# Reads, not actions — which is exactly why they are invisible to
+# _recent_actions, and why the first version of this check found nothing. The
+# screen read that reveals a waiting prompt is never an "action" by any
+# definition Ted uses elsewhere, so it needs its own slot.
+OBSERVATION_TOOLS = frozenset({"terminal_read", "ui_inspect", "screen_describe"})
+
 
 def screen_awaits_answer(recent_action_text):
     """True when the last verified action left a prompt waiting for input."""
     return bool(_PENDING_PROMPT.search(recent_action_text or ""))
 
 
-def select_tool_schemas(text, recent_action_text=""):
+def select_tool_schemas(text, recent_action_text="", screen_text=""):
     """Return only the capability contracts this turn is likely to use.
 
     A known family does not also pay for discovery: if its menu is incomplete,
@@ -430,7 +436,7 @@ def select_tool_schemas(text, recent_action_text=""):
     # Charlie's phrasing. A pattern over screen text asks "is something
     # waiting?"; a pattern over the user's words would be guessing what he
     # meant, which is the vending machine this file exists to avoid.
-    if screen_awaits_answer(recent_action_text):
+    if screen_awaits_answer(screen_text) or screen_awaits_answer(recent_action_text):
         return [_SCHEMA_BY_NAME[n] for n in _ON_SCREEN_TOOLS
                 if n in _SCHEMA_BY_NAME]
     return [FIND_TOOLS_SCHEMA] if likely_action_request(text) else []

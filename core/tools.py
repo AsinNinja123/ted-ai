@@ -1123,7 +1123,12 @@ TOOL_SCHEMAS = [
                 "document, use create_document; for a labeled HTML field, use ui_fill. "
                 "Do not type approval for privacy, security, credentials, purchases, "
                 "deletion, or other consequential prompts unless Charlie explicitly "
-                "authorized that exact choice in his request."
+                "authorized that exact choice in his request. "
+                "Text goes wherever the keyboard focus already is — opening an app does "
+                "not guarantee it took focus, and Ted's own window is a real place this "
+                "can land. The result names the app that received the text. If that is "
+                "not the app you meant, do not carry on as though it worked: say what "
+                "actually happened."
             ),
             "parameters": {
                 "type": "object",
@@ -1144,7 +1149,14 @@ TOOL_SCHEMAS = [
                 "prompt to an interactive AI, then call terminal_read to inspect the "
                 "result. Never use Enter to bypass confirmation for privacy, security, "
                 "credentials, messages, purchases, deletion, or other consequential "
-                "actions unless Charlie explicitly authorized that exact choice."
+                "actions unless Charlie explicitly authorized that exact choice. "
+                "Enter does not mean yes. On any screen offering a list of choices, "
+                "Enter accepts whichever option is currently highlighted, which is "
+                "often the first one and often the refusal. Read the screen, find the "
+                "marker showing the current selection, move it with up/down until it "
+                "sits on the option you actually want, and only then press Enter. "
+                "The result of this tool names the app the key landed in — if that is "
+                "not the app you meant, say so rather than continuing."
             ),
             "parameters": {
                 "type": "object",

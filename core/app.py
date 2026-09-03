@@ -413,6 +413,9 @@ class TedApi:
         # intentionally separate from prose chat history so command reasoning
         # does not need twenty old messages just to resolve a pronoun.
         self._recent_actions = []
+        # The most recent thing Ted actually looked at. See
+        # _dispatch_and_record for why this is not in _recent_actions.
+        self._last_screen = ""
         # Replaced atomically by apps_watch. This is live machine state, not a
         # memory: every model turn sees what macOS most recently confirmed.
         self._live_state = system_state.collect(include_remote=False)
@@ -1258,7 +1261,7 @@ class TedApi:
             # behavior examples, relationship memory, and the live app tree to
             # accidentally load dozens of unrelated schemas for "delete that".
             _selected_schemas = routing.select_tool_schemas(
-                routing_text, _recent_context)
+                routing_text, _recent_context, self._last_screen)
         _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
         _live_context = (system_state.format_for_prompt(self._live_state)
                          if _needs_operational and _selected_schemas else "")
@@ -2433,6 +2436,14 @@ class TedApi:
 
     def _dispatch_and_record(self, name, args, confirmed=False):
         result = self._dispatch_tool(name, args, confirmed=confirmed)
+        # A screen read is not an action and never enters _recent_actions —
+        # correctly, since that list drives pronoun resolution and is capped at
+        # eight, and a terminal dump would evict every real action in it. But
+        # it IS the evidence that says whether something is waiting for an
+        # answer, so it gets its own slot. Truncated: only the tail of a
+        # terminal matters, and this is read on every turn.
+        if name in routing.OBSERVATION_TOOLS:
+            self._last_screen = str(result or "")[-2000:]
         # Consequential tools have not acted when they merely arm confirmation.
         acted = (name in th.ACTION_TOOLS
                  and (confirmed or not th.needs_confirmation(name, args)))

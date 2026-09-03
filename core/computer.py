@@ -196,8 +196,12 @@ def type_text(text):
     if not result.get("ok"):
         return (result.get("error") or "Couldn't type the text") + "."
     preview = text[:40] + ("..." if len(text) > 40 else "")
+    # Where the text went is part of the ground truth, not decoration. See
+    # press_key above for the failure this exists to make visible.
+    where = accessibility_status().get("frontmost", "")
+    at = f" (into {where})" if where else ""
     if result.get("verified"):
-        return f"Typed: {preview}"
+        return f"Typed: {preview}{at}"
     # Some web editors do not expose their complete AXValue, but do expose the
     # inserted text as a descendant. Query that semantic tree before giving up;
     # this is still image-free.
@@ -205,8 +209,9 @@ def type_text(text):
     if check:
         semantic = _native("snapshot", check)
         if semantic.get("ok") and semantic.get("elements"):
-            return f"Typed: {preview}"
-    return f"Sent the keystrokes, but I couldn't verify that '{preview}' appeared."
+            return f"Typed: {preview}{at}"
+    return (f"Sent the keystrokes{at}, but I couldn't verify that "
+            f"'{preview}' appeared.")
 
 
 def _paste_text(text):
@@ -370,9 +375,21 @@ def create_document(text, app="google_docs", browser="Chrome", font_size=None,
 
 
 def press_key(key):
+    """Press a key, and say WHERE it landed.
+
+    "Pressed enter." is not ground truth — it omits the only fact that makes
+    the action checkable. Ted typed a prompt into his own window and reported
+    success, because nothing in the result said which app received it.
+
+    Naming the surface turns a whole class of silent mistakes into visible
+    ones: the model reads its own evidence, sees the wrong app, and can say so
+    instead of narrating a success that did not happen.
+    """
     result = _native("key", key)
-    return (f"Pressed {key}." if result.get("ok") else
-            (result.get("error") or f"Couldn't press {key}") + ".")
+    if not result.get("ok"):
+        return (result.get("error") or f"Couldn't press {key}") + "."
+    where = accessibility_status().get("frontmost", "")
+    return f"Pressed {key} in {where}." if where else f"Pressed {key}."
 
 
 def scroll(direction="down", amount=600):

@@ -123,6 +123,24 @@ def forget_reasoning():
         _reasoning_by_call_id.clear()
 
 
+# A reasoning item is not symmetrical: the API returns bookkeeping fields it
+# will not accept back. Echoing model_dump() verbatim 400s on input[n].status
+# and kills every round after the first — Ted opens Terminal and stops.
+#
+# Allowlist, not a blocklist. A new output-only field appearing later would
+# reintroduce exactly this bug, and the failure mode is the whole tool loop.
+_REASONING_INPUT_FIELDS = ("type", "id", "encrypted_content", "summary",
+                           "content")
+
+
+def _sanitize_reasoning(item):
+    """Keep only the fields /v1/responses accepts back as input."""
+    clean = {k: v for k, v in item.items()
+             if k in _REASONING_INPUT_FIELDS and v is not None}
+    clean["type"] = "reasoning"
+    return clean
+
+
 def _as_dict(obj):
     """SDK model -> plain dict, whatever SDK version is installed."""
     if isinstance(obj, dict):
@@ -380,7 +398,7 @@ def _harvest(output_items):
         item = _as_dict(raw)
         kind = item.get("type")
         if kind == "reasoning":
-            reasoning.append(item)
+            reasoning.append(_sanitize_reasoning(item))
         elif kind == "function_call":
             cid = item.get("call_id") or item.get("id")
             if cid:

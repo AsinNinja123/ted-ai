@@ -397,5 +397,20 @@ check("with tools loaded the turn is no longer demoted to the local brain",
           schemas=routing.select_tool_schemas("say yes", TRUST_PROMPT)
       ).brain == routing.BRAIN_CLOUD)
 
+# The read that reveals a waiting prompt is not an ACTION_TOOL, so it never
+# reaches _recent_actions. Checking only there found nothing and "yes" went
+# out with tools=0 a second time. The screen gets its own channel.
+SCREEN_TAIL = (" Security guide\n\n \u276f No, exit\n   Yes, I trust this "
+               "folder\n\n Enter to confirm \u00b7 Esc to cancel")
+check("the last screen read is enough on its own",
+      "press_key" in _names(routing.select_tool_schemas("yes", "", SCREEN_TAIL)))
+check("recent actions alone still work when they carry the prompt",
+      "press_key" in _names(routing.select_tool_schemas("yes", TRUST_PROMPT, "")))
+check("neither channel holding a prompt costs nothing",
+      routing.select_tool_schemas("yes", "", "") == [])
+check("terminal_read is named as an observation, not an action",
+      "terminal_read" in routing.OBSERVATION_TOOLS
+      and "press_key" not in routing.OBSERVATION_TOOLS)
+
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
