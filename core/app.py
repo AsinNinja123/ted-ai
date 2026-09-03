@@ -76,8 +76,8 @@ to the JS side.
 #      @property
 #          Makes a method look like a plain attribute from the outside. You
 #          write `api.muted` and Python quietly calls a function. Ted uses it
-#          where reading or writing a value needs to also *do* something —
-#          setting `self.muted = True` also turns the microphone off.
+#          as a compatibility view over the newer voice-state fields; runtime
+#          controls use the explicit wake/voice/sleep transition methods.
 #
 #      the walrus, `:=`
 #          Assign and test in one step.
@@ -229,7 +229,6 @@ except Exception:
 assistant = features.assistant   # None when the module is unavailable
 
 SETTLE_AFTER_TALK = 0.25
-WAKE_MIN_RMS       = 0.017   # minimum RMS for a valid wake-word trigger
 WAKE_COOLDOWN_SECS = 1.5     # seconds before wake word can fire again (echo prevention)
 
 # ── voice shortcuts ──
@@ -385,14 +384,17 @@ class TedApi:
         # restart because set_active_chat changed only the numeric ID.
         self._conversation_chat_id = None
         self._loop_started    = False             # prevents starting the loop twice
-        # One flag used to do two jobs, which is why "mic on but speakers off"
-        # was unrepresentable. Capture and speech are separate now:
-        #   (False, False)  chat only — how Ted boots
-        #   (True,  True)   voice mode, the ● button
-        #   (True,  False)  transcribe — talk, and the text lands in the input box
-        # `muted` survives as a property meaning "not speech_on"; see below.
+        # Voice has three durable states instead of one overloaded mute bit:
+        #   wake standby  mic on, TTS off, only "Ted" / "Hey Ted" is accepted
+        #   voice         mic on, TTS on, ordinary conversation is accepted
+        #   sleep         mic physically off; only the button or typed wake-up works
+        # A fourth, temporary transcribe state routes speech into the input box.
+        # The mic is claimed in start(), after pywebview has finished launching.
+        # `muted` survives as a compatibility property meaning "TTS is off".
         self.mic_on           = False             # is capture running
         self.speech_on        = False             # is TTS allowed to play
+        self.wake_only        = True              # standby wake-word gate
+        self.sleeping         = False             # physical mic-off state
         self.transcribe_only  = False             # capture routes to the input box
         self.pet_silent_chat  = False             # capture becomes a silent answered turn
         self.interrupt_speech = False             # set True to cut off current playback
@@ -483,10 +485,10 @@ class TedApi:
         # process's SSE stream, so agent events would vanish with no error.
         events.BUS.add_listener(self._mirror_event_to_hud)
 
-        # ── Attention: after ATTENTION_WINDOW s of silence Ted goes to standby
-        #    and only "Hey Ted" (or typing) re-engages — so room conversation
-        #    doesn't get answered. Starts engaged.
-        self.attention_until   = time.time() + max(ATTENTION_WINDOW, 5)
+        # ── Attention: Ted starts in wake-word standby. Once addressed, this
+        #    deadline keeps voice mode open for natural follow-ups, then returns
+        #    him to standby without releasing the microphone.
+        self.attention_until   = 0.0
         self._last_action      = None   # {"kind","rid","task","label","ts"} — for "actually make it …"
 
     # How long after a memory write "forget that" still means that memory
@@ -697,15 +699,10 @@ class TedApi:
         # what a bare "remember this" points at.
         self._prev_user_text, self._cur_user_text = self._cur_user_text, text
 
-        # [BOOK §6.2] RUNG 1 ── mute/unmute from typing or the remote endpoint ──
-        # (Voice mute is intercepted in conversation_loop; while muted there is
-        # no voice path at all — the mic is physically off — so typing is how
-        # 'unmute' arrives.)
-        # Both directions are handled here regardless of current state. Ted now
-        # BOOTS MUTED (chat-first), so "mute yourself" arrives while already
-        # muted far more often than it used to — and the old `not self.muted`
-        # guard let it fall all the way through to the model, which then
-        # cheerfully discussed muting instead of answering. Answer the intent.
+        # [BOOK §6.2] RUNG 1 ── sleep/wake from typing or remote input ──
+        # Spoken sleep is intercepted in conversation_loop before the busy
+        # lock. Once asleep the mic is physically off, so only the voice button
+        # or a typed "wake up" can leave that state.
         _tn_mute = _normalize_cmd(text)
         _wants_unmute = (_tn_mute.startswith("unmute") or _tn_mute in
                          ("listen", "start listening", "wake up", "turn on mic",
@@ -716,9 +713,10 @@ class TedApi:
         if _wants_unmute:
             if echo_user:
                 add_message(w, "user", text)
-            if not self.mic_on or self.transcribe_only or not self.speech_on:
-                self.toggle_mute()
-                reply = "I'm back — listening."
+            if self.sleeping or self.wake_only or self.transcribe_only or not self.speech_on:
+                opened = self._enter_voice()
+                reply = ("I'm back — listening." if opened else
+                         "I couldn't open the microphone. Check macOS microphone permission, then try again.")
             else:
                 reply = "Mic's already on."
             self.last_reply = reply
@@ -729,15 +727,12 @@ class TedApi:
             if echo_user:
                 add_message(w, "user", text)
             if self.mic_on:
-                # Muting is silent on purpose — speaking here would be the last
-                # thing you hear after asking for quiet.
-                self.muted = True
-                self._apply_mic(False)
-                self._push_mic_state()
+                self._enter_sleep()
+                reply = "I'm asleep. Press the voice button or type ‘wake up’ when you want me listening again."
             else:
                 reply = "Mic's already off."
-                self.last_reply = reply
-                add_message(w, "ted", reply)
+            self.last_reply = reply
+            add_message(w, "ted", reply)
             return False
 
         # [BOOK §6.2] RUNG 2 ── stop: cut Ted off; pause Spotify if Ted wasn't speaking ──
@@ -3500,8 +3495,9 @@ class TedApi:
 
     # [BOOK §5.2] ─── THE SPOKEN WAY IN ──────────────────────────────────────
     # A loop on a background thread: listen, transcribe, hand the text to
-    # _respond, listen again. Runs for the whole life of the program, but does
-    # nothing while muted — and Ted boots muted, because it is a chat app now.
+    # _respond, listen again. Runs for the whole life of the program. At launch
+    # it accepts only the wake word; in sleep it does nothing because the mic
+    # has been physically released.
     def conversation_loop(self):
         """Main listen→respond loop — runs forever on a background daemon thread.
 
@@ -3521,7 +3517,6 @@ class TedApi:
             pass
         # Update the HUD Voice readout to reflect the actual TTS engine in use
         js(w, f"tedHud.setVoice({json.dumps(voice.voice_label())})")
-        self._touch_attention()   # seed the HUD with the initial attention deadline
         time.sleep(SETTLE_AFTER_TALK)
 
         # ── Session recap: mention the last real conversation, if there was one ──
@@ -3578,6 +3573,11 @@ class TedApi:
         _busy_stuck_since = 0.0   # timestamp when the current busy period started
         _busy_warning_shown = False
         while True:
+            # After a quiet spell, return to wake-word standby without releasing
+            # the mic. Sleep is separate and can only be left deliberately.
+            if (self.mic_on and self.speech_on and not self.transcribe_only
+                    and not self.pet_silent_chat and not self._engaged()):
+                self._enter_wake_listening()
             if self.busy:
                 _now_b = time.time()
                 if _busy_stuck_since == 0.0:
@@ -3650,41 +3650,34 @@ class TedApi:
             text = _fix_command_words(text)
 
             # ── Wake phrase detection: strip "Hey Ted" prefix ──
+            was_in_standby = self.wake_only
             text, was_wake = _strip_wake_phrase(text)
             if was_wake:
-                # RMS guard: if the audio was near-silent, it's likely an echo — ignore
-                if _rms > 0 and _rms < WAKE_MIN_RMS:
-                    prearmed = False
-                    continue
-                # Cooldown: prevent rapid re-triggering from feedback
+                # capture() already passed its calibrated energy and confidence
+                # gates. The old second, fixed RMS check rejected quiet but
+                # perfectly valid wake words after they had transcribed.
                 _now = time.time()
                 if _now - self._last_wake_time < WAKE_COOLDOWN_SECS:
                     prearmed = False
                     continue
                 self._last_wake_time = _now
+                if was_in_standby and not self._enter_voice():
+                    prearmed = False
+                    continue
+                self._touch_attention()
                 if not text.strip():
-                    # Just the wake phrase alone — acknowledge and re-listen
-                    self._touch_attention()
+                    # Just the wake phrase alone — enter voice mode, acknowledge,
+                    # then immediately listen for the actual request.
                     speak(w, random.choice(["Yes.", "Go ahead.", "Sir.", "Here."]), self)
                     prearmed = False
                     continue
                 voice.play_chime(w, self)
                 time.sleep(0.08)   # brief gap after chime before processing
 
-            # ── attention gate: in standby, only "Hey Ted" gets through ────────
-            # After ATTENTION_WINDOW s of silence Ted stops treating room noise
-            # as commands. The one standby exception: stopping Ted's own voice
-            # mid-announcement (a reminder can fire while unengaged).
-            if was_wake:
-                self._touch_attention()
-            elif not self._engaged():
-                if _is_stop_command(text) and getattr(engine, "_playing", False):
-                    self.interrupt_speech = True
-                    engine.stop_playback()
-                    set_state(w, "idle")
-                else:
-                    print(f"   (standby — not addressed: {text!r})")
-                    js(w, f"tedHud.flashHeard({json.dumps(text)}, true)")
+            # In chat-first standby, room speech is examined only for the wake
+            # phrase. It never becomes a command or enters conversation memory.
+            if was_in_standby and not was_wake:
+                print(f"   (wake standby — not addressed: {text!r})")
                 prearmed = False
                 continue
             js(w, f"tedHud.flashHeard({json.dumps(text)}, false)")
@@ -3698,7 +3691,11 @@ class TedApi:
             _is_mute_cmd = (_matches(text, _MUTE_PHRASES) and
                             not any(w in _mute_words for w in ("spotify", "music", "song", "audio")))
             if _is_mute_cmd:
-                self.toggle_mute()
+                # Confirm first; after _enter_sleep TTS is disabled and the
+                # microphone is physically released.
+                self.last_reply = "Going to sleep."
+                speak(w, self.last_reply, self)
+                self._enter_sleep()
                 prearmed = False
                 continue
 
@@ -3944,6 +3941,10 @@ class TedApi:
         if self._loop_started:
             return True
         self._loop_started = True
+        # Ted is chat-first at launch, but his wake detector is live. This is
+        # intentionally before the conversation thread: capture must never run
+        # against a logical "on" state before the hardware has actually opened.
+        self._enter_wake_listening()
         # Say when the cloud hands off. A local rescue turn is slower than a
         # cloud one and, unexplained, that slowness is what Charlie experiences
         # as Ted freezing. The reason was already known — it was just recorded
@@ -4041,30 +4042,93 @@ class TedApi:
 
     @muted.setter
     def muted(self, value):
-        # Assigning the old flag still means "turn Ted all the way off/on".
+        # Compatibility for older callers/tests that still assign this flag.
+        # Runtime controls use the explicit transition methods below because
+        # they also operate the hardware and update the HUD.
         self.mic_on = not value
         self.speech_on = not value
+        self.sleeping = bool(value)
+        self.wake_only = False
         if value:
             self.transcribe_only = False
             self.pet_silent_chat = False
 
     def _apply_mic(self, on):
-        """Start or stop capture, and keep the OS indicator honest about it.
-
-        This is the ONLY place the microphone is claimed. Ted boots with no mic
-        tap at all (core/voice.py), so nothing lights the macOS recording
-        indicator until the voice or transcribe button is pressed.
-        """
+        """Request a hardware mic state and return the state actually reached."""
         if on:
             voice.prepare_mic()             # claims the mic, calibrates once
-            voice.spotify_volume(30)        # lower so Ted doesn't pick up the music
+            actual = bool(voice.mic_is_open())
+            self.mic_on = actual
+            if not actual:
+                error_log.error("[voice] microphone was requested but did not open")
+                show_issue(
+                    self.window,
+                    "I couldn't open the microphone. Check macOS Privacy & Security "
+                    "→ Microphone, then press the voice button again.",
+                )
+            return actual
         else:
             voice.release_mic()             # removes mic tap → orange dot off
-            voice.spotify_volume(100)       # full volume — not listening, enjoy the music
+            self.mic_on = bool(voice.mic_is_open())
+            return not self.mic_on
+
+    def _enter_wake_listening(self):
+        """Idle chat mode: keep the mic open but accept only the wake phrase."""
+        self.wake_only = True
+        self.sleeping = False
+        self.speech_on = False
+        self.transcribe_only = False
+        self.pet_silent_chat = False
+        opened = self._apply_mic(True)
+        # Standby should not hold music at the voice-conversation volume.
+        voice.spotify_volume(100)
+        if not opened:
+            self.wake_only = False
+            self.sleeping = True
+        self._push_mic_state()
+        print("[voice] wake-word standby" if opened else "[voice] microphone unavailable")
+        return opened
+
+    def _enter_voice(self):
+        """Full spoken conversation, reached by wake word or voice button."""
+        self.wake_only = False
+        self.sleeping = False
+        self.speech_on = True
+        self.transcribe_only = False
+        self.pet_silent_chat = False
+        opened = self._apply_mic(True)
+        if opened:
+            voice.spotify_volume(30)
+            self._touch_attention()
+        else:
+            self.speech_on = False
+            self.sleeping = True
+        self._push_mic_state()
+        print("[voice] active" if opened else "[voice] microphone unavailable")
+        return opened
+
+    def _enter_sleep(self):
+        """Physically release the mic until a click or typed wake-up command."""
+        self.wake_only = False
+        self.sleeping = True
+        self.speech_on = False
+        self.transcribe_only = False
+        self.pet_silent_chat = False
+        self._apply_mic(False)
+        voice.spotify_volume(100)
+        self._push_mic_state()
+        print("[voice] asleep — microphone off")
+        return True
 
     def _push_mic_state(self):
-        js(self.window, f"tedHud.setMuted({str(not self.mic_on).lower()})")
+        # The main mic ring means full voice, not merely "the OS device is in
+        # use". Wake standby gets its own quieter indicator.
+        voice_active = self.mic_on and self.speech_on
+        js(self.window, f"tedHud.setMuted({str(not voice_active).lower()})")
         js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
+        wake_listening = self.wake_only and self.mic_on
+        js(self.window,
+           f"tedHud.setWakeListening({str(wake_listening).lower()})")
         pet.set_mode(self.pet_mode())
 
     # ── the notification bouncer ───────────────────────────────────────────
@@ -4297,14 +4361,11 @@ class TedApi:
         return [a.as_dict() for a in self._pending_attachments]
 
     def toggle_mute(self):
-        """Mic button: full voice mode on/off — capture and speech together."""
-        going_on = not self.mic_on or self.transcribe_only or not self.speech_on
-        self.mic_on = going_on
-        self.speech_on = going_on
-        self.transcribe_only = False
-        self.pet_silent_chat = False
-        self._apply_mic(self.mic_on)
-        self._push_mic_state()
+        """Voice button: wake/standby/sleep → voice; voice → sleep."""
+        if self.mic_on and self.speech_on and not self.transcribe_only:
+            self._enter_sleep()
+        else:
+            self._enter_voice()
         return self.muted
 
     def music_now_playing(self):
@@ -4355,11 +4416,19 @@ class TedApi:
         answering out loud. It deliberately does not auto-send: the transcript
         lands in the box so he can edit it and press enter.
         """
-        self.transcribe_only = not self.transcribe_only
-        self.mic_on = self.transcribe_only
+        if self.transcribe_only:
+            self._enter_wake_listening()
+            return False
+        self.wake_only = False
+        self.sleeping = False
+        self.transcribe_only = True
         self.speech_on = False
         self.pet_silent_chat = False
-        self._apply_mic(self.mic_on)
+        if self._apply_mic(True):
+            voice.spotify_volume(30)
+        else:
+            self.transcribe_only = False
+            self.sleeping = True
         self._push_mic_state()
         return self.transcribe_only
 
@@ -4373,29 +4442,35 @@ class TedApi:
     def pet_voice_mode(self):
         """Pet voice button: listen and answer aloud, or turn capture off."""
         if self.pet_mode() == "voice":
-            self.mic_on = self.speech_on = False
+            self._enter_sleep()
         else:
-            self.mic_on = self.speech_on = True
-        self.transcribe_only = False
-        self.pet_silent_chat = False
-        self._apply_mic(self.mic_on)
-        self._push_mic_state()
+            self._enter_voice()
         return self.pet_mode()
 
     def pet_transcribe_mode(self):
         """Pet transcript button: listen, answer in bubbles, never use TTS."""
         turning_on = self.pet_mode() != "transcribe"
-        self.mic_on = turning_on
+        if not turning_on:
+            self._enter_wake_listening()
+            return self.pet_mode()
+        self.wake_only = False
+        self.sleeping = False
         self.speech_on = False
         self.transcribe_only = False
-        self.pet_silent_chat = turning_on
-        self._apply_mic(self.mic_on)
+        self.pet_silent_chat = True
+        if self._apply_mic(True):
+            voice.spotify_volume(30)
+        else:
+            self.pet_silent_chat = False
+            self.sleeping = True
         self._push_mic_state()
         return self.pet_mode()
 
     def shutdown_ted(self):
         """Right-click pet action: close every Ted window and end the runtime."""
         self.mic_on = self.speech_on = self.pet_silent_chat = False
+        self.wake_only = False
+        self.sleeping = True
         try:
             self._apply_mic(False)
         except Exception:

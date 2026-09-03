@@ -425,6 +425,7 @@ button,#side,#top,#sidefoot{-webkit-user-select:none;user-select:none}
 #mic:hover{border-color:var(--accent);color:var(--accent)}
 #mic.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);
   animation:micpulse 1.8s ease-in-out infinite}
+#mic.wake{background:rgba(255,184,76,.08);color:var(--warn);border-color:rgba(255,184,76,.5)}
 #mic svg{width:17px;height:17px}
 #attach{border:1px solid var(--line);background:var(--panel2);color:var(--text)}
 #attach:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
@@ -731,7 +732,8 @@ function inApp(){ return !!(window.pywebview && window.pywebview.api); }
 var API='http://127.0.0.1:5175/api';
 
 /* ── state ────────────────────────────────────────────────── */
-var muted=true;                    // Ted now starts silent (chat-first)
+var muted=true;                    // TTS off until wake word or a voice-button click
+var wakeListening=false;           // mic live, but only "Ted" / "Hey Ted" is accepted
 var OWNER='you';                   // replaced by the real name from speaker_status
 var transcribing=false;            // mic on, speakers off — dictation into the box
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
@@ -1722,6 +1724,17 @@ var tedHud={
     $('mic').title=muted?'Voice mode off — click to talk':'Voice mode ON — click to mute';
     if(muted) tedHud.setState('idle');
   },
+  // Wake standby is distinct from both voice and sleep: the microphone is
+  // live, but nothing except "Ted" / "Hey Ted" is acted on.
+  setWakeListening:function(on){
+    wakeListening=!!on;
+    $('mic').classList.toggle('wake',wakeListening);
+    if(wakeListening){
+      $('mic').classList.remove('on');
+      $('mic').title='Wake word listening — say “Ted” or “Hey Ted”';
+      tedHud.setState('idle');
+    }
+  },
   // Transcribe mode is mic-on/speakers-off, so it is neither of the two states
   // setMuted knows about and needs its own indicator.
   setTranscribing:function(t){
@@ -2168,7 +2181,8 @@ document.addEventListener('keydown',function(e){
 
 /* ── boot ─────────────────────────────────────────────────── */
 (function(){
-  tedHud.setMuted(true);          // Ted starts silent; mic button turns voice on
+  tedHud.setMuted(true);          // Python changes this to wake standby after startup
+  tedHud.setWakeListening(false);
   var st=$('status');
   if(inApp()){ st.className='active'; $('status-t').textContent='STARTING'; }
   else{ st.className='active'; $('status-t').textContent='DEMO'; }

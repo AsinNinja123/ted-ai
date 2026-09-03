@@ -126,7 +126,7 @@ _FASTER_PHRASES = _norm_set(
 _MUTE_PHRASES = _norm_set(
     "mute", "mute ted", "mute yourself", "mute you", "go mute",
     "turn off mic", "turn off microphone", "stop listening", "silence yourself",
-    "shh", "go quiet",
+    "shh", "go quiet", "sleep", "go to sleep", "sleep ted", "ted go to sleep",
 )
 
 # ── explicit memory control ──────────────────────────────────────────────────

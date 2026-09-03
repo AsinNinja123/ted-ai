@@ -358,15 +358,37 @@ api = make_api()
 music.transport = lambda action: (TRANSPORT_CALLS.append(action), "Paused.")[1]
 api._respond("mute the music")
 check("'mute the music' leaves the mic alone", not api.muted)
+api = make_api()
+api._respond("sleep")
+check("'sleep' enters physical mic-off mode without reaching the model",
+      api.sleeping and not api.mic_on and "mute_mic" in fake_engine.calls
+      and LLM_STREAM_CALLS == [])
 
-# `muted` was one flag doing two jobs — capture AND speech — which is why
-# "mic on, speakers off" could not be expressed at all. Charlie asked for
-# exactly that: talk, and have the words land in the input box.
-print("\n— capture and speech are separate switches —")
+# Wake standby, voice, transcribe, and sleep must remain separate. In
+# particular, leaving dictation returns to wake standby; it must not silently
+# put Ted to sleep and make the wake phrase impossible.
+print("\n— explicit wake / voice / sleep states —")
 api = make_api()
 api.muted = True
-check("Ted boots with both off", not api.mic_on and not api.speech_on
-      and not api.transcribe_only)
+api._enter_wake_listening()
+check("wake standby opens the real mic but keeps speech off",
+      api.mic_on and not api.speech_on and api.wake_only and not api.sleeping
+      and "unmute_mic" in fake_engine.calls)
+check("…and the HUD distinguishes wake listening from full voice",
+      js_containing(api, "setWakeListening(true)"))
+
+api.toggle_mute()
+check("the voice button promotes wake standby to full voice",
+      api.mic_on and api.speech_on and not api.wake_only and not api.sleeping)
+api.toggle_mute()
+check("the voice button from full voice enters true sleep",
+      not api.mic_on and not api.speech_on and api.sleeping
+      and "mute_mic" in fake_engine.calls)
+
+api._respond("wake up")
+check("typed wake-up is allowed from sleep and restores voice",
+      api.mic_on and api.speech_on and not api.sleeping
+      and SPOKEN[-1] == "I'm back — listening.")
 
 api.toggle_transcribe()
 check("transcribe turns the mic on", api.mic_on)
@@ -377,7 +399,8 @@ check("…and the HUD is told it is transcribing, not that the mic is off",
       js_containing(api, "setTranscribing(true)"))
 
 api.toggle_transcribe()
-check("pressing it again stops capture", not api.mic_on and not api.transcribe_only)
+check("pressing it again returns to wake standby, not an unreachable mic-off state",
+      api.mic_on and not api.transcribe_only and api.wake_only and not api.sleeping)
 
 api.toggle_transcribe()
 api.toggle_mute()
@@ -386,7 +409,8 @@ check("the mic button out of transcribe mode gives full voice, not silence",
 check("…and `muted` reports unmuted there", not api.muted)
 
 api.toggle_mute()
-check("the mic button then turns everything off", not api.mic_on and not api.speech_on)
+check("the mic button then sleeps and physically turns the mic off",
+      not api.mic_on and not api.speech_on and api.sleeping)
 
 # A transcript is a draft. Auto-sending it is what Charlie explicitly did not
 # ask for, and a misheard word would be unrecoverable once sent.

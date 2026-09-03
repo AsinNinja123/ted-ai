@@ -1,4 +1,4 @@
-"""Ted must not hold the microphone open just because he is running.
+"""The audio engine must report the microphone's real hardware state.
 
 Charlie opened Ted and macOS showed the orange recording indicator, with voice
 switched off and nothing listening. core/voice.py is imported during startup
@@ -7,8 +7,9 @@ anything asked whether voice was wanted. The loop was already correct — it
 skips capture while mic_on is False — so nothing was being recorded. The device
 was simply claimed and never released.
 
-These checks pin the fix: no tap until the voice or transcribe button is
-pressed, and the engine reports the tap honestly rather than reporting intent.
+The engine still starts without a tap because TedApi owns the product policy:
+it opens wake-word standby only after the HUD is ready. These checks pin the
+lower-level contract and the return value used to reject a false "mic on" UI.
 """
 
 import os
@@ -98,8 +99,8 @@ check("Ted can still speak — the output stream is open",
       e._out_stream is not None and e._out_stream.started)
 
 print("\n— the mic is claimed only when voice is turned on —")
-e.unmute_mic()
-check("unmuting opens the input stream", e._in_stream is not None)
+opened_ok = e.unmute_mic()
+check("unmuting opens the input stream", opened_ok and e._in_stream is not None)
 check("the engine now reports the mic as open", e.mic_is_open() is True)
 check("exactly one input stream was ever opened", len(OPENED) == 1)
 

@@ -249,7 +249,7 @@ if _mode == "aec":
 else:
     print("🔉 Audio: sounddevice fallback (no echo cancellation). Build native/ted_audio "
           "to enable talking over Ted.")
-print("🎙️  Mic: off — not claimed until you turn voice on.")
+print("🎙️  Mic: waiting for Ted runtime — wake listening starts after the HUD is ready.")
 
 _mic_calibrated = False
 
@@ -259,19 +259,21 @@ def prepare_mic():
 
     Calibration needs ~0.8 s of real ambient frames, so it cannot happen at
     import any more — there is no mic tap then. It happens here instead, once
-    per session, on the first press of the voice button.
+    per session, when wake-word standby starts (or after a manual retry).
     """
     global _mic_calibrated
-    engine.unmute_mic()
+    if not engine.unmute_mic() or not engine.mic_is_open():
+        return False
     if _mic_calibrated:
-        return
-    _mic_calibrated = True
+        return True
     print("Calibrating microphone — stay quiet for a second…")
     try:
         thr = engine.calibrate()
+        _mic_calibrated = True
         print(f"Mic calibrated (silence threshold ≈ {thr:.4f})")
     except Exception as e:
         print("Mic calibration skipped:", e)
+    return engine.mic_is_open()
 
 
 def release_mic():

@@ -694,18 +694,24 @@ class AudioEngine:
 
         This is the first moment the mic is claimed in a chat-first session, so
         it is also where the AEC device check happens now.
+
+        Returns whether the microphone is really open.  Callers use this
+        ground truth instead of assuming that a requested state change worked.
         """
         self._mic_muted = False
         if self.mode == "aec":
             if not self._send_mic_command(b"U"):
-                return
+                self._mic_muted = True
+                return False
             self._verify_aec_mic()
         elif self.mode == "fallback" and self._in_stream is None:
             try:
                 self._open_fallback_input()
                 self._mic_verified = True
             except Exception as e:
+                self._mic_muted = True
                 print(f"[audio] mic reopen failed: {e}", file=sys.stderr)
+        return self.mic_is_open()
 
     def _verify_aec_mic(self):
         """Prove the native engine can actually deliver mic audio, once.
