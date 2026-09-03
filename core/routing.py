@@ -401,7 +401,13 @@ def select_tool_schemas(text, recent_action_text="", screen_text=""):
     # eight-contract cap cannot evict the tool that performs the verb.
     if re.search(r"\b(?:click|tap|button|control|mouse|pointer|cursor)\b",
                  text or "", re.I):
-        names = ["ui_inspect", "ui_press", "screen_describe", *names]
+        # Keep the whole visible workflow together. A request such as "open
+        # Outlook, click New mail, and type..." used to fill the eight-schema
+        # budget with email readers after ui_press, leaving no ui_fill or
+        # browse_to contract for the remaining stages.
+        names = ["ui_inspect", "ui_press", "ui_fill", "type_text",
+                 "press_key", "browse_to", "open_app", "screen_describe",
+                 *names]
     elif re.search(r"\b(?:terminal|shell|command[- ]line|cli|claude code)\b",
                    text or "", re.I):
         names = ["terminal_read", "ui_inspect", "type_text", "press_key", *names]

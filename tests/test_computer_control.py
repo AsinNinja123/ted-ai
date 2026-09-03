@@ -36,6 +36,11 @@ mouse_selected = {item["function"]["name"] for item in routing.select_tool_schem
 check("a natural visible-mouse request reaches semantic pointer controls",
       routing.likely_action_request("use the mouse to click New mail")
       and {"ui_inspect", "ui_press"} <= mouse_selected)
+compound_mouse = {item["function"]["name"] for item in routing.select_tool_schemas(
+    "open Outlook in Chrome, use the mouse to click New mail, and type the email")}
+check("a compound visible workflow keeps browser, click, and typing tools together",
+      {"browse_to", "open_app", "ui_inspect", "ui_press", "ui_fill",
+       "type_text"} <= compound_mouse)
 check("a direct type request is recognized as an action",
       routing.likely_action_request("type this paragraph into the document"))
 check("new Google Doc writing is one complete action",
