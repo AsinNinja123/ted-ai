@@ -14,7 +14,11 @@ import re
 
 _REFERENTIAL = re.compile(
     r"\b(?:it|that|that one|this|them|him|her|the other one|same thing|go ahead|"
-    r"continue|keep going|move it|change it|send it|do it)\b", re.I)
+    r"continue|keep going|pick up where we left off|again|repeat(?: that| it)?|"
+    r"one more time|same(?: thing| way| task)?|move it|change it|send it|do it)\b", re.I)
+_TASK_RECALL = re.compile(
+    r"\b(?:what (?:were|are) we (?:doing|working on)|where were we|"
+    r"what(?:'s| is) the current (?:task|plan)|what did we finish)\b", re.I)
 _CORRECTION = re.compile(
     r"^(?:no[, ]+|actually\b|instead\b|i meant\b|not that\b|the other\b)", re.I)
 _CONSTRAINT = re.compile(
@@ -67,6 +71,7 @@ def resolve(text, expanded=None, *, action_likely=False, active_task=None,
     expanded = " ".join(str(expanded or original).strip().split())
     active_task = active_task or {}
     is_reference = bool(_REFERENTIAL.search(original))
+    task_recall = bool(_TASK_RECALL.search(original))
     # "that I am late" and "this project" introduce a subject; they are not
     # unresolved pointers to an earlier turn.
     if re.search(r"\b(?:that|this)\s+(?:i|you|he|she|we|they|the|project|answer|class)\b",
@@ -76,7 +81,7 @@ def resolve(text, expanded=None, *, action_likely=False, active_task=None,
     references = {}
     task_id = None
 
-    if is_reference and active_task:
+    if (is_reference or task_recall) and active_task:
         task_id = active_task.get("id")
         references["referring language"] = active_task.get("goal", "the active task")
     elif is_reference and recent_actions:
@@ -85,7 +90,9 @@ def resolve(text, expanded=None, *, action_likely=False, active_task=None,
             f"the recent {last.get('tool', 'action')} action: {last.get('result', '')}"
         ).strip()
 
-    if action_likely or correction or is_reference:
+    if task_recall:
+        mode = "information"
+    elif action_likely or correction or is_reference:
         mode = "action"
     elif original.endswith("?") or re.match(
             r"^(?:what|why|how|when|where|who|should|is|are|do|does|can)\b", original, re.I):

@@ -20,6 +20,7 @@ Run with the venv python:  python tests/test_pipeline.py
 """
 
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -115,7 +116,8 @@ assistant._location_cache = {                  # avoid the ip-api.com lookup
 }
 
 from core import app as app_mod                # noqa: E402
-from core import features, intents, llm, music, tool_handlers as th  # noqa: E402
+from core import (features, intents, llm, music, outcomes, task_state, understanding,
+                  tool_handlers as th)  # noqa: E402
 import groq as groq_mod                        # noqa: E402
 
 # ── Deterministic feature stubs (no AppleScript, no network, no Chroma) ──────
@@ -145,6 +147,7 @@ LLM_STREAM_CALLS = []
 LLM_STREAM_RUNTIMES = []      # the ToolRuntime handed to each streaming call
 LLM_CONTEXT_SCOPES = []
 LLM_REQUIRE_TOOLS = []
+LLM_MIN_ACTION_CALLS = []
 LLM_RESPONSE_MODES = []
 LLM_STREAM_REPLY = ["LLM reply."]
 
@@ -161,6 +164,7 @@ def _fake_ask_streaming(text, conversation, frustrated=False, thinking_mode=Fals
     LLM_STREAM_RUNTIMES.append(tool_runtime)
     LLM_CONTEXT_SCOPES.append(context_scope)
     LLM_REQUIRE_TOOLS.append(require_tool)
+    LLM_MIN_ACTION_CALLS.append(min_action_calls)
     LLM_RESPONSE_MODES.append(response_mode)
     LLM_ATTACHMENTS.append(list(attachments or []))
     for piece in LLM_STREAM_REPLY:
@@ -215,6 +219,7 @@ def make_api():
     LLM_STREAM_RUNTIMES.clear()
     LLM_CONTEXT_SCOPES.clear()
     LLM_REQUIRE_TOOLS.clear()
+    LLM_MIN_ACTION_CALLS.clear()
     LLM_RESPONSE_MODES.clear()
     api = app_mod.TedApi()
     # Ted boots muted since the chat-first pivot. Most cases below describe a
@@ -226,6 +231,51 @@ def make_api():
 
 def js_containing(api, fragment):
     return [c for c in api.window.js if fragment in c]
+
+
+print("— sidebar chat continuity —")
+with sqlite3.connect(task_state.DB_PATH) as conn:
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_turns("
+                 "id INTEGER PRIMARY KEY,session_id INTEGER,role TEXT,content TEXT,ts TEXT)")
+    conn.executemany(
+        "INSERT INTO chat_turns(session_id,role,content,ts) VALUES(?,?,?,?)", [
+            (777, "user", "We are testing session continuity.", "2026-09-03T10:00:00"),
+            (777, "ted", "I will remember the active chat.", "2026-09-03T10:00:01"),
+        ])
+    conn.commit()
+api = make_api()
+api.set_active_chat(777)
+check("opening a sidebar chat restores its turns into live model context",
+      api.ted_conversation[-2:] == [
+          {"role": "user", "content": "We are testing session continuity."},
+          {"role": "assistant", "content": "I will remember the active chat."},
+      ])
+api.ted_conversation.append({"role": "user", "content": "unsaved live turn"})
+api.set_active_chat(777)
+check("reselecting the same chat does not overwrite newer live turns",
+      api.ted_conversation[-1]["content"] == "unsaved live turn")
+api.set_active_chat(None)
+check("New chat starts with clean model history", len(api.ted_conversation) == 1)
+
+repeat_request = (
+    "Open Chrome, go to google.com, click the Search box, and type Jackson Hallman")
+repeat_turn = understanding.resolve(repeat_request, action_likely=True)
+repeat_task_id = task_state.begin_or_continue(778, repeat_turn)
+for repeat_tool in ("open_app", "browse_to", "ui_press", "type_text"):
+    task_state.record_action(
+        repeat_task_id, repeat_tool,
+        outcomes.normalize(repeat_tool, {}, f"{repeat_tool} completed.",
+                           is_failure=lambda _value: False))
+task_state.complete(repeat_task_id, "Browser demonstration completed.")
+api = make_api()
+api.set_active_chat(778)
+api._respond("Do it again.")
+repeat_tools = {
+    schema["function"]["name"] for schema in LLM_STREAM_RUNTIMES[-1].schemas}
+check("a restart-safe 'do it again' reloads the prior task's tool family",
+      {"open_app", "browse_to", "ui_press", "type_text"}.issubset(repeat_tools))
+check("a repeated compound task keeps its original action lower bound",
+      LLM_REQUIRE_TOOLS[-1] and LLM_MIN_ACTION_CALLS[-1] >= 3)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

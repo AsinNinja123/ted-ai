@@ -380,6 +380,10 @@ class TedApi:
         # The HUD's durable sidebar chat ID. It travels with telemetry so the
         # diagnostics panel can copy or remove one conversation at a time.
         self._active_chat_id  = None
+        # Which sidebar chat is currently mirrored into ted_conversation.
+        # The HUD transcript and model context used to drift apart after a
+        # restart because set_active_chat changed only the numeric ID.
+        self._conversation_chat_id = None
         self._loop_started    = False             # prevents starting the loop twice
         # One flag used to do two jobs, which is why "mic on but speakers off"
         # was unrepresentable. Capture and speech are separate now:
@@ -892,6 +896,8 @@ class TedApi:
                 _confirmation_cancelled = True
             if _confirmation_cancelled:
                 task_state.cancel_active(self._active_chat_id)
+            elif not th.looks_like_failure(result):
+                task_state.complete(self._active_task_id, result)
             if echo_user:
                 add_message(w, "user", text)
             self.last_reply = result
@@ -1078,6 +1084,8 @@ class TedApi:
             failed = [result for result in results if th.looks_like_failure(result)]
             if failed:
                 show_issue(w, reply)
+            else:
+                task_state.complete(self._active_task_id, reply)
             _rturn.finish(reply=reply, error="; ".join(failed))
             speak(w, reply, self)
             return False
@@ -1102,6 +1110,8 @@ class TedApi:
             add_message(w, "ted", result)
             if _failed:
                 show_issue(w, result)
+            else:
+                task_state.complete(self._active_task_id, result)
             speak(w, result, self)
             self.active_conversation.extend([
                 {"role": "user", "content": text},
@@ -1154,6 +1164,8 @@ class TedApi:
             self.last_reply = result
             add_message(w, "ted", result)
             speak(w, result, self)
+            if not th.looks_like_failure(result):
+                task_state.complete(self._active_task_id, result)
             self.active_conversation.extend([
                 {"role": "user", "content": text},
                 {"role": "assistant", "content": result},
@@ -1187,6 +1199,8 @@ class TedApi:
             _failed = [r for r in results if th.looks_like_failure(r)]
             if _failed:
                 show_issue(w, reply)
+            else:
+                task_state.complete(self._active_task_id, reply)
             _rturn.finish(reply=reply, error="; ".join(_failed))
             speak(w, reply, self)
             return False
@@ -1204,6 +1218,8 @@ class TedApi:
             add_message(w, "ted", asst_result)
             if th.looks_like_failure(asst_result):
                 show_issue(w, asst_result)
+            elif _interpretation.mode == "action":
+                task_state.complete(self._active_task_id, asst_result)
             speak(w, asst_result, self)
             return False
 
@@ -1245,7 +1261,9 @@ class TedApi:
 
         _runtime = None
         _selected_schemas = []
-        _action_likely = routing.likely_action_request(routing_text)
+        # Local reference resolution is stronger than the verb-only router for
+        # short continuations such as "keep going" and "do it again".
+        _action_likely = _interpretation.mode == "action"
         _needs_operational = bool(
             _action_likely or _interpretation.references
             or _interpretation.missing_information)
@@ -1255,13 +1273,18 @@ class TedApi:
         # on a confirm prompt is the case that made this necessary. What gets
         # INJECTED into the prompt is still gated by _needs_operational below.
         _recent_context = routing.operational_context(self._recent_actions)
+        _selection_text = routing_text
+        if _interpretation.references and _active_task:
+            _selection_text += " " + " ".join(
+                str(_active_task.get(key) or "")
+                for key in ("goal", "last_user_text", "current_step"))
         if not LEGACY_LADDER:
             # Only recent verified actions may influence pronoun-based tool
             # selection. Passing the whole generated context here used words in
             # behavior examples, relationship memory, and the live app tree to
             # accidentally load dozens of unrelated schemas for "delete that".
             _selected_schemas = routing.select_tool_schemas(
-                routing_text, _recent_context, self._last_screen)
+                _selection_text, _recent_context, self._last_screen)
         _context_scope = routing.memory_scope_for(routing_text, _selected_schemas)
         _live_context = (system_state.format_for_prompt(self._live_state)
                          if _needs_operational and _selected_schemas else "")
@@ -1327,6 +1350,15 @@ class TedApi:
                            if self._active_chat_id is not None else {})
         _response_style = ({"response_mode": self.response_mode}
                            if self.response_mode else {})
+        _minimum_actions = routing.expected_action_calls(routing_text)
+        if _interpretation.references and _active_task:
+            _original_minimum = routing.expected_action_calls(
+                _active_task.get("goal") or "")
+            _completed_count = len(_active_task.get("completed_steps") or [])
+            if re.search(r"\b(?:again|repeat|one more time|same)\b", text, re.I):
+                _minimum_actions = max(_minimum_actions, _original_minimum)
+            elif _minimum_actions == 0:
+                _minimum_actions = max(1, _original_minimum - _completed_count)
         gen = llm.ask_streaming(text, self.active_conversation,
                                 frustrated=self.user_frustrated,
                                 thinking_mode=self.thinking_mode,
@@ -1336,7 +1368,7 @@ class TedApi:
                                 context_scope=_context_scope,
                                 operational_context=_op_context,
                                 require_tool=_action_likely,
-                                min_action_calls=routing.expected_action_calls(routing_text),
+                                min_action_calls=_minimum_actions,
                                 attachments=_attached,
                                 **_telemetry_chat,
                                 **_response_style)
@@ -1348,6 +1380,11 @@ class TedApi:
         if full.strip():
             self.last_reply = full
             add_message(w, "ted", full)
+            if (_action_likely and not th.looks_like_failure(full)
+                    and self._pending_tool_confirmation is None
+                    and self._pending_msg is None
+                    and self._pending_compose is None):
+                task_state.complete(self._active_task_id, full)
         else:
             # An empty stream is a runtime failure, not a failure to understand
             # the user. Never blame the request with "didn't catch that."
@@ -4403,12 +4440,30 @@ class TedApi:
     # queued behind the very thing it was meant to stop. A real log shows a turn
     # hung for 41 seconds while three separate stop attempts were each answered
     # "the previous request is still finishing". Stop now bypasses the lock.
-    def set_active_chat(self, chat_id=None):
-        """Keep non-typed turns attached to the chat visible in the HUD."""
+    def set_active_chat(self, chat_id=None, pending_user_text=""):
+        """Attach runtime state to the visible chat and restore its context."""
         try:
-            self._active_chat_id = int(chat_id) if chat_id is not None else None
+            parsed = int(chat_id) if chat_id is not None else None
         except (TypeError, ValueError):
-            self._active_chat_id = None
+            parsed = None
+        self._active_chat_id = parsed
+        if parsed == self._conversation_chat_id:
+            return True
+
+        system_message = self.ted_conversation[0]
+        history = task_state.load_chat_history(
+            parsed, limit=24, exclude_trailing_user=pending_user_text)
+        self.ted_conversation = [system_message, *history]
+        self._conversation_chat_id = parsed
+        current = task_state.active_for(parsed)
+        self._active_task_id = current["id"] if current else None
+
+        user_turns = [item["content"] for item in history if item["role"] == "user"]
+        self._prev_user_text = user_turns[-2] if len(user_turns) > 1 else ""
+        self._cur_user_text = user_turns[-1] if user_turns else ""
+        if parsed is not None:
+            print(f"[session] restored chat {parsed}: {len(history)} turns"
+                  + (f", task #{self._active_task_id}" if current else ""), flush=True)
         return True
 
     def ask(self, text, chat_id=None):
@@ -4416,7 +4471,7 @@ class TedApi:
         Interrupts any ongoing speech, then runs _respond() on a background thread
         (so the JS call returns immediately and the webview doesn't freeze)."""
         if chat_id is not None:
-            self.set_active_chat(chat_id)
+            self.set_active_chat(chat_id, pending_user_text=text)
         self.interrupt_speech = True
         engine.stop_playback()
         print(f"[input] typed request received: {text!r}", flush=True)

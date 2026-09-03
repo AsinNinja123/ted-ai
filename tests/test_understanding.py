@@ -38,6 +38,11 @@ check("the interpretation names its resolved referent",
       "Schedule class" in turn.references.get("referring language", ""))
 check("unresolved short references ask one precise question",
       understanding.resolve("Do it.").clarification_policy == "ask_one_question")
+check("repeat language resolves against the current task",
+      understanding.resolve("Do that again.", active_task=active).continues_task_id == 7)
+recalled = understanding.resolve("What were we doing?", active_task=active)
+check("asking what we were doing retrieves rather than restarts the task",
+      recalled.mode == "information" and recalled.continues_task_id == 7)
 check("a complete clause is not mistaken for an old referent",
       not understanding.resolve("Text Gavin that I am late.", action_likely=True).missing_information)
 check("behavior examples are selected by situation",
@@ -54,8 +59,31 @@ check("referring correction reuses one task",
 outcome = outcomes.normalize("set_reminder", {"time": "4 PM"}, "Reminder set.",
                              is_failure=lambda value: False)
 task_state.record_action(task_id, "set_reminder", outcome)
-check("a successful verified action completes the task",
-      task_state.list_recent()[0]["status"] == "completed")
+check("one verified step does not prematurely complete the whole task",
+      task_state.list_recent()[0]["status"] == "active")
+check("the task card names verified progress",
+      "Reminder set" in task_state.format_for_prompt(task_state.active_for(42)))
+check("the whole turn explicitly completes the task",
+      task_state.complete(task_id, "Reminder set for 4 PM.")
+      and task_state.list_recent()[0]["status"] == "completed")
+again = understanding.resolve("Do it again.", active_task=task_state.active_for(42))
+check("a completed task remains available as a follow-up referent",
+      again.continues_task_id == task_id)
+
+with sqlite3.connect(db) as conn:
+    conn.execute("CREATE TABLE chat_turns(id INTEGER PRIMARY KEY,session_id INTEGER,"
+                 "role TEXT,content TEXT,ts TEXT)")
+    conn.executemany("INSERT INTO chat_turns VALUES(?,?,?,?,?)", [
+        (1, 42, "user", "Open Google.", "2026-09-03T10:00:00"),
+        (2, 42, "ted", "Opened Google.", "2026-09-03T10:00:01"),
+        (3, 42, "user", "Do it again.", "2026-09-03T10:01:00"),
+    ])
+    conn.commit()
+restored = task_state.load_chat_history(
+    42, exclude_trailing_user="Do it again.")
+check("reopening a chat restores role-correct model history",
+      restored == [{"role": "user", "content": "Open Google."},
+                   {"role": "assistant", "content": "Opened Google."}])
 
 print("\n— inferred relationship lessons wait for Charlie —")
 proposal = relationship.save(
