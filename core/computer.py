@@ -23,6 +23,7 @@ import re
 import subprocess
 import time
 import uuid
+from urllib.parse import urlsplit
 
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,46 +154,127 @@ def has_accessible_text(text):
     )
 
 
-def press_target(target):
-    """Press a named AX control, then use vision coordinates only if AX cannot."""
+def _control_scope(app_name):
+    """Stable route scope: browser origin when possible, otherwise app name."""
+    url = _active_browser_url(app_name)
+    if url:
+        parsed = urlsplit(url)
+        if parsed.scheme and parsed.netloc:
+            return f"{app_name}|{parsed.scheme}://{parsed.netloc.lower()}"
+    return app_name or "Unknown"
+
+
+def _wait_for_accessible(target, timeout=12.0, expected_app=""):
+    """Poll semantic UI state without spending model turns or using fixed sleeps."""
+    deadline = time.monotonic() + max(0.25, min(45.0, float(timeout or 12)))
+    last = {"ok": True, "elements": []}
+    while time.monotonic() < deadline:
+        if expected_app:
+            front = accessibility_status().get("frontmost", "")
+            if front and front != expected_app:
+                return {"ok": False, "error": (
+                    f"The active app changed from {expected_app} to {front} while waiting")}
+        last = _native("snapshot", target)
+        if not last.get("ok"):
+            return last
+        if last.get("elements"):
+            return last
+        time.sleep(0.25)
+    return {"ok": False, "error": f"Timed out waiting for '{target}' to appear"}
+
+
+def press_target(target, expected="", remember_as="", timeout=12.0):
+    """Wait, visibly point, press, and verify a named control.
+
+    A verified route remembers labels, never pixels or user-entered content.
+    """
     if _CONSEQUENTIAL_TARGET.search(target or ""):
         return (f"I won't press '{target}' through generic screen control. Use "
                 "the specific confirmed tool for consequential actions.")
-    result = _native("press", target)
-    used = "Accessibility"
+    status = accessibility_status()
+    app_name = status.get("frontmost", "")
+    if not status.get("ok", True):
+        return (status.get("error") or "Couldn't inspect the active app") + "."
+    scope = _control_scope(app_name)
+    route_key = (remember_as or (f"{target}->{expected}" if expected else "")).strip().lower()
+    cached = None
+    if route_key:
+        from core import ui_routes
+        cached = ui_routes.recall(scope, route_key)
+    candidate = (cached or {}).get("resolved") or target
+    ready = _wait_for_accessible(candidate, timeout, app_name)
+    if not ready.get("ok") and candidate != target:
+        from core import ui_routes
+        ui_routes.note_failure(scope, route_key)
+        candidate = target
+        ready = _wait_for_accessible(candidate, timeout, app_name)
+
+    result = _native("visible-press", candidate, 360) if ready.get("ok") else ready
+    used = "Accessibility with visible pointer movement"
     matched = result.get("matched") or target
-    if not result.get("ok") and "No accessible control matched" in result.get("error", ""):
+    fallback_errors = ("No accessible control matched", "Timed out waiting",
+                       "no visible frame")
+    if (not result.get("ok")
+            and any(marker.lower() in result.get("error", "").lower()
+                    for marker in fallback_errors)):
         try:
             from core.screen import locate_target
             location = locate_target(target)
         except Exception as exc:
             location = {"found": False, "error": str(exc)}
         if location.get("found") and float(location.get("confidence", 0)) >= 0.75:
-            result = _native("click", location["x"], location["y"])
-            used = "screen vision"
+            result = _native("move-click", location["x"], location["y"], 360)
+            used = "screen vision with visible pointer movement"
             matched = target
         else:
             why = location.get("error") or "screen vision was not confident enough"
             return f"Couldn't find a control named '{target}' — {why}."
     if not result.get("ok"):
         return (result.get("error") or f"Couldn't press '{target}'") + "."
-    if used == "Accessibility":
-        return f"Pressed {matched} through Accessibility."
-    return (f"Clicked {matched} through screen vision. The click was sent, but "
-            "the resulting page state was not semantically verified.")
+    verified = False
+    if expected:
+        arrived = _wait_for_accessible(expected, timeout, app_name)
+        verified = bool(arrived.get("ok") and arrived.get("elements"))
+        if not verified:
+            if route_key:
+                from core import ui_routes
+                ui_routes.note_failure(scope, route_key)
+            why = arrived.get("error") or f"'{expected}' did not appear"
+            return (f"Moved to and pressed {matched} through {used}, but could not "
+                    f"verify the next screen: {why}.")
+    if verified and route_key:
+        from core import ui_routes
+        resolved = result.get("name") or matched or candidate
+        ui_routes.remember(scope, route_key, target, resolved, expected)
+        return (f"Moved to and pressed {resolved} through {used}; verified "
+                f"that {expected} appeared and remembered this route.")
+    return (f"Moved to and pressed {matched} through {used}. The click was sent, "
+            "but no destination control was supplied to verify.")
 
 
-def fill_field(target, text):
-    """Set a labeled native or HTML form field through Accessibility, no image."""
-    result = _native("fill", target, text)
+def fill_field(target, text, timeout=12.0):
+    """Wait for a field, move to it, and type visibly with focus protection."""
+    app_name = accessibility_status().get("frontmost", "")
+    ready = _wait_for_accessible(target, timeout, app_name)
+    if not ready.get("ok"):
+        return (ready.get("error") or f"Couldn't find '{target}'") + "."
+    result = _native("fill-visible", target, text, 12)
     if not result.get("ok"):
         return (result.get("error") or f"Couldn't fill '{target}'") + "."
     preview = text[:40] + ("..." if len(text) > 40 else "")
-    return f"Filled {result.get('matched') or target} with: {preview}"
+    if result.get("verified"):
+        return f"Moved to {result.get('name') or target} and visibly typed: {preview}"
+    check = " ".join(text.strip().split())[:48]
+    if check:
+        semantic = _native("snapshot", check)
+        if semantic.get("ok") and semantic.get("elements"):
+            return f"Moved to {result.get('name') or target} and visibly typed: {preview}"
+    return (f"Typed into {result.get('name') or target}, but I couldn't verify "
+            f"that '{preview}' appeared.")
 
 
 def type_text(text):
-    result = _native("type-text", text)
+    result = _native("type-visible", text, 12)
     if not result.get("ok"):
         return (result.get("error") or "Couldn't type the text") + "."
     preview = text[:40] + ("..." if len(text) > 40 else "")

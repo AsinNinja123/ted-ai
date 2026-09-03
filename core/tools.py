@@ -1004,15 +1004,21 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "ui_press",
             "description": (
-                "Press a visible named button, link, menu item, or video control in "
-                "the frontmost app. Uses macOS Accessibility first and high-confidence "
-                "screen vision only when the app exposes no matching control. Never use "
-                "for destructive or purchase confirmation controls."
+                "Wait for a named button, link, menu item, or video control in the "
+                "frontmost app, visibly move the mouse to it, press it, and optionally "
+                "verify the next screen. Always provide expected when a click navigates "
+                "or opens UI; successful target→expected routes are remembered and replayed "
+                "semantically next time. Uses Accessibility first and high-confidence screen "
+                "vision only as fallback. Never use for Send, destructive, purchase, privacy, "
+                "or security confirmation controls."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "description": "Visible control label, e.g. Blank document, Play, or Share"}
+                    "target": {"type": "string", "description": "Visible control label, e.g. New mail, Play, or Share"},
+                    "expected": {"type": "string", "description": "Control that must appear afterward, e.g. To; enables verification and route learning"},
+                    "remember_as": {"type": "string", "description": "Stable optional route name such as outlook.compose; never include user content"},
+                    "timeout": {"type": "number", "description": "Seconds to wait for loading, from 1 to 45; default 12"}
                 },
                 "required": ["target"]
             }
@@ -1037,15 +1043,17 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "ui_fill",
             "description": (
-                "Fill a labeled native or HTML input field through macOS Accessibility, "
-                "without taking a screenshot. Use for search boxes, text inputs, and forms "
-                "whose label or placeholder is visible in ui_inspect."
+                "Wait for a labeled native or HTML field, visibly move the mouse to it, "
+                "and type with real keystrokes. Typing stops if the foreground app changes "
+                "or Charlie holds Escape. Use for search boxes, text inputs, and forms whose "
+                "label or placeholder is visible in ui_inspect."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "Field label, placeholder, or accessible name"},
-                    "text": {"type": "string", "description": "Text to put in the field"}
+                    "text": {"type": "string", "description": "Text to put in the field"},
+                    "timeout": {"type": "number", "description": "Seconds to wait for the field to load, from 1 to 45; default 12"}
                 },
                 "required": ["target", "text"]
             }
@@ -1117,7 +1125,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "type_text",
             "description": (
-                "Type text at the current cursor position using the keyboard. "
+                "Visibly type text at the current cursor position using real keyboard events. "
+                "Typing stops if the foreground app changes or Charlie holds Escape. "
                 "Use for an already-focused editor, terminal command, or interactive "
                 "AI prompt. This only enters text and does not submit it. For a new "
                 "document, use create_document; for a labeled HTML field, use ui_fill. "

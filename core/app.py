@@ -3003,13 +3003,16 @@ class TedApi:
 
             if name == "ui_press":
                 if features.HAS_COMPUTER:
-                    return features.computer.press_target(args.get("target", ""))
+                    return features.computer.press_target(
+                        args.get("target", ""), args.get("expected", ""),
+                        args.get("remember_as", ""), args.get("timeout", 12))
                 return "Computer module unavailable."
 
             if name == "ui_fill":
                 if features.HAS_COMPUTER:
                     return features.computer.fill_field(
-                        args.get("target", ""), args.get("text", ""))
+                        args.get("target", ""), args.get("text", ""),
+                        args.get("timeout", 12))
                 return "Computer module unavailable."
 
             # ── Computer control ─────────────────────────────────────────────

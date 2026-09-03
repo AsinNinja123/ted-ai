@@ -2,10 +2,11 @@
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import computer, routing, screen, tools
+from core import computer, routing, screen, tools, ui_routes
 
 PASS = FAIL = 0
 
@@ -30,6 +31,11 @@ selected = {item["function"]["name"] for item in routing.select_tool_schemas(
     "tap the play button on this video")}
 check("a video tap receives screen interaction tools",
       {"ui_inspect", "ui_press"} <= selected)
+mouse_selected = {item["function"]["name"] for item in routing.select_tool_schemas(
+    "use the mouse to click New mail")}
+check("a natural visible-mouse request reaches semantic pointer controls",
+      routing.likely_action_request("use the mouse to click New mail")
+      and {"ui_inspect", "ui_press"} <= mouse_selected)
 check("a direct type request is recognized as an action",
       routing.likely_action_request("type this paragraph into the document"))
 check("new Google Doc writing is one complete action",
@@ -49,9 +55,14 @@ check("Retina screenshot pixels are converted to Quartz points",
 print("\n— action results are verified, not assumed —")
 real_native = computer._native
 try:
-    computer._native = lambda command, *args: {
-        "ok": True, "matched": "Play", "app": "Browser"}
-    result = computer.press_target("Play")
+    computer._native = lambda command, *args: (
+        {"ok": True, "frontmost": "Browser"}
+        if command == "status" else
+        {"ok": True, "app": "Browser", "elements": [
+            {"role": "AXButton", "name": "Play", "detail": "Play"}]}
+        if command == "snapshot" else
+        {"ok": True, "matched": "Play", "name": "Play", "app": "Browser"})
+    result = computer.press_target("Play", timeout=1)
     check("an AX press names the semantic method",
           "Accessibility" in result)
     check("generic UI control cannot bypass consequential confirmations",
@@ -59,17 +70,23 @@ try:
 
     computer._native = lambda command, *args: (
         {"ok": True, "app": "Docs", "verified": False}
-        if command == "type-text" else
+        if command == "type-visible" else
         {"ok": True, "app": "Docs", "elements": []})
     result = computer.type_text("A paragraph")
     check("typing with no semantic evidence is reported as unverified",
           "couldn't verify" in result)
 
-    computer._native = lambda command, *args: {
-        "ok": True, "app": "Browser", "verified": True,
-        "matched": "Search"}
+    computer._native = lambda command, *args: (
+        {"ok": True, "frontmost": "Browser"}
+        if command == "status" else
+        {"ok": True, "app": "Browser", "elements": [
+            {"role": "AXTextField", "name": "Search", "detail": "Search"}]}
+        if command == "snapshot" else
+        {"ok": True, "app": "Browser", "verified": True,
+         "matched": "Search", "name": "Search"})
     check("HTML form fields are filled semantically",
-          computer.fill_field("Search", "Ted") == "Filled Search with: Ted")
+          computer.fill_field("Search", "Ted", timeout=1)
+          == "Moved to Search and visibly typed: Ted")
 
     computer._native = lambda command, *args: {
         "ok": True, "app": "Docs", "elements": [
@@ -142,9 +159,77 @@ check("rebuilds retain one designated identity for macOS privacy grants",
       and 'codesign --verify --strict "$APP"' in build_src)
 press_schema = next(item["function"] for item in tools.TOOL_SCHEMAS
                     if item["function"]["name"] == "ui_press")
+check("semantic clicks can verify and remember their destination",
+      {"expected", "remember_as", "timeout"} <=
+      set(press_schema["parameters"]["properties"]))
 check("vision fallback coordinates stay internal, not model-facing schema",
       "x" not in press_schema["parameters"]["properties"]
       and "y" not in press_schema["parameters"]["properties"])
+
+
+print("\n— visible, loading-aware control and route memory —")
+real_native = computer._native
+real_sleep = computer.time.sleep
+real_scope = computer._control_scope
+real_routes_db = ui_routes.DB_PATH
+try:
+    calls = []
+    snapshots = {"New email": 0, "New mail": 0, "To": 0}
+
+    def loading_native(command, *args):
+        calls.append((command, args))
+        if command == "status":
+            return {"ok": True, "frontmost": "Google Chrome"}
+        if command == "snapshot":
+            label = args[0]
+            snapshots[label] = snapshots.get(label, 0) + 1
+            # The first read models a page that is still loading.
+            if label == "New email" and snapshots[label] == 1:
+                return {"ok": True, "app": "Google Chrome", "elements": []}
+            return {"ok": True, "app": "Google Chrome", "elements": [
+                {"role": "AXButton", "name": label, "detail": label}]}
+        if command == "visible-press":
+            return {"ok": True, "app": "Google Chrome", "matched": "New mail",
+                    "name": "New mail"}
+        return {"ok": False, "error": "unexpected command"}
+
+    with tempfile.TemporaryDirectory() as directory:
+        ui_routes.DB_PATH = os.path.join(directory, "routes.db")
+        computer._native = loading_native
+        computer.time.sleep = lambda _seconds: None
+        computer._control_scope = lambda _app: "Google Chrome|https://outlook.test"
+        result = computer.press_target(
+            "New email", expected="To", remember_as="outlook.compose", timeout=1)
+        learned = ui_routes.recall(
+            "Google Chrome|https://outlook.test", "outlook.compose")
+        check("control waits through loading before clicking",
+              snapshots["New email"] == 2 and any(c[0] == "visible-press" for c in calls))
+        check("a destination must appear before success is claimed",
+              "verified that To appeared" in result)
+        check("verified routes remember labels rather than coordinates or content",
+              learned and learned["resolved"] == "New mail"
+              and "x" not in learned and "text" not in learned)
+
+        calls.clear()
+        computer.press_target(
+            "New email", expected="To", remember_as="outlook.compose", timeout=1)
+        first_snapshot = next(c for c in calls if c[0] == "snapshot")
+        check("the next run replays the learned semantic label first",
+              first_snapshot[1][0] == "New mail")
+
+        ui_routes.note_failure("Google Chrome|https://outlook.test", "outlook.compose")
+        check("one failed replay is tolerated",
+              ui_routes.recall("Google Chrome|https://outlook.test", "outlook.compose")
+              is not None)
+        ui_routes.note_failure("Google Chrome|https://outlook.test", "outlook.compose")
+        check("two failed replays retire a stale route",
+              ui_routes.recall("Google Chrome|https://outlook.test", "outlook.compose")
+              is None)
+finally:
+    computer._native = real_native
+    computer.time.sleep = real_sleep
+    computer._control_scope = real_scope
+    ui_routes.DB_PATH = real_routes_db
 
 
 print("\n" + "=" * 50)

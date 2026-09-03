@@ -228,6 +228,57 @@ func clickPoint(_ point: CGPoint) -> Bool {
     return true
 }
 
+func escapeIsDown() -> Bool {
+    return CGEventSource.keyState(.combinedSessionState, key: 53)
+}
+
+func sameFrontmostApp(_ pid: pid_t) -> Bool {
+    return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+}
+
+func movePointerVisibly(to destination: CGPoint, durationMS: Int,
+                         expectedPID: pid_t) -> (Bool, String) {
+    guard let current = CGEvent(source: nil)?.location else {
+        return (false, "Could not read the current pointer position")
+    }
+    let duration = max(80, min(1200, durationMS))
+    let steps = max(6, duration / 12)
+    for step in 1...steps {
+        if escapeIsDown() { return (false, "Cancelled with Escape") }
+        if !sameFrontmostApp(expectedPID) {
+            return (false, "The active app changed before the click")
+        }
+        let linear = Double(step) / Double(steps)
+        // Smoothstep keeps the pointer readable instead of teleporting while
+        // still finishing quickly enough that control does not feel sluggish.
+        let t = linear * linear * (3.0 - 2.0 * linear)
+        let point = CGPoint(x: current.x + (destination.x - current.x) * t,
+                            y: current.y + (destination.y - current.y) * t)
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                  mouseCursorPosition: point, mouseButton: .left) else {
+            return (false, "Could not create a pointer movement event")
+        }
+        event.post(tap: .cghidEventTap)
+        usleep(useconds_t(duration * 1000 / steps))
+    }
+    return (true, "")
+}
+
+func typeVisibly(_ text: String, delayMS: Int, expectedPID: pid_t) -> (Bool, String) {
+    let delay = max(2, min(60, delayMS))
+    for character in text {
+        if escapeIsDown() { return (false, "Cancelled with Escape") }
+        if !sameFrontmostApp(expectedPID) {
+            return (false, "The active app changed while typing")
+        }
+        if !unicodeType(String(character)) {
+            return (false, "Could not create keyboard events")
+        }
+        usleep(useconds_t(delay * 1000))
+    }
+    return (true, "")
+}
+
 func postKey(_ code: CGKeyCode, flags: CGEventFlags = []) -> Bool {
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
@@ -300,6 +351,27 @@ case "press":
     return ["ok": error == .success, "app": appName, "matched": found.detail,
             "role": found.role, "error": error == .success ? "" : "Accessibility press failed (\(error.rawValue))"]
 
+case "visible-press":
+    guard args.count > 2 else { return ["ok": false, "error": "missing target"] }
+    guard let found = bestMatch(root, target: args[2], mustPress: true) else {
+        return ["ok": false, "error": "No accessible control matched '\(args[2])'", "app": appName]
+    }
+    guard let frame = elementOrAncestorFrame(found.element) else {
+        return ["ok": false, "error": "Accessible control has no visible frame", "app": appName]
+    }
+    let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let duration = args.count > 3 ? Int(args[3]) ?? 360 : 360
+    let moved = movePointerVisibly(to: CGPoint(x: frame.midX, y: frame.midY),
+                                   durationMS: duration, expectedPID: pid)
+    guard moved.0 else { return ["ok": false, "error": moved.1, "app": appName] }
+    guard sameFrontmostApp(pid) else {
+        return ["ok": false, "error": "The active app changed before the click", "app": appName]
+    }
+    let error = AXUIElementPerformAction(found.element, kAXPressAction as CFString)
+    return ["ok": error == .success, "app": appName, "matched": found.detail,
+            "name": found.title, "role": found.role, "x": frame.midX, "y": frame.midY,
+            "error": error == .success ? "" : "Accessibility press failed (\(error.rawValue))"]
+
 case "fill":
     guard args.count > 3 else { return ["ok": false, "error": "missing field label or text"] }
     guard let found = bestEditableMatch(root, target: args[2]) else {
@@ -314,6 +386,32 @@ case "fill":
     return ["ok": ok, "verified": ok, "app": appName, "matched": found.detail,
             "role": found.role,
             "error": ok ? "" : "Accessibility field update failed (focus \(focused.rawValue), value \(set.rawValue))"]
+
+case "fill-visible":
+    guard args.count > 3 else { return ["ok": false, "error": "missing field label or text"] }
+    guard let found = bestEditableMatch(root, target: args[2]) else {
+        return ["ok": false, "error": "No accessible editable field matched '\(args[2])'", "app": appName]
+    }
+    guard let frame = elementOrAncestorFrame(found.element) else {
+        return ["ok": false, "error": "Editable field has no visible frame", "app": appName]
+    }
+    let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let moved = movePointerVisibly(to: CGPoint(x: frame.midX, y: frame.midY),
+                                   durationMS: 300, expectedPID: pid)
+    guard moved.0 else { return ["ok": false, "error": moved.1, "app": appName] }
+    guard clickPoint(CGPoint(x: frame.midX, y: frame.midY)) else {
+        return ["ok": false, "error": "Could not focus the field", "app": appName]
+    }
+    usleep(100_000)
+    _ = postKey(0, flags: .maskCommand)
+    let typed = typeVisibly(args[3], delayMS: args.count > 4 ? Int(args[4]) ?? 12 : 12,
+                            expectedPID: pid)
+    usleep(120_000)
+    let after = stringAttribute(found.element, kAXValueAttribute as CFString)
+    let verified = typed.0 && (after == args[3] || after.contains(args[3]))
+    return ["ok": typed.0, "verified": verified, "app": appName,
+            "matched": found.detail, "name": found.title, "role": found.role,
+            "error": typed.0 ? "" : typed.1]
 
 case "focus":
     guard args.count > 2 else { return ["ok": false, "error": "missing target"] }
@@ -356,6 +454,17 @@ case "type-text":
     return ["ok": sent, "verified": before != after,
             "app": appName,
             "error": "Could not create keyboard events"]
+
+case "type-visible":
+    guard args.count > 2 else { return ["ok": false, "error": "missing text"] }
+    let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let focused = focusedElement()
+    let before = focused.map { stringAttribute($0, kAXValueAttribute as CFString) } ?? ""
+    let typed = typeVisibly(args[2], delayMS: args.count > 3 ? Int(args[3]) ?? 12 : 12,
+                            expectedPID: pid)
+    let after = focused.map { stringAttribute($0, kAXValueAttribute as CFString) } ?? ""
+    return ["ok": typed.0, "verified": before != after, "app": appName,
+            "error": typed.0 ? "" : typed.1]
 
 case "paste-text":
     guard args.count > 2 else { return ["ok": false, "error": "missing text"] }
@@ -434,6 +543,20 @@ case "click":
     let point = CGPoint(x: x, y: y)
     guard clickPoint(point) else {
         return ["ok": false, "error": "Could not create mouse events"]
+    }
+    return ["ok": true, "app": appName, "x": x, "y": y]
+
+case "move-click":
+    guard args.count > 3, let x = Double(args[2]), let y = Double(args[3]) else {
+        return ["ok": false, "error": "missing click coordinates"]
+    }
+    let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    let point = CGPoint(x: x, y: y)
+    let duration = args.count > 4 ? Int(args[4]) ?? 360 : 360
+    let moved = movePointerVisibly(to: point, durationMS: duration, expectedPID: pid)
+    guard moved.0 else { return ["ok": false, "error": moved.1, "app": appName] }
+    guard clickPoint(point) else {
+        return ["ok": false, "error": "Could not create mouse events", "app": appName]
     }
     return ["ok": true, "app": appName, "x": x, "y": y]
 

@@ -248,7 +248,7 @@ _FAMILIES = (
     (r"\bvolume\b", ("system_volume",)),
     (r"\bbrightness\b", ("system_brightness",)),
     (r"\b(?:screen|display|video)\b", ("screen_describe",)),
-    (r"\b(?:click|tap|button|link|cursor|control)\b",
+    (r"\b(?:click|tap|button|link|cursor|mouse|pointer|control)\b",
      ("ui_inspect", "ui_press", "screen_describe")),
     # Text entry is broader than the literal verb "type". People naturally say
     # "enter this", "fill in X", or "prompt an assistant with Y". Missing those
@@ -297,6 +297,8 @@ _ACTION_WORDS = re.compile(
 # The remaining verbs are actions only when they carry an unmistakable target:
 # a person to message, a device surface to change, or an explicit destination.
 _TARGETED_ACTIONS = (
+    (re.compile(r"^(?:move|use)\b", re.I),
+     re.compile(r"\b(?:mouse|pointer|cursor)\b", re.I)),
     (re.compile(r"^(?:text|message|send|email)\b", re.I),
      re.compile(r"\b(?:to|for)\s+\w|^(?:text|message|email)\s+\w+\s+\w", re.I)),
     (re.compile(r"^(?:set|add|log)\b", re.I),
@@ -397,7 +399,8 @@ def select_tool_schemas(text, recent_action_text="", screen_text=""):
     # play button on this video"), broad media families appear earlier in the
     # catalog. Put the explicitly requested interaction first so the global
     # eight-contract cap cannot evict the tool that performs the verb.
-    if re.search(r"\b(?:click|tap|button|control)\b", text or "", re.I):
+    if re.search(r"\b(?:click|tap|button|control|mouse|pointer|cursor)\b",
+                 text or "", re.I):
         names = ["ui_inspect", "ui_press", "screen_describe", *names]
     elif re.search(r"\b(?:terminal|shell|command[- ]line|cli|claude code)\b",
                    text or "", re.I):

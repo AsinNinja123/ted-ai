@@ -100,6 +100,15 @@ print("\n— Luna is independently pinnable —")
 
 
 class FakeLuna:
+    class responses:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(("luna-responses", kwargs))
+            return {"id": "fake", "model": kwargs.get("model"), "output": [
+                {"type": "message", "content": [
+                    {"type": "output_text", "text": "tool-answer"}]}],
+                    "usage": {}}
+
     class chat:
         class completions:
             @staticmethod
@@ -120,8 +129,9 @@ check("Luna receives its configured model and translated token limit",
 providers.chat_create(messages=[{"role": "user", "content": "open Terminal"}],
                       tools=[{"type": "function", "function": {"name": "open_app"}}],
                       reasoning_effort="default")
-check("Luna tool calls disable reasoning on Chat Completions",
-      calls[-1][1].get("reasoning_effort") == "none")
+check("Luna tool calls use Responses so reasoning survives follow-up rounds",
+      calls[-1][0] == "luna-responses"
+      and calls[-1][1].get("reasoning") == {"effort": "low"})
 check("active_provider reports OpenAI", providers.active_provider() == "openai")
 providers.set_provider_mode("auto")
 result = providers.chat_create(messages=[{"role": "user", "content": "foreground"}])
