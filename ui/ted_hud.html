@@ -736,6 +736,7 @@ var muted=true;                    // TTS off until wake word or a voice-button 
 var wakeListening=false;           // mic live, but only "Ted" / "Hey Ted" is accepted
 var OWNER='you';                   // replaced by the real name from speaker_status
 var transcribing=false;            // mic on, speakers off — dictation into the box
+var lastAudioMode=null;            // last mode applied, so the poll is idempotent
 var STATE_TEXT={idle:'READY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'};
 var currentChat=null;              // active session id (created lazily)
 var chatCreatePromise=null;        // one in-flight lazy session creation
@@ -1735,6 +1736,42 @@ var tedHud={
       tedHud.setState('idle');
     }
   },
+  // Atomic source-of-truth update from Python. Keeping this in one function
+  // avoids a late setMuted/setWakeListening call leaving contradictory CSS
+  // classes on the button.
+  setAudioMode:function(mode){
+    // The 2 s reconciliation poll calls this constantly. Repair the classes
+    // every time, but only touch the state indicator when the mode actually
+    // changed — otherwise the poll resets 'thinking'/'speaking' to 'idle'
+    // twice a second while Ted is mid-reply.
+    var changed = (mode !== lastAudioMode);
+    lastAudioMode = mode;
+    var mic=$('mic'), dict=$('transcribe');
+    mic.classList.remove('on','wake');
+    dict.classList.remove('on');
+    muted=true; wakeListening=false; transcribing=false;
+    if(mode==='voice'){
+      muted=false; mic.classList.add('on');
+      mic.title='Voice mode ON — click to sleep';
+    }else if(mode==='wake'){
+      wakeListening=true; mic.classList.add('wake');
+      mic.title='Wake word listening — say “Ted” or “Hey Ted”';
+    }else if(mode==='transcribe'){
+      transcribing=true; dict.classList.add('on');
+      mic.title='Voice mode off — click to talk';
+      dict.title='Dictating — click to stop. Ted stays silent.';
+      if(changed) tedHud.setState('listening');
+      return;
+    }else if(mode==='silent_chat'){
+      mic.title='Listening for silent chat — click for voice';
+    }else if(mode==='unavailable'){
+      mic.title='Microphone unavailable — click to retry';
+    }else{
+      mic.title='Asleep — microphone off. Click to wake.';
+    }
+    dict.title="Dictate into the box — Ted won't speak";
+    if(changed) tedHud.setState('idle');
+  },
   // Transcribe mode is mic-on/speakers-off, so it is neither of the two states
   // setMuted knows about and needs its own indicator.
   setTranscribing:function(t){
@@ -1910,6 +1947,13 @@ var tedHud={
   showChat:function(){}, hideChat:function(){}, toggleChat:function(){},
 };
 window.tedHud=tedHud;
+
+function syncVoiceStatus(){
+  if(!inApp() || !window.pywebview.api.voice_status) return;
+  window.pywebview.api.voice_status().then(function(s){
+    if(s&&s.mode) tedHud.setAudioMode(s.mode);
+  }).catch(function(){});
+}
 
 /* ── controls ─────────────────────────────────────────────── */
 function sendMsg(){
@@ -2188,6 +2232,8 @@ document.addEventListener('keydown',function(e){
   else{ st.className='active'; $('status-t').textContent='DEMO'; }
   window.addEventListener('pywebviewready',function(){
     st.className=''; $('status-t').textContent='';   // quiet until he's busy
+    syncVoiceStatus();
+    setInterval(syncVoiceStatus,2000);  // repair any missed Python→HUD state push
     // Poll slowly and only while the window is visible. This is a local
     // Python call, but it reaches Spotify's API, and hammering that for a
     // one-line strip would be a poor trade.

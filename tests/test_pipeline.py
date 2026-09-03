@@ -375,7 +375,9 @@ check("wake standby opens the real mic but keeps speech off",
       api.mic_on and not api.speech_on and api.wake_only and not api.sleeping
       and "unmute_mic" in fake_engine.calls)
 check("…and the HUD distinguishes wake listening from full voice",
-      js_containing(api, "setWakeListening(true)"))
+      js_containing(api, 'setAudioMode("wake")'))
+check("…and its status is backed by the engine's actual mic state",
+      api.voice_status()["mode"] == "wake" and api.voice_status()["mic_open"])
 
 api.toggle_mute()
 check("the voice button promotes wake standby to full voice",
@@ -384,6 +386,9 @@ api.toggle_mute()
 check("the voice button from full voice enters true sleep",
       not api.mic_on and not api.speech_on and api.sleeping
       and "mute_mic" in fake_engine.calls)
+check("…and the atomic HUD update removes every listening indicator",
+      js_containing(api, 'setAudioMode("sleep")')
+      and api.voice_status()["mode"] == "sleep")
 
 api._respond("wake up")
 check("typed wake-up is allowed from sleep and restores voice",
@@ -396,7 +401,7 @@ check("…and leaves the speakers off", not api.speech_on)
 check("…so the legacy `muted` flag still reads as silent, and Ted stays quiet",
       api.muted)
 check("…and the HUD is told it is transcribing, not that the mic is off",
-      js_containing(api, "setTranscribing(true)"))
+      js_containing(api, 'setAudioMode("transcribe")'))
 
 api.toggle_transcribe()
 check("pressing it again returns to wake standby, not an unreachable mic-off state",

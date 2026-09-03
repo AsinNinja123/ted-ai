@@ -4120,15 +4120,34 @@ class TedApi:
         print("[voice] asleep — microphone off")
         return True
 
+    def voice_status(self):
+        """Return hardware-backed voice state for the HUD's reconciliation poll."""
+        mic_open = bool(voice.mic_is_open())
+        if not mic_open:
+            mode = "sleep" if self.sleeping else "unavailable"
+        elif self.transcribe_only:
+            mode = "transcribe"
+        elif self.pet_silent_chat:
+            mode = "silent_chat"
+        elif self.wake_only:
+            mode = "wake"
+        elif self.speech_on:
+            mode = "voice"
+        else:
+            mode = "wake"
+        return {
+            "mode": mode,
+            "mic_open": mic_open,
+            "speech_on": bool(self.speech_on),
+            "wake_only": bool(self.wake_only),
+        }
+
     def _push_mic_state(self):
-        # The main mic ring means full voice, not merely "the OS device is in
-        # use". Wake standby gets its own quieter indicator.
-        voice_active = self.mic_on and self.speech_on
-        js(self.window, f"tedHud.setMuted({str(not voice_active).lower()})")
-        js(self.window, f"tedHud.setTranscribing({str(self.transcribe_only).lower()})")
-        wake_listening = self.wake_only and self.mic_on
-        js(self.window,
-           f"tedHud.setWakeListening({str(wake_listening).lower()})")
+        # One atomic UI update prevents three independent class toggles from
+        # arriving out of order. The HUD also polls voice_status(), so a bridge
+        # call lost while the page is loading repairs itself within seconds.
+        status = self.voice_status()
+        js(self.window, f"tedHud.setAudioMode({json.dumps(status['mode'])})")
         pet.set_mode(self.pet_mode())
 
     # ── the notification bouncer ───────────────────────────────────────────
