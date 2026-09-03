@@ -131,6 +131,9 @@ def runtime(dispatch, action_tools=(), schemas=None, failures=None, is_failure=N
         specs = {
             "open_app": ({"name": {"type": "string"}}, ["name"]),
             "close_app": ({"name": {"type": "string"}}, ["name"]),
+            "browse_to": ({"site": {"type": "string"}}, ["site"]),
+            "ui_inspect": ({"query": {"type": "string"}}, []),
+            "ui_press": ({"target": {"type": "string"}}, ["target"]),
             "get_weather": ({}, []),
             "calculate": ({"expression": {"type": "string"}}, ["expression"]),
             "set_timer": ({"duration": {"type": "string"}}, ["duration"]),
@@ -756,6 +759,33 @@ out, _ = run("what's on my screen", runtime(
 check("a repeated identical tool call is refused, not re-run", len(SHOTS) == 1)
 check("…and the turn still answers from the first result",
       out == "Your editor is open.")
+
+# Regression from a live Google workflow: the first inspection happened before
+# navigation exposed the page controls. After browse_to changed the page, the
+# model correctly inspected the same target again, but the duplicate guard
+# stopped the whole turn before click/type. Snapshot reads are repeatable after
+# a successful state-changing action, though not back-to-back as above.
+PAGE_FLOW_CALLS = []
+llm.chat_create = scripted(
+    FakeStream([tool_chunk(0, id="p1", name="ui_inspect",
+                           args='{"query":"search"}')]),
+    FakeStream([tool_chunk(0, id="p2", name="browse_to",
+                           args='{"site":"google.com"}')]),
+    FakeStream([tool_chunk(0, id="p3", name="ui_inspect",
+                           args='{"query":"search"}')]),
+    FakeStream([tool_chunk(0, id="p4", name="ui_press",
+                           args='{"target":"Search"}')]),
+    FakeStream([tool_chunk(0, id="p5", name="type_text",
+                           args='{"text":"Jackson Hallman"}')]),
+    FakeStream([text_chunk("COMPLETE")]),
+)
+out, _ = run("open google.com, inspect Search, click it, then type", runtime(
+    lambda n, a: (PAGE_FLOW_CALLS.append(n), f"{n} ok.")[1],
+    action_tools={"browse_to", "ui_press", "type_text"}),
+    require_tool=True, min_action_calls=5)
+check("the same page observation may run again after an intervening action",
+      PAGE_FLOW_CALLS == ["ui_inspect", "browse_to", "ui_inspect",
+                          "ui_press", "type_text"])
 
 print("\n— what Ted said is what Ted remembers saying —")
 

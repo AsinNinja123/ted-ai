@@ -1526,6 +1526,15 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
     # screen_describe — screenshot plus a vision call — three rounds of that is
     # a minute of silence with two wasted screenshots.
     seen_calls = set()
+    # Accessibility/screen reads are snapshots, not timeless facts. The same
+    # query is a real new operation after a successful action changed the app
+    # or page (browse_to -> ui_inspect("search") is the case that exposed
+    # this). Keep the revision in observation keys so immediate read loops are
+    # still refused while post-action verification remains possible.
+    observation_revision = 0
+    stateful_observations = frozenset({
+        "ui_inspect", "screen_describe", "clipboard_read",
+    })
     action_results = []
     had_non_action = False
     # The router's lower bound sees comma-separated and mixed-capability work,
@@ -1842,6 +1851,9 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     parse_error = validate_tool_arguments(schema, args, user_input)
                 canonical = (c["name"], json.dumps(args, sort_keys=True)
                              if isinstance(args, dict) else c["args"] or "{}")
+                duplicate_key = (
+                    (*canonical, observation_revision)
+                    if c["name"] in stateful_observations else canonical)
                 # A terminal buffer is changing state, so reading it again
                 # after a later submission is not a duplicate operation.
                 repeatable_terminal_enter = (
@@ -1849,10 +1861,10 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     and isinstance(args, dict)
                     and str(args.get("key", "")).lower() == "enter"
                     and not terminal_submission_pending)
-                if (canonical in seen_calls and c["name"] != "terminal_read"
+                if (duplicate_key in seen_calls and c["name"] != "terminal_read"
                         and not repeatable_terminal_enter):
                     continue
-                seen_calls.add(canonical)
+                seen_calls.add(duplicate_key)
                 prepared.append((c, args, parse_error))
             if not prepared:
                 print("[tools] model repeated a call it already made — stopping")
@@ -1932,6 +1944,8 @@ def ask_streaming(user_input, conversation, frustrated=False, thinking_mode=Fals
                     # evidence that one requested stage completed.
                     if not call_failed:
                         completed_tool_calls += 1
+                        if is_action:
+                            observation_revision += 1
                     visible_results.append(result)
                 if not is_action:
                     all_actions = False
