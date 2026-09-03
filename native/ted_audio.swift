@@ -111,6 +111,8 @@ let stdoutHandle = FileHandle.standardOutput
 var inConverter: AVAudioConverter? = nil
 var loggedInput = false
 var tapInstalled = false   // tracks whether the mic tap is currently active
+var lastLoggedChannel = -1
+var channelLogCount = 0
 
 // ---- mic capture: extracted so it can be installed / removed at runtime -----
 // Sending 'M' removes the tap AND stops the capture engine (mic device fully
@@ -144,25 +146,16 @@ func installMicTap() {
         monoBuf.frameLength = AVAudioFrameCount(n)
         let mono = monoBuf.floatChannelData![0]
 
-        // Channel selection:
-        //  • Voice processing ON — ALWAYS take channel 0, the processed (echo-
-        //    cancelled) primary. VP exposes multiple channels, and the loudest-
-        //    channel heuristic anti-selects the AEC: during playback the raw
-        //    channels carry Ted's uncancelled voice, so they are the loudest —
-        //    picking them reintroduces the very echo VP just removed.
-        //  • VP off — pick the SINGLE loudest channel rather than averaging. A
-        //    multi-channel virtual device usually carries the real mic on one
-        //    channel; averaging dilutes the voice and wrecks transcription.
-        if vpEnabled {
-            let src = inFormat.isInterleaved ? nil : chData[0]
-            if let p = src {
-                for i in 0..<n { mono[i] = p[i] }
-            } else {
-                let base = chData[0]
-                var idx = 0
-                for i in 0..<n { mono[i] = base[idx]; idx += channels }
-            }
-        } else if inFormat.isInterleaved {
+        // Voice Processing exposes several channels on some Macs. Channel 0
+        // is the echo-cancelled feed and is the right choice WHILE Ted speaks,
+        // but on Charlie's current five-channel format it can be nearly silent
+        // while Ted is merely listening. Outside playback, select the loudest
+        // real input channel so ordinary speech cannot disappear into a quiet
+        // processed lane. During playback stay on channel 0 to preserve AEC.
+        var selectedChannel = 0
+        var selectedEnergy: Float = 0
+        let preserveAEC = vpEnabled && player.isPlaying
+        if !preserveAEC && inFormat.isInterleaved {
             let base = chData[0]
             var bestCh = 0
             var bestE: Float = -1
@@ -171,9 +164,9 @@ func installMicTap() {
                 for _ in 0..<n { let v = base[idx]; e += v * v; idx += channels }
                 if e > bestE { bestE = e; bestCh = c }
             }
-            var idx = bestCh
-            for i in 0..<n { mono[i] = base[idx]; idx += channels }
-        } else {
+            selectedChannel = bestCh
+            selectedEnergy = bestE
+        } else if !preserveAEC {
             var bestCh = 0
             var bestE: Float = -1
             for c in 0..<channels {
@@ -182,8 +175,29 @@ func installMicTap() {
                 for i in 0..<n { let v = p[i]; e += v * v }
                 if e > bestE { bestE = e; bestCh = c }
             }
-            let p = chData[bestCh]
+            selectedChannel = bestCh
+            selectedEnergy = bestE
+        }
+
+        if inFormat.isInterleaved {
+            let base = chData[0]
+            var idx = selectedChannel
+            for i in 0..<n { mono[i] = base[idx]; idx += channels }
+        } else {
+            let p = chData[selectedChannel]
             for i in 0..<n { mono[i] = p[i] }
+        }
+
+        // Log only meaningful channel changes, and cap the count. This gives
+        // the Python launch log hard evidence about which input carried speech
+        // without doing unbounded I/O on the realtime audio callback.
+        let selectedRMS = selectedEnergy > 0 ? sqrt(selectedEnergy / Float(n)) : 0
+        if !preserveAEC && selectedRMS >= 0.0007 && selectedChannel != lastLoggedChannel
+                && channelLogCount < 8 {
+            let rmsText = String(format: "%.4f", selectedRMS)
+            log("selected input channel \(selectedChannel), rms=\(rmsText)")
+            lastLoggedChannel = selectedChannel
+            channelLogCount += 1
         }
 
         if inConverter == nil {

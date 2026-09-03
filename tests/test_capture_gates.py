@@ -57,7 +57,7 @@ for junk in ("Tep.", "Start.", "Hmm.", "Mm-hmm.", "Uh", "Ah.", "Tik", "Beep", ".
     check(f"drops junk fragment {junk!r}", is_junk(junk))
 
 for cmd in ("stop", "Play.", "next", "skip", "yes", "no", "cancel", "pause",
-            "Hey Ted", "louder", "mute", "play next"):
+            "Hey Ted", "Hey, Ted.", "louder", "mute", "play next"):
     check(f"keeps real short command {cmd!r}", not is_junk(cmd))
 
 for sentence in ("what's the weather like", "remind me to call mom",

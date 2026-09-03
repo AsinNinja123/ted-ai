@@ -37,6 +37,10 @@ ATTENTION_WINDOW = 90
 # voice barge-in unless the native engine is built (use the mute button / typing
 # / headphones to interrupt instead). Has no effect when the AEC engine is active.
 FALLBACK_VOICE_BARGEIN = True
+# Prefer Apple's echo-cancelling engine when it works with the current input
+# device. Set False if its multi-channel Voice Processing feed is too quiet;
+# direct sounddevice capture is less clever but often more reliable.
+PREFER_NATIVE_AUDIO = True
 
 # ── Personal settings ────────────────────────────────────────────────────────
 OWNER_NAME = "Charlie"     # used in greetings: "Good morning, [name]"

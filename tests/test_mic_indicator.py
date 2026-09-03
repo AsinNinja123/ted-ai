@@ -119,6 +119,32 @@ check("and reports itself open", e2.mic_is_open() is True)
 check("a mic opened at start needs no deferred device check",
       e2._mic_verified is True)
 
+print("\n— quiet-room calibration still admits attenuated speech —")
+quiet = AudioEngine()
+for _ in range(45):
+    quiet._q.put(_np.full(audio.FRAME, 0.0002, dtype="float32"))
+threshold = quiet.calibrate()
+check("the floor is low enough for Voice Processing's quiet near-end signal",
+      abs(threshold - 0.0007) < 0.00001)
+
+print("\n— a noisy input still calibrates ABOVE its own noise floor —")
+# The real failure this guards: a 0.012 ceiling on a mic whose ambient floor
+# measures ~0.010 put the bar under the room. Every listen false-started and
+# then never saw 1.35 s of quiet, so Ted recorded to the cap instead of
+# answering. The bar must stay clear of ambient, not merely above zero.
+noisy = AudioEngine()
+for _ in range(45):
+    noisy._q.put(_np.full(audio.FRAME, 0.010, dtype="float32"))
+noisy_threshold = noisy.calibrate()
+check("room noise cannot reach the speech-onset bar",
+      noisy_threshold > 0.010 * 1.5)
+check("…and the bar is still capped so a loud room can't go deaf",
+      noisy_threshold <= 0.030)
+
+print("\n— a runaway turn asks for a fresh measurement —")
+stuck = AudioEngine()
+check("a fresh engine has no pending recalibration", stuck._recalibrate_soon is False)
+
 print("\n— a released mic never reports itself as open —")
 e3, _ = engine_started(mic=False)
 e3.mode = "aec"

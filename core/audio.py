@@ -106,9 +106,13 @@ BYTES_PER_FRAME = FRAME * 2         # int16 = 2 bytes per sample
 
 # ---- Listening Behaviour ----
 SILENCE_HANG  = 1.35    # seconds of quiet that end a turn (1.0 s + 350 ms buffer for trailing consonants)
-MAX_TURN      = 120.0   # hard cap so a runaway recording can't go forever
+MAX_TURN      = 30.0    # hard cap so a runaway recording can't go forever. A real
+                        # spoken command is never this long; anything that reaches
+                        # the cap is a false start on room noise, and 120 s of that
+                        # left Ted deaf and silent for two minutes at a time.
 START_TIMEOUT = 30.0    # give up waiting for speech onset after this many seconds
 PREROLL       = 12      # frames to keep before speech onset so we don't clip the first word
+SPEECH_ONSET_FRAMES = 3 # sustained energy (~60 ms), so a low threshold ignores clicks
 
 # ---- Barge-In Tuning ----
 # To interrupt Ted, the last BARGE_WINDOW frames (~300 ms) must contain:
@@ -194,6 +198,8 @@ class AudioEngine:
         self._q = queue.Queue(maxsize=200)      # ~4 s of 20 ms mic frames
         self._preroll = collections.deque(maxlen=PREROLL)  # ring buffer of recent frames before speech
         self._last_rms = 0.0
+        self._last_capture_timeout_log = 0.0     # throttle idle mic diagnostics
+        self._recalibrate_soon = False           # set when a turn ran away on noise
         self._playing = False                   # True while Ted is speaking
         # True for the span of a whole multi-sentence reply, including the
         # synth gaps BETWEEN sentences where _playing is False. Barge-in
@@ -222,7 +228,7 @@ class AudioEngine:
 
     # ---- Startup ----
 
-    def start(self, mic=True):
+    def start(self, mic=True, prefer_native=True):
         """Launch the audio engine. Tries AEC first, falls back to sounddevice. Returns mode string.
 
         mic=False starts PLAYBACK ONLY and never installs a mic tap, so macOS
@@ -235,7 +241,7 @@ class AudioEngine:
         while the tap is off.
         """
         self._mic_muted = not mic
-        if os.path.exists(BINARY) and os.access(BINARY, os.X_OK):
+        if prefer_native and os.path.exists(BINARY) and os.access(BINARY, os.X_OK):
             try:
                 import subprocess
                 self.proc = subprocess.Popen(
@@ -490,7 +496,27 @@ class AudioEngine:
                 break
             levels.append(_rms_float(frame))
         if levels:
-            self._threshold = max(0.006, min(0.025, float(np.mean(levels)) * 2.5))  # 2.5× noise floor, capped
+            # Voice Processing I/O can make a normal across-the-desk voice much
+            # quieter than raw CoreAudio. The former 0.006 floor left no room
+            # for those voices even in an otherwise silent room. Median also
+            # ignores the short device-open spike that made the direct backend
+            # calibrate at its old 0.025 ceiling during the live test.
+            # Median, not mean: it ignores the short device-open spike that
+            # made calibration read the room as far louder than it is.
+            #
+            # The FLOOR is low because Apple Voice Processing can hand back a
+            # normal across-the-desk voice at a very small amplitude, and the
+            # old 0.006 floor left those voices no room at all.
+            #
+            # The CEILING has to stay well above this Mac's real noise floor.
+            # Capping at 0.012 put the bar roughly 1.5x over ambient, so room
+            # noise cleared it constantly: every listen false-started and then
+            # never saw the 1.35 s of quiet that ends a turn, so Ted recorded
+            # until MAX_TURN instead of answering. 0.03 keeps a 3x margin
+            # available on a noisy input while a quiet room still calibrates
+            # far below it.
+            noise_floor = float(np.median(levels))
+            self._threshold = max(0.0007, min(0.030, noise_floor * 3.0))
         return self._threshold
 
     # ---- Capture ----
@@ -503,7 +529,9 @@ class AudioEngine:
         """
         captured = []
         silent = 0
+        onset_hits = 0
         start = time.time()
+        peak_rms = 0.0
         hang_frames = int(SILENCE_HANG / FRAME_SEC)  # number of silent frames that end the turn
         preroll = []
 
@@ -514,6 +542,14 @@ class AudioEngine:
             started = True
         else:
             self._drain_queue()                 # discard stale frames so we don't transcribe old audio
+            if self._recalibrate_soon:
+                self._recalibrate_soon = False
+                try:
+                    thr = self.calibrate()
+                    print(f"[audio] recalibrated — threshold now {thr:.4f}")
+                except Exception as e:
+                    print(f"[audio] recalibration skipped: {e}")
+                self._drain_queue()
             with self._lock:
                 preroll = list(self._preroll)   # save recent frames to prepend once speech starts
             started = False
@@ -523,15 +559,23 @@ class AudioEngine:
                 frame = self._q.get(timeout=0.5)
             except queue.Empty:
                 if not started and time.time() - start > START_TIMEOUT:
+                    self._report_no_speech(peak_rms)
                     return None                 # nobody started talking
                 continue
 
             rms = _rms_float(frame)
+            peak_rms = max(peak_rms, rms)
             elapsed = time.time() - start
 
-            if rms > self._threshold:
+            above = rms > self._threshold
+            if not started:
+                onset_hits = onset_hits + 1 if above else 0
+
+            if above and (started or onset_hits >= SPEECH_ONSET_FRAMES):
                 if not started:
                     started = True
+                    print(f"[audio] speech onset rms={rms:.4f}, "
+                          f"threshold={self._threshold:.4f}")
                     captured.extend(preroll)    # include pre-speech frames so word 1 isn't clipped
                 captured.append(frame)
                 silent = 0                      # voice detected — reset silence counter
@@ -543,13 +587,28 @@ class AudioEngine:
                         break                   # enough consecutive silence — turn is over
 
             if not started and elapsed > START_TIMEOUT:
+                self._report_no_speech(peak_rms)
                 return None
             if started and elapsed > MAX_TURN:
+                # Reaching the cap means the onset threshold is sitting below
+                # the room's noise floor — nothing else keeps a turn alive this
+                # long. Re-measure so the next listen isn't stuck the same way.
+                print(f"[audio] turn hit the {MAX_TURN:.0f}s cap "
+                      f"(threshold={self._threshold:.4f}) — recalibrating")
+                self._recalibrate_soon = True
                 break                           # safety cap — don't record forever
 
         if not captured:
             return None
         return np.concatenate(captured).astype(np.float32)
+
+    def _report_no_speech(self, peak_rms):
+        """Make a deaf mic diagnosable without flooding the idle launch log."""
+        now = time.time()
+        if peak_rms >= 0.0001 or now - self._last_capture_timeout_log >= 300:
+            print(f"[audio] no speech onset in {START_TIMEOUT:.0f}s "
+                  f"(peak={peak_rms:.4f}, threshold={self._threshold:.4f})")
+            self._last_capture_timeout_log = now
 
     def _drain_queue(self):
         """Discard all frames currently sitting in the mic queue."""

@@ -88,6 +88,10 @@ try:
 except Exception:
     FALLBACK_VOICE_BARGEIN = True
 try:
+    from config import PREFER_NATIVE_AUDIO
+except Exception:
+    PREFER_NATIVE_AUDIO = True
+try:
     from config import OWNER_NAME
 except Exception:
     OWNER_NAME = "Charlie"
@@ -111,7 +115,8 @@ WHISPER_RMS_THRESHOLD = 0.018   # RMS below this = user is speaking quietly
 # the handful of phrases Whisper famously hallucinates. Loosen these if Ted ever
 # ignores real (quiet) speech.
 MIN_CAPTURE_SEC = 0.25     # ignore clips shorter than this
-MIN_CAPTURE_RMS = 0.011    # ignore clips quieter than this
+MIN_CAPTURE_RMS = 0.0003   # post-capture floor; sustained-onset VAD rejects clicks
+STT_TARGET_PEAK = 0.7      # normalise quiet captures to this peak before Whisper
 NO_SPEECH_MAX   = 0.6      # reject if Whisper is this sure it's not speech
 LOGPROB_MIN     = -1.0     # reject very low-confidence transcriptions
 _HALLUCINATIONS = {
@@ -153,6 +158,11 @@ def _is_junk_fragment(text):
     utterances are handled by the ambient-speech guards further down.
     """
     cleaned = text.strip().lower().strip(".,!?;:'\"")
+    # Whisper naturally punctuates direct address as "Hey, Ted.". The old
+    # exact allowlist compared that comma-bearing form to "hey ted" and threw
+    # away a correctly transcribed wake word before the wake parser saw it.
+    cleaned = cleaned.replace(",", "").replace(";", "").replace(":", "")
+    cleaned = " ".join(cleaned.split())
     if not cleaned:
         return True
     words = cleaned.split()
@@ -243,7 +253,7 @@ engine = AudioEngine(
 # during startup, so starting the engine with a mic tap claimed the microphone
 # — and lit the macOS recording indicator — for a feature that was switched
 # off. The mic is claimed by prepare_mic() when voice is actually turned on.
-_mode = engine.start(mic=False)
+_mode = engine.start(mic=False, prefer_native=PREFER_NATIVE_AUDIO)
 if _mode == "aec":
     print("🎧 Audio: native engine with echo cancellation — voice barge-in ON.")
 else:
@@ -634,9 +644,23 @@ def capture(prearmed=False):
     rms = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
     _last_capture_rms = rms   # stored for whisper-mode volume scaling
     if dur < MIN_CAPTURE_SEC or rms < MIN_CAPTURE_RMS:
+        print(f"   (ignored — capture too weak: {dur:.2f}s, rms={rms:.4f})")
         return None
 
-    sf.write(INPUT_FILE, audio, SAMPLE_RATE)
+    # Apple Voice Processing deliberately attenuates the near-end signal, and
+    # the direct mic path on this Mac is quiet too. Normalise toward a healthy
+    # peak before handing the clip to Whisper, while preserving the ORIGINAL
+    # rms above for the quiet-voice and safety decisions.
+    #
+    # The target was 0.15, which is still a quiet recording, and it only
+    # applied when the peak was already under 0.15 — so a clip peaking at 0.2
+    # went to Whisper untouched and came back as "Tend to be." for "Hey Ted".
+    # 0.7 leaves headroom under clipping and covers everything below it.
+    peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+    gain = min(20.0, STT_TARGET_PEAK / peak) if 0 < peak < STT_TARGET_PEAK else 1.0
+    stt_audio = np.clip(audio * gain, -1.0, 1.0)
+    print(f"[audio] captured {dur:.2f}s rms={rms:.4f} peak={peak:.4f} gain={gain:.1f}x")
+    sf.write(INPUT_FILE, stt_audio, SAMPLE_RATE)
 
     if USE_GROQ_STT:
         # 2) Cloud STT — Groq Whisper large-v3-turbo
