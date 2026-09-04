@@ -664,6 +664,19 @@ def likely_action_request(text):
     return len(stages) > 1 and any(likely_action_request(stage) for stage in stages)
 
 
+_EXPLICIT_WEB_LOOKUP = re.compile(
+    r"\b(?:look\s+up\s+.+|look\s+(?:him|her|them|it)\s+up|"
+    r"search\s+(?:the\s+web\s+)?(?:for|up)\s+.+|google\s+.+|"
+    r"find\s+out\s+(?:about\s+)?.+|verify\s+(?:online|on the web)\b)",
+    re.I,
+)
+
+
+def explicit_web_lookup(text):
+    """Whether Charlie explicitly requested live research rather than recall."""
+    return bool(_EXPLICIT_WEB_LOOKUP.search(text or ""))
+
+
 _SEQUENCE_SEP = re.compile(
     r"\b(?:and then|then|after that|afterwards|followed by|once that)\b|"
     r"\band\s+(?=(?:open|close|quit|launch|play|pause|send|message|text|email|"

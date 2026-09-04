@@ -24,7 +24,7 @@ _CORRECTION = re.compile(
 _CONSTRAINT = re.compile(
     r"\b(?:but|except|without|leave|keep|don't|do not|before|after|at|on|using|use)\b.{0,90}",
     re.I,
-)
+        )
 _HIGH_RISK = re.compile(
     r"\b(?:send|email|text|delete|remove|forget|purchase|buy|pay|post|submit|cancel)\b", re.I)
 
@@ -64,6 +64,18 @@ class TurnInterpretation:
             + " | ".join(parts)
         )
 
+# A pronoun does not automatically make a turn an operating-system action.
+# "Look him up" and "tell me about her" refer to recent conversation, but their
+# outcome is information. Treating every reference as an action attached these
+# turns to whatever durable task happened to be newest and forced an unrelated
+# Mac tool call.
+_INFORMATION_REFERENCE = re.compile(
+    r"^(?:please\s+)?(?:look\s+(?:him|her|them|it)\s+up|"
+    r"(?:tell me|what)\s+(?:more\s+)?about\s+(?:him|her|them|it)|"
+    r"who\s+is\s+(?:he|she|that)|what\s+about\s+(?:him|her|them|it))\b",
+    re.I,
+)
+
 
 def resolve(text, expanded=None, *, action_likely=False, active_task=None,
             recent_actions=()):
@@ -81,7 +93,9 @@ def resolve(text, expanded=None, *, action_likely=False, active_task=None,
     references = {}
     task_id = None
 
-    if (is_reference or task_recall) and active_task:
+    informational_reference = bool(_INFORMATION_REFERENCE.search(original))
+
+    if (is_reference or task_recall) and active_task and not informational_reference:
         task_id = active_task.get("id")
         references["referring language"] = active_task.get("goal", "the active task")
     elif is_reference and recent_actions:
@@ -91,6 +105,8 @@ def resolve(text, expanded=None, *, action_likely=False, active_task=None,
         ).strip()
 
     if task_recall:
+        mode = "information"
+    elif informational_reference:
         mode = "information"
     elif action_likely or correction or is_reference:
         mode = "action"

@@ -28,7 +28,7 @@
 | Routing | local app reflex + one streamed loop + cleanup lane (llama router); legacy path behind TED_LEGACY_LADDER=1 |
 | Agents | MacAgent (14 tools) — see Code Book ch. 36 |
 | Memory | 58 facts, ~1750 chat turns, 12 session memories |
-| Tests | 1357 checks across 38 suites |
+| Tests | 1366 checks across 39 suites |
 | Calendar daemon | running |
 
 **Standing issues, detected not remembered:**

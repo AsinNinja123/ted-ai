@@ -1259,6 +1259,7 @@ class TedApi:
         # Local reference resolution is stronger than the verb-only router for
         # short continuations such as "keep going" and "do it again".
         _action_likely = _interpretation.mode == "action"
+        _explicit_web_lookup = routing.explicit_web_lookup(routing_text)
         _needs_operational = bool(
             _action_likely or _interpretation.references
             or _interpretation.missing_information)
@@ -1378,8 +1379,9 @@ class TedApi:
                                 tool_runtime=_runtime,
                                 context_scope=_context_scope,
                                 operational_context=_op_context,
-                                require_tool=_action_likely,
-                                min_action_calls=_minimum_actions,
+                                require_tool=(_action_likely or _explicit_web_lookup),
+                                min_action_calls=max(
+                                    _minimum_actions, 1 if _explicit_web_lookup else 0),
                                 attachments=_attached,
                                 **_telemetry_chat,
                                 **_response_style)
