@@ -42,8 +42,7 @@ matches, so there's always some grounding context.
 #      session_summaries  A short first-person memory of a whole conversation,
 #                         written when it ends — but only when the conversation
 #                         earned one. Most do not, on purpose.           §14.4
-#      patterns           Topic counts by hour. Accumulating; nothing reads
-#                         them yet. Honest dead weight. §35.
+#      patterns           Topic counts by hour. Startup uses these for timely offers.
 #      habit_logs         Built, never used. Also dead weight.
 #
 #  THE ONE RULE ABOUT FACTS

@@ -3852,7 +3852,7 @@ and the only item here with an unbounded downside.
 
 | Thing | State |
 |---|---|
-| `patterns` table | rows accumulating, nothing reads them |
+| `patterns` table | feeds the startup-time proactive pattern offer |
 | `habit_logs` table | built, never used |
 | `goals` table | leftover from a deleted feature |
 | `news_topics` / `news_items` tables | left behind by the news removal, nothing reads them |

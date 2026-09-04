@@ -360,7 +360,7 @@ MEMORY_MEANING = {
     "exchanges": "Older voice/HUD turn log, keyword-searchable.",
     "session_summaries": "Dated memories of whole conversations. Deliberately rare — "
                          "Ted declines to write one most of the time, on purpose.",
-    "patterns": "Topics you come back to. Written but never read by anything.",
+    "patterns": "Topics you come back to. Read at conversation startup to offer timely help.",
     "memory_audit": "A log of every change to memory, whoever made it.",
     "goals": "Left over from the deleted fireworks feature.",
     "habit_logs": "Built, never used.",
@@ -485,17 +485,16 @@ def collect_warnings(models, memory, state) -> list:
         warn.append(("Model names are not in config.py",
                      "They fall through to the defaults inside providers.py, so "
                      "changing a model means editing code instead of config."))
-    empty = [t["table"] for t in memory.get("tables", []) if t["rows"] == 0]
+    # Empty is not synonymous with dead. Routines and bouncer tables are active
+    # features that remain empty until Charlie configures them. Only flag schema
+    # left behind by removed or never-connected features.
+    known_dead = {"goals", "habit_logs", "news_items", "news_topics"}
+    empty = [t["table"] for t in memory.get("tables", [])
+             if t["rows"] == 0 and t["table"] in known_dead]
     if empty:
         warn.append(("Empty tables",
                      ", ".join(empty) + " — built and never used, or left over "
                      "from a deleted feature."))
-    unread = [t for t in memory.get("tables", [])
-              if t["table"] == "patterns" and t["rows"] > 0]
-    if unread:
-        warn.append(("Data nothing reads",
-                     f"patterns has {unread[0]['rows']} rows and nothing in the "
-                     "code reads it. Either use it or drop it."))
     if state["errors"]["exists"] and state["errors"]["size"] > 0:
         warn.append(("There are logged errors",
                      f"ted_errors.log is {state['errors']['size']} bytes, last "

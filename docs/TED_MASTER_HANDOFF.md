@@ -588,7 +588,7 @@ It is stated as the one rule the persona never breaks. Any refactor must preserv
 | `exchanges` (+ FTS5) | 60 | Voice/HUD turn log, FTS5-searchable |
 | `chat_sessions` | 38 | Dashboard chat threads |
 | `chat_turns` | **340** | Where the real conversation volume lives |
-| `patterns` | 122 | Topic patterns. **Accumulating; nothing reads them.** |
+| `patterns` | 122 at the time of this snapshot | Topic patterns, read at conversation startup for proactive offers. |
 | `memory_audit` | 365 | SQLite-trigger audit log of every memory write |
 | `audit_context` | 1 | One-row actor-attribution table (`ted` vs `user`) |
 | `goals` | 0 | Dead table from the deleted fireworks feature. Should be dropped. |
@@ -862,8 +862,8 @@ with a second factor.
 
 - `goals` table — 0 rows, left over from the deleted fireworks feature. Drop it.
 - `habit_logs` — 0 rows. Built, never used.
-- `patterns` — 122 rows accumulating, **nothing reads them**. Either wire them
-  into the correction-log idea (§9.3) or cut them.
+- `patterns` — read at conversation startup for proactive offers. Consider whether to
+  also feed them into the correction-log idea (§9.3).
 - `TED_REFERENCE.txt` — untracked at the repo root, last updated June, and
   describes fireworks "store mode", Neo4j, and the Claude relay. All three are
   gone. It is a user-facing guide that would actively mislead. Rewrite or delete.
@@ -918,7 +918,7 @@ These are pinned in tests *as current behavior*. Fixing them means updating the 
 - **Finish gutting gate 5** — the allowlist is short now; the dead branches below
   it are still 700-odd lines of `core/app.py`
 - **Correction / feedback log** — raw material exists (`patterns`, plus
-  frustration tracking in `app.py`) and nothing reads it
+  frustration tracking in `app.py`), but it is not yet used as an explicit correction log
 - **Todo / assignment tracking** — the old named-lists feature was retired; this
   needs rebuilding against EventKit/Reminders rather than a JSON file
 - **Self-narration** — "checking your calendar…" spoken aloud. The HUD shows
