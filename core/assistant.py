@@ -288,6 +288,10 @@ def parse_when(text, now=None):
 
     hour = minute = None
     m = re.search(r"\bat (\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?", t)
+    if not m and day_set:
+        # A follow-up to "what date and time?" naturally sounds like
+        # "7:30 am on Sunday", without another "at".
+        m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b", t)
     if m:
         hour = int(m.group(1)); minute = int(m.group(2) or 0)
         ap = (m.group(3) or "").replace(".", "")
@@ -443,4 +447,3 @@ def _get_weather_wttr(location=""):
                    .replace("°C", " degrees").strip())
     except Exception:
         return ""
-

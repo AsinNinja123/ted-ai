@@ -791,6 +791,25 @@ def _parse_lookup(text):
     m = _LOOKUP_RE.match(text.strip())
     return m.group(1).strip().rstrip(".?!") if m else None
 
+
+def _parse_calendar_add(text):
+    """Return (title, when-or-empty) for an explicit Calendar add request."""
+    raw = " ".join(str(text or "").strip().split())
+    if not re.search(r"\b(?:calendar|calender)\b", raw, re.I):
+        return None
+    m = re.search(
+        r"\b(?:add|schedule|put|create)\s+(?:a |an )?"
+        r"(?:meeting|event|appointment|call)?\s*[\"'“”]?(.+?)[\"'“”]?"
+        r"\s+(?:on|to|in)\s+(?:my\s+|the\s+)?(?:calendar|calender)\b(.*)$",
+        raw, re.I,
+    )
+    if not m:
+        return None
+    title = m.group(1).strip(" ,.!?\"'“”")
+    tail = m.group(2).strip(" ,.!?")
+    when = re.sub(r"^(?:for|at|on)\s+", "", tail, flags=re.I).strip()
+    return (title, when) if title else None
+
 # ---------- time string parser for proactive triggers ----------
 def _parse_time_to_24h(s):
     """Convert '8am', '7:30pm', '9:00' → 'HH:MM' (24-hour) or None.

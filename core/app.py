@@ -131,6 +131,7 @@ from core.intents import (
     _parse_time_to_24h, _detect_mood, _MOOD_SEARCH, _MOOD_DESC, _parse_correction,
     _classify_content_speed, _extract_pattern_topic, _confused_reply,
     _fix_command_words, _strip_wake_phrase,
+    _parse_calendar_add,
     is_memory_add_command, is_memory_drop_command, memory_referent,
 )
 from core.logs import error_log
@@ -405,6 +406,7 @@ class TedApi:
         self._pending_disambig_compose = None  # {instruction, style} saved during contact disambiguation
         self._pending_tool_confirmation = None  # {name,args,expires} awaiting yes/no
         self._pending_lingo          = None   # {term,expires} awaiting Charlie's meaning
+        self._pending_calendar_add   = None   # {title,expires} awaiting date/time
         # The previous user turn, so a bare "remember this" has something to
         # point at. One message deep on purpose: "this" does not reach further
         # back than that in real speech, and keeping a longer tail would invite
@@ -966,6 +968,39 @@ class TedApi:
             ])
             return False
 
+        # A missing calendar time is a transaction, not an ordinary chat turn.
+        # Keep the title until Charlie answers, then perform the real tool call.
+        if self._pending_calendar_add is not None:
+            pending = self._pending_calendar_add
+            self._pending_calendar_add = None
+            if time.time() > pending["expires"]:
+                result = "That calendar question expired, so I didn't add anything."
+            elif _is_cancel_command(text):
+                result = "Okay — I didn't add anything to your calendar."
+            else:
+                due = assistant.parse_when(text)
+                if due is None:
+                    self._pending_calendar_add = pending
+                    result = "I still need a date and time, like Sunday at 7:30 AM."
+                else:
+                    result = self._dispatch_and_record("calendar_add", {
+                        "title": pending["title"], "when": text,
+                    })
+            engine.reset_barge_in()
+            self.interrupt_speech = False
+            if echo_user:
+                add_message(w, "user", text)
+            self.last_reply = result
+            add_message(w, "ted", result)
+            if th.looks_like_failure(result):
+                show_issue(w, result)
+            speak(w, result, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": result},
+            ])
+            return False
+
         engine.reset_barge_in()
         self.interrupt_speech = False
         if echo_user:
@@ -975,6 +1010,29 @@ class TedApi:
             speak(w, spoken_prefix, self)
 
         set_state(w, "thinking")
+
+        calendar_request = _parse_calendar_add(text)
+        if calendar_request is not None:
+            title, when_text = calendar_request
+            due = assistant.parse_when(when_text) if when_text else None
+            if due is None:
+                self._pending_calendar_add = {
+                    "title": title, "expires": time.time() + 300,
+                }
+                reply = f"What date and time should I put “{title}” on your calendar?"
+            else:
+                reply = self._dispatch_and_record(
+                    "calendar_add", {"title": title, "when": when_text})
+            self.last_reply = reply
+            add_message(w, "ted", reply)
+            if th.looks_like_failure(reply):
+                show_issue(w, reply)
+            speak(w, reply, self)
+            self.active_conversation.extend([
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": reply},
+            ])
+            return False
 
         # ── response format: Charlie chooses brevity; Ted does not debate it ──
         # The observed failure was "from now on just give yes or no answers"

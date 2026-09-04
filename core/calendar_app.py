@@ -170,7 +170,10 @@ tell application "Calendar"
     end tell
 end tell
 """
-    _run_script(script)
+    created = _run_script(script)
+    if not created:
+        return ("I couldn't verify that Calendar added the event, so I'm not "
+                "claiming it was saved.")
     time_str = start_dt.strftime("%-I:%M %p on %A, %B %-d")
     return f"Added: {title} at {time_str}."
 
